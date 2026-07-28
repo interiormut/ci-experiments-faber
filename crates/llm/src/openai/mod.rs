@@ -1,7 +1,8 @@
-//! The Anthropic Messages API.
+//! The OpenAI Chat Completions API.
 //!
-//! Rust has no first-party Anthropic SDK, so this speaks the REST API over
-//! `reqwest` directly: `POST /v1/messages` with `stream: true`, framed as SSE.
+//! Rust has no first-party OpenAI SDK in this workspace, so this speaks the
+//! REST API over `reqwest` directly: `POST /v1/chat/completions` with
+//! `stream: true`, framed as SSE.
 //!
 //! The client holds a base URL, an HTTP client, and a credential. It reads no
 //! environment variables and owns no global state — everything it can do
@@ -21,20 +22,15 @@ use crate::error::Error;
 use crate::sse;
 use crate::types::Request;
 
-/// The API version header value this client is written against.
-pub const API_VERSION: &str = "2023-06-01";
-
 /// Default model id. Nothing in this crate reads it implicitly — it exists so
 /// a caller with no opinion has one to name.
-pub const DEFAULT_MODEL: &str = "claude-opus-5";
+pub const DEFAULT_MODEL: &str = "gpt-5";
 
 /// Everything the client is allowed to do.
 pub struct Config {
     pub api_key: SecretString,
-    /// Defaults to `https://api.anthropic.com`.
+    /// Defaults to `https://api.openai.com`.
     pub base_url: Option<Url>,
-    /// `anthropic-beta` opt-ins, sent on every request.
-    pub betas: Vec<String>,
     /// An existing HTTP client to share connection pooling with.
     ///
     /// If you supply one, give it a connect timeout and a read timeout but
@@ -58,27 +54,25 @@ impl Config {
         Self {
             api_key,
             base_url: None,
-            betas: Vec::new(),
             http: None,
         }
     }
 }
 
-/// A handle to the Anthropic Messages API.
-pub struct Anthropic {
+/// A handle to the OpenAI Chat Completions API.
+pub struct OpenAI {
     http: reqwest::Client,
     endpoint: Url,
     api_key: SecretString,
-    betas: Option<String>,
 }
 
-impl Anthropic {
+impl OpenAI {
     pub fn new(config: Config) -> Result<Self, Error> {
         let base = match config.base_url {
             Some(url) => url,
-            None => Url::parse("https://api.anthropic.com").expect("valid literal URL"),
+            None => Url::parse("https://api.openai.com").expect("valid literal URL"),
         };
-        let endpoint = endpoint(base, ["v1", "messages"])?;
+        let endpoint = endpoint(base, ["v1", "chat", "completions"])?;
 
         let http = match config.http {
             Some(http) => http,
@@ -92,30 +86,25 @@ impl Anthropic {
             http,
             endpoint,
             api_key: config.api_key,
-            betas: (!config.betas.is_empty()).then(|| config.betas.join(",")),
         })
     }
 
     fn build(&self, request: &Request) -> reqwest::RequestBuilder {
-        let mut builder = self
-            .http
+        self.http
             .post(self.endpoint.clone())
-            .header("x-api-key", self.api_key.expose_secret())
-            .header("anthropic-version", API_VERSION)
+            .header(
+                "authorization",
+                format!("Bearer {}", self.api_key.expose_secret()),
+            )
             .header("content-type", "application/json")
             .header("accept", "text/event-stream")
-            .json(&wire::request_body(request));
-
-        if let Some(betas) = &self.betas {
-            builder = builder.header("anthropic-beta", betas);
-        }
-        builder
+            .json(&wire::request_body(request))
     }
 }
 
-impl ModelClient for Anthropic {
+impl ModelClient for OpenAI {
     fn provider(&self) -> &str {
-        "anthropic"
+        "openai"
     }
 
     fn stream(&self, request: Request) -> EventStream<'_> {
@@ -127,7 +116,7 @@ impl ModelClient for Anthropic {
             let status = response.status();
             let request_id = response
                 .headers()
-                .get("request-id")
+                .get("x-request-id")
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned);
 
@@ -137,14 +126,18 @@ impl ModelClient for Anthropic {
                 return;
             }
 
-            tracing::debug!(model = %model, "anthropic stream opened");
+            tracing::debug!(model = %model, "openai stream opened");
 
             let mut frames = Box::pin(sse::frames(response.bytes_stream()));
+            let mut decoder = wire::StreamDecoder::default();
             while let Some(frame) = frames.next().await {
                 let frame: Value = frame?;
-                if let Some(event) = wire::parse_event(&frame)? {
+                for event in decoder.push_chunk(&frame)? {
                     yield event;
                 }
+            }
+            for event in decoder.finish() {
+                yield event;
             }
         })
     }
@@ -180,7 +173,7 @@ mod tests {
         let error = api_error(
             429,
             Some("req_1".into()),
-            r#"{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}"#,
+            r#"{"error":{"type":"rate_limit_error","message":"slow down"}}"#,
         );
         assert!(error.is_transient());
         assert!(error.to_string().contains("slow down"));
@@ -192,23 +185,33 @@ mod tests {
         assert!(error.to_string().contains("bad gateway"));
     }
 
+    fn endpoint_for(base: &str) -> String {
+        let mut config = Config::new("k".into());
+        config.base_url = Some(Url::parse(base).unwrap());
+        OpenAI::new(config).unwrap().endpoint.to_string()
+    }
+
     #[test]
     fn the_default_endpoint_is_the_public_api() {
-        let client = Anthropic::new(Config::new("k".into())).unwrap();
+        let client = OpenAI::new(Config::new("k".into())).unwrap();
         assert_eq!(
             client.endpoint.as_str(),
-            "https://api.anthropic.com/v1/messages"
+            "https://api.openai.com/v1/chat/completions"
         );
     }
 
     #[test]
     fn a_gateway_path_prefix_is_kept() {
-        let mut config = Config::new("k".into());
-        config.base_url = Some(Url::parse("https://gw.example.com/anthropic").unwrap());
-        let client = Anthropic::new(config).unwrap();
-        assert_eq!(
-            client.endpoint.as_str(),
-            "https://gw.example.com/anthropic/v1/messages"
-        );
+        // The case `base_url` exists for: dropping the prefix would route the
+        // request past the gateway entirely.
+        for base in [
+            "https://gw.example.com/openai",
+            "https://gw.example.com/openai/",
+        ] {
+            assert_eq!(
+                endpoint_for(base),
+                "https://gw.example.com/openai/v1/chat/completions"
+            );
+        }
     }
 }

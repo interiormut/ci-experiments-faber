@@ -42,6 +42,8 @@ pub mod anthropic;
 mod client;
 mod error;
 mod event;
+pub mod openai;
+mod sse;
 mod thread;
 mod types;
 

@@ -1,8 +1,8 @@
-//! Server-sent event framing.
+//! Server-sent event framing, shared by every provider that streams.
 //!
-//! Only what the Messages API actually uses: `data:` lines terminated by a
-//! blank line. The `event:` line is redundant — every payload repeats its type
-//! in the JSON — so it is ignored.
+//! Only what these APIs actually use: `data:` lines terminated by a blank
+//! line. The `event:` line is redundant — every payload repeats its type in
+//! the JSON — so it is ignored.
 
 use bytes::Bytes;
 use futures_core::Stream;
@@ -12,20 +12,23 @@ use serde_json::Value;
 use crate::error::{Error, Result};
 
 /// Turns a byte stream into one JSON value per SSE frame.
-pub(super) fn frames<S>(bytes: S) -> impl Stream<Item = Result<Value>>
+pub(crate) fn frames<S>(bytes: S) -> impl Stream<Item = Result<Value>>
 where
     S: Stream<Item = reqwest::Result<Bytes>>,
 {
     async_stream::try_stream! {
         let mut bytes = Box::pin(bytes);
-        let mut buffer = String::new();
+        // Buffered as bytes, not text: chunks break on arbitrary boundaries,
+        // so decoding one in isolation would replace any multi-byte codepoint
+        // straddling the split with U+FFFD. Only whole frames are decoded.
+        let mut buffer: Vec<u8> = Vec::new();
 
         while let Some(chunk) = bytes.next().await {
             let chunk = chunk?;
-            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            buffer.extend_from_slice(&chunk);
 
             while let Some(split) = find_frame_end(&buffer) {
-                let frame = buffer[..split.start].to_owned();
+                let frame = String::from_utf8_lossy(&buffer[..split.start]).into_owned();
                 buffer.drain(..split.end);
                 if let Some(value) = decode(&frame)? {
                     yield value;
@@ -35,7 +38,7 @@ where
 
         // A stream cut short mid-frame is a truncated response, not an empty
         // one: report it rather than returning a partial message.
-        if !buffer.trim().is_empty() {
+        if !String::from_utf8_lossy(&buffer).trim().is_empty() {
             Err(Error::Decode(
                 "stream ended mid-frame; the response is incomplete".into(),
             ))?;
@@ -49,12 +52,17 @@ struct FrameEnd {
 }
 
 /// Finds the blank line ending the first complete frame, tolerating CRLF.
-fn find_frame_end(buffer: &str) -> Option<FrameEnd> {
-    let lf = buffer.find("\n\n").map(|at| FrameEnd {
+fn find_frame_end(buffer: &[u8]) -> Option<FrameEnd> {
+    let find = |needle: &[u8]| {
+        buffer
+            .windows(needle.len())
+            .position(|window| window == needle)
+    };
+    let lf = find(b"\n\n").map(|at| FrameEnd {
         start: at,
         end: at + 2,
     });
-    let crlf = buffer.find("\r\n\r\n").map(|at| FrameEnd {
+    let crlf = find(b"\r\n\r\n").map(|at| FrameEnd {
         start: at,
         end: at + 4,
     });
@@ -97,10 +105,14 @@ mod tests {
     use futures_util::stream;
 
     async fn collect(chunks: Vec<&'static str>) -> Vec<Result<Value>> {
+        collect_bytes(chunks.into_iter().map(str::as_bytes).collect()).await
+    }
+
+    async fn collect_bytes(chunks: Vec<&'static [u8]>) -> Vec<Result<Value>> {
         let bytes = stream::iter(
             chunks
                 .into_iter()
-                .map(|chunk| Ok(Bytes::from_static(chunk.as_bytes()))),
+                .map(|chunk| Ok(Bytes::from_static(chunk))),
         );
         frames(bytes).collect().await
     }
@@ -129,6 +141,17 @@ mod tests {
         let events = collect(vec!["data: {\"type\":\"message_st"]).await;
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], Err(Error::Decode(_))));
+    }
+
+    #[tokio::test]
+    async fn a_codepoint_split_across_chunks_survives() {
+        // Chunks break on byte boundaries, not character ones: the split here
+        // lands in the middle of the first Hangul syllable.
+        let frame = "data: {\"t\":\"안녕\"}\n\n".as_bytes();
+        let (head, tail) = frame.split_at(13);
+        let events = collect_bytes(vec![head, tail]).await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].as_ref().unwrap()["t"], "안녕");
     }
 
     #[tokio::test]

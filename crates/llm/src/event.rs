@@ -123,6 +123,9 @@ enum PartialBlock {
         json: String,
     },
     Unknown(Value),
+    /// An index a provider skipped. Nothing was ever streamed into it, so it
+    /// is a hole to drop, not content to echo back.
+    Missing,
 }
 
 impl Accumulator {
@@ -153,8 +156,7 @@ impl Accumulator {
                     BlockStart::Unknown { raw } => PartialBlock::Unknown(raw.clone()),
                 };
                 if *index >= self.blocks.len() {
-                    self.blocks
-                        .resize_with(*index, || PartialBlock::Unknown(Value::Null));
+                    self.blocks.resize_with(*index, || PartialBlock::Missing);
                     self.blocks.push(partial);
                 } else {
                     self.blocks[*index] = partial;
@@ -209,28 +211,29 @@ impl Accumulator {
         let content = self
             .blocks
             .into_iter()
-            .map(|block| match block {
-                PartialBlock::Text(text) => Ok(ContentBlock::Text { text }),
+            .filter_map(|block| match block {
+                PartialBlock::Missing => None,
+                PartialBlock::Text(text) => Some(Ok(ContentBlock::Text { text })),
                 PartialBlock::Thinking {
                     thinking,
                     signature,
-                } => Ok(ContentBlock::Thinking {
+                } => Some(Ok(ContentBlock::Thinking {
                     thinking,
                     signature,
-                }),
+                })),
                 PartialBlock::ToolUse { id, name, json } => {
                     // An empty-argument tool call streams no delta at all.
                     let input = if json.trim().is_empty() {
-                        Value::Object(serde_json::Map::new())
+                        Ok(Value::Object(serde_json::Map::new()))
                     } else {
                         serde_json::from_str(&json).map_err(|source| Error::ToolInput {
                             tool: name.clone(),
                             source,
-                        })?
+                        })
                     };
-                    Ok(ContentBlock::ToolUse { id, name, input })
+                    Some(input.map(|input| ContentBlock::ToolUse { id, name, input }))
                 }
-                PartialBlock::Unknown(value) => Ok(ContentBlock::Unknown { raw: value }),
+                PartialBlock::Unknown(value) => Some(Ok(ContentBlock::Unknown { raw: value })),
             })
             .collect::<Result<Vec<_>, Error>>()?;
 
@@ -242,5 +245,35 @@ impl Accumulator {
             stop_details: self.stop_details,
             usage: self.usage,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_skipped_index_leaves_no_block_behind() {
+        // A provider that jumps an index leaves a hole. Filling it with a
+        // placeholder would put a block in the message that no provider will
+        // accept back on the next request.
+        let mut accumulator = Accumulator::new();
+        accumulator.push(&Event::MessageStart {
+            id: "msg_1".into(),
+            model: "model".into(),
+            usage: UsageDelta::default(),
+        });
+        accumulator.push(&Event::BlockStart {
+            index: 2,
+            block: BlockStart::Text,
+        });
+        accumulator.push(&Event::BlockDelta {
+            index: 2,
+            delta: Delta::Text("hi".into()),
+        });
+
+        let completion = accumulator.finish().unwrap();
+        assert_eq!(completion.message.content.len(), 1);
+        assert_eq!(completion.text(), "hi");
     }
 }

@@ -4,13 +4,35 @@
 use futures_core::Stream;
 use futures_util::StreamExt;
 use std::pin::Pin;
+use url::Url;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::event::{Accumulator, Completion, Event};
 use crate::types::Request;
 
 /// A stream of events from one model call.
 pub type EventStream<'a> = Pin<Box<dyn Stream<Item = Result<Event>> + Send + 'a>>;
+
+/// Appends an API path to a base URL, keeping any path the base already has.
+///
+/// `Url::join` with an absolute path would discard it, silently misrouting the
+/// gateway and proxy URLs that are the whole reason `base_url` is
+/// configurable: `https://gw.example.com/openai` has to stay under `/openai`.
+pub(crate) fn endpoint<'a>(
+    mut base: Url,
+    segments: impl IntoIterator<Item = &'a str>,
+) -> Result<Url> {
+    {
+        let mut path = base
+            .path_segments_mut()
+            .map_err(|()| Error::Decode("base URL must be http or https".into()))?;
+        // A base of `https://host/openai` has a trailing empty segment only
+        // when it was written with a slash; popping it keeps both spellings
+        // from producing `/openai//v1`.
+        path.pop_if_empty().extend(segments);
+    }
+    Ok(base)
+}
 
 /// A model endpoint.
 ///
