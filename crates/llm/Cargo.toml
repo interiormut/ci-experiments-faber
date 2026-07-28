@@ -1,0 +1,21 @@
+[package]
+name = "llm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+futures-core = "0.3"
+futures-util = "0.3"
+async-stream = "0.3"
+bytes = "1"
+tracing = "0.1"
+thiserror = "1"
+secrecy = "0.10"
+url = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+futures-util = "0.3"
