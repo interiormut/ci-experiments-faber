@@ -29,12 +29,11 @@ pub fn router() -> Router<AppState> {
 /// for the configured cookie domain. Unauthenticated calls are a no-op success — logout
 /// should never itself require being logged in.
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    if let Some(raw_token) = extract_token(&headers) {
-        if let Some(token) = surge::SessionToken::from_raw(&raw_token) {
-            if let Err(error) = state.auth.revoke_session(&token).await {
-                tracing::warn!(error = %error, "failed to revoke surge session during logout");
-            }
-        }
+    if let Some(raw_token) = extract_token(&headers)
+        && let Some(token) = surge::SessionToken::from_raw(&raw_token)
+        && let Err(error) = state.auth.revoke_session(&token).await
+    {
+        tracing::warn!(error = %error, "failed to revoke surge session during logout");
     }
 
     let clear_cookie = format!(
