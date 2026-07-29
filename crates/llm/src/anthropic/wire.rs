@@ -24,13 +24,33 @@ pub(super) fn request_body(request: &Request) -> Value {
     body.insert("model".into(), json!(request.model));
     body.insert("max_tokens".into(), json!(request.max_tokens));
     body.insert("stream".into(), json!(true));
+
+    // Anthropic takes a system prompt only as a top-level field, never as
+    // `messages[0]`. A leading run of system turns becomes that field; a
+    // system turn anywhere later is a mid-conversation system message and is
+    // sent inline, in place, as an ordinary `role: "system"` entry.
+    let leading_system = request
+        .messages
+        .iter()
+        .take_while(|message| message.role == Role::System)
+        .count();
+    let (system_messages, rest) = request.messages.split_at(leading_system);
+
     body.insert(
         "messages".into(),
-        Value::Array(request.messages.iter().map(message_to_json).collect()),
+        Value::Array(rest.iter().map(message_to_json).collect()),
     );
 
-    if let Some(system) = &request.system {
-        body.insert("system".into(), json!(system));
+    if !system_messages.is_empty() {
+        body.insert(
+            "system".into(),
+            Value::Array(
+                system_messages
+                    .iter()
+                    .map(|message| json!({"type": "text", "text": message.text()}))
+                    .collect(),
+            ),
+        );
     }
     if !request.tools.is_empty() {
         body.insert(
@@ -120,6 +140,7 @@ fn message_to_json(message: &Message) -> Value {
         "role": match message.role {
             Role::User => "user",
             Role::Assistant => "assistant",
+            Role::System => "system",
         },
         "content": Value::Array(message.content.iter().map(block_to_json).collect()),
     })
@@ -374,6 +395,29 @@ mod tests {
         let body = request_body(&request);
         assert_eq!(body["model"], json!("claude-opus-5"));
         assert_eq!(body["service_tier"], json!("standard"));
+    }
+
+    #[test]
+    fn leading_system_messages_become_the_system_field() {
+        let mut request = request();
+        request.messages.insert(0, Message::system("be brief"));
+        let body = request_body(&request);
+        assert_eq!(body["system"], json!([{"type": "text", "text": "be brief"}]));
+        assert_eq!(body["messages"][0]["role"], json!("user"));
+        assert_eq!(body["messages"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_mid_conversation_system_message_is_sent_inline() {
+        let mut request = request();
+        request.messages.push(Message::system("terse mode"));
+        let body = request_body(&request);
+        assert!(body.get("system").is_none());
+        assert_eq!(body["messages"][1]["role"], json!("system"));
+        assert_eq!(
+            body["messages"][1]["content"],
+            json!([{"type": "text", "text": "terse mode"}])
+        );
     }
 
     #[test]

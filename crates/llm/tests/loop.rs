@@ -94,13 +94,14 @@ async fn a_thread_reads_history_and_appends() {
     let request = thread.request("test-model").unwrap();
     thread.call(&client, request).await.unwrap();
 
-    assert_eq!(thread.messages().len(), 2);
-    assert_eq!(thread.messages()[1].role, Role::Assistant);
-    assert_eq!(thread.messages()[1].text(), "second");
+    assert_eq!(thread.messages().len(), 3);
+    assert_eq!(thread.messages()[0].role, Role::System);
+    assert_eq!(thread.messages()[2].role, Role::Assistant);
+    assert_eq!(thread.messages()[2].text(), "second");
 
-    // The system prompt travels with the call but is not a turn.
-    assert_eq!(client.last_request().system.as_deref(), Some("be brief"));
-    assert_eq!(client.last_request().messages.len(), 1);
+    // The system prompt travels with the call as a leading turn.
+    assert_eq!(client.last_request().messages.len(), 2);
+    assert_eq!(client.last_request().messages[0].role, Role::System);
 }
 
 #[tokio::test]

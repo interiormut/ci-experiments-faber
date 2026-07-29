@@ -14,7 +14,6 @@ use crate::types::{ContentBlock, Message, Request, Role};
 #[derive(Clone, Debug, Default)]
 pub struct Thread {
     messages: Vec<Message>,
-    system: Option<String>,
 }
 
 impl Thread {
@@ -22,12 +21,10 @@ impl Thread {
         Self::default()
     }
 
-    /// A thread with a system prompt. The prompt is not a message and never
-    /// appears in [`Thread::messages`].
+    /// A thread with a system prompt, as its leading turn.
     pub fn with_system(system: impl Into<String>) -> Self {
         Self {
-            messages: Vec::new(),
-            system: Some(system.into()),
+            messages: vec![Message::system(system)],
         }
     }
 
@@ -41,10 +38,6 @@ impl Thread {
         &self.messages
     }
 
-    pub fn system(&self) -> Option<&str> {
-        self.system.as_deref()
-    }
-
     pub fn is_empty(&self) -> bool {
         self.messages.is_empty()
     }
@@ -56,6 +49,14 @@ impl Thread {
 
     pub fn push_user(&mut self, text: impl Into<String>) -> &mut Self {
         self.push(Message::user(text))
+    }
+
+    /// Appends an operator instruction as its own turn. On a provider that
+    /// supports mid-conversation system messages this lands after the
+    /// history without disturbing it; elsewhere the provider's wire layer
+    /// decides how to represent it.
+    pub fn push_system(&mut self, text: impl Into<String>) -> &mut Self {
+        self.push(Message::system(text))
     }
 
     /// Appends tool results as a single user turn, which is how every current
@@ -83,19 +84,17 @@ impl Thread {
     /// before calling, and for inspecting exactly what would be sent.
     pub fn request(&self, model: impl Into<String>) -> Result<Request> {
         self.guard_trailing_assistant()?;
-        let mut request = Request::new(model, self.messages.clone());
-        request.system = self.system.clone();
-        Ok(request)
+        Ok(Request::new(model, self.messages.clone()))
     }
 
     /// Calls the model with the given request and appends its answer.
     ///
-    /// `request.messages` and `request.system` are **replaced** by the
-    /// thread's, unconditionally — the thread is the single source of what
-    /// gets sent, so editing a request's messages before calling has no
-    /// effect. Everything else on the request is honoured as given. A harness
-    /// that wants a one-off turn the thread doesn't keep should call
-    /// [`complete`] directly with a request it built itself, or fork.
+    /// `request.messages` is **replaced** by the thread's, unconditionally —
+    /// the thread is the single source of what gets sent, so editing a
+    /// request's messages before calling has no effect. Everything else on
+    /// the request is honoured as given. A harness that wants a one-off turn
+    /// the thread doesn't keep should call [`complete`] directly with a
+    /// request it built itself, or fork.
     pub async fn call(
         &mut self,
         client: &dyn ModelClient,
@@ -103,7 +102,6 @@ impl Thread {
     ) -> Result<Completion> {
         self.guard_trailing_assistant()?;
         request.messages = self.messages.clone();
-        request.system = self.system.clone();
 
         let completion = complete(client, request).await?;
         self.messages.push(completion.message.clone());
@@ -122,7 +120,6 @@ impl Thread {
     {
         self.guard_trailing_assistant()?;
         request.messages = self.messages.clone();
-        request.system = self.system.clone();
 
         let completion = complete_observed(client, request, observer).await?;
         self.messages.push(completion.message.clone());

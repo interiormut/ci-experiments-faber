@@ -14,6 +14,10 @@ use serde_json::Value;
 pub enum Role {
     User,
     Assistant,
+    /// An operator instruction. Providers that support it accept this role
+    /// anywhere in `messages`, not just as a leading turn — see
+    /// [`Message::system`].
+    System,
 }
 
 /// One turn in a conversation.
@@ -35,6 +39,17 @@ impl Message {
         Self {
             role: Role::Assistant,
             content,
+        }
+    }
+
+    /// An operator instruction, as its own turn. A leading run of these
+    /// becomes a provider's top-level system prompt; one appearing later
+    /// becomes a mid-conversation system message on providers that support
+    /// it. See [`Role::System`].
+    pub fn system(text: impl Into<String>) -> Self {
+        Self {
+            role: Role::System,
+            content: vec![ContentBlock::text(text)],
         }
     }
 
@@ -180,7 +195,6 @@ impl Sampling {
 pub struct Request {
     pub model: String,
     pub max_tokens: u32,
-    pub system: Option<String>,
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDef>,
     pub tool_choice: Option<ToolChoice>,
@@ -204,7 +218,6 @@ impl Request {
         Self {
             model: model.into(),
             max_tokens: DEFAULT_MAX_TOKENS,
-            system: None,
             messages,
             tools: Vec::new(),
             tool_choice: None,

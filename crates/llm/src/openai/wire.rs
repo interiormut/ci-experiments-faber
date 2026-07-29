@@ -99,14 +99,14 @@ pub(super) fn request_body(request: &Request) -> Value {
 fn messages_to_json(request: &Request) -> Value {
     let mut messages = Vec::new();
 
-    // `system`, not `developer`: the two are aliases on current models, and
-    // system is what OpenAI-compatible third-party endpoints all accept.
-    if let Some(system) = &request.system {
-        messages.push(json!({"role": "system", "content": system}));
-    }
-
     for message in &request.messages {
         match message.role {
+            // `system`, not `developer`: the two are aliases on current
+            // models, and system is what OpenAI-compatible third-party
+            // endpoints all accept. Content is a bare string, not a parts
+            // array — third-party endpoints are less reliable about array
+            // content on system messages.
+            Role::System => messages.push(json!({"role": "system", "content": message.text()})),
             Role::User => user_messages(message, &mut messages),
             Role::Assistant => messages.push(assistant_message(message)),
         }
@@ -471,13 +471,25 @@ mod tests {
     #[test]
     fn system_becomes_the_first_message() {
         let mut request = request();
-        request.system = Some("be brief".into());
+        request.messages.insert(0, Message::system("be brief"));
         let body = request_body(&request);
         assert_eq!(
             body["messages"][0],
             json!({"role": "system", "content": "be brief"})
         );
         assert_eq!(body["messages"][1]["role"], json!("user"));
+    }
+
+    #[test]
+    fn a_mid_conversation_system_message_stays_in_place() {
+        let mut request = request();
+        request.messages.push(Message::system("terse mode"));
+        let body = request_body(&request);
+        assert_eq!(body["messages"][0]["role"], json!("user"));
+        assert_eq!(
+            body["messages"][1],
+            json!({"role": "system", "content": "terse mode"})
+        );
     }
 
     #[test]
