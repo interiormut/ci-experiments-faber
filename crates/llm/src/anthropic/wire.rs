@@ -293,10 +293,18 @@ fn delta_from(delta: Option<&Value>) -> Delta {
         return Delta::Unknown { raw: Value::Null };
     };
     match delta.get("type").and_then(Value::as_str) {
-        Some("text_delta") => Delta::Text(string_at(delta, "text")),
-        Some("thinking_delta") => Delta::Thinking(string_at(delta, "thinking")),
-        Some("signature_delta") => Delta::ThinkingSignature(string_at(delta, "signature")),
-        Some("input_json_delta") => Delta::ToolInputJson(string_at(delta, "partial_json")),
+        Some("text_delta") => Delta::Text {
+            content: string_at(delta, "text"),
+        },
+        Some("thinking_delta") => Delta::Thinking {
+            content: string_at(delta, "thinking"),
+        },
+        Some("signature_delta") => Delta::ThinkingSignature {
+            content: string_at(delta, "signature"),
+        },
+        Some("input_json_delta") => Delta::ToolInputJson {
+            content: string_at(delta, "partial_json"),
+        },
         _ => Delta::Unknown { raw: delta.clone() },
     }
 }

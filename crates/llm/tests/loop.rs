@@ -54,7 +54,9 @@ fn text_reply(text: &str) -> Vec<Event> {
         },
         Event::BlockDelta {
             index: 0,
-            delta: Delta::Text(text.into()),
+            delta: Delta::Text {
+                content: text.into(),
+            },
         },
         Event::BlockStop { index: 0 },
         Event::MessageDelta {
@@ -153,11 +155,15 @@ async fn tool_calls_arrive_whole() {
         // Streamed in fragments, as the wire delivers them.
         Event::BlockDelta {
             index: 0,
-            delta: Delta::ToolInputJson("{\"path\":".into()),
+            delta: Delta::ToolInputJson {
+                content: "{\"path\":".into(),
+            },
         },
         Event::BlockDelta {
             index: 0,
-            delta: Delta::ToolInputJson("\"/tmp/x\"}".into()),
+            delta: Delta::ToolInputJson {
+                content: "\"/tmp/x\"}".into(),
+            },
         },
         Event::BlockStop { index: 0 },
         Event::MessageDelta {

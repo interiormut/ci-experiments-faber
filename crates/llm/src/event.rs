@@ -54,15 +54,28 @@ pub enum BlockStart {
 }
 
 /// An incremental update to an open block.
+///
+/// Struct variants, not newtype variants: internally-tagged serde enums reject
+/// newtype variants at serialization time, which would make the streamed
+/// content of every block impossible to serialize — the very thing `Delta`
+/// exists to carry.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Delta {
-    Text(String),
-    Thinking(String),
+    Text {
+        content: String,
+    },
+    Thinking {
+        content: String,
+    },
     /// The opaque signature that closes a thinking block.
-    ThinkingSignature(String),
+    ThinkingSignature {
+        content: String,
+    },
     /// A fragment of the JSON encoding of a tool call's arguments.
-    ToolInputJson(String),
+    ToolInputJson {
+        content: String,
+    },
     Unknown {
         raw: Value,
     },
@@ -167,15 +180,17 @@ impl Accumulator {
                     return;
                 };
                 match (block, delta) {
-                    (PartialBlock::Text(text), Delta::Text(chunk)) => text.push_str(chunk),
-                    (PartialBlock::Thinking { thinking, .. }, Delta::Thinking(chunk)) => {
-                        thinking.push_str(chunk)
-                    }
-                    (PartialBlock::Thinking { signature, .. }, Delta::ThinkingSignature(chunk)) => {
-                        *signature = Some(chunk.clone())
-                    }
-                    (PartialBlock::ToolUse { json, .. }, Delta::ToolInputJson(chunk)) => {
-                        json.push_str(chunk)
+                    (PartialBlock::Text(text), Delta::Text { content }) => text.push_str(content),
+                    (
+                        PartialBlock::Thinking { thinking, .. },
+                        Delta::Thinking { content },
+                    ) => thinking.push_str(content),
+                    (
+                        PartialBlock::Thinking { signature, .. },
+                        Delta::ThinkingSignature { content },
+                    ) => *signature = Some(content.clone()),
+                    (PartialBlock::ToolUse { json, .. }, Delta::ToolInputJson { content }) => {
+                        json.push_str(content)
                     }
                     _ => {}
                 }
@@ -269,7 +284,9 @@ mod tests {
         });
         accumulator.push(&Event::BlockDelta {
             index: 2,
-            delta: Delta::Text("hi".into()),
+            delta: Delta::Text {
+                content: "hi".into(),
+            },
         });
 
         let completion = accumulator.finish().unwrap();

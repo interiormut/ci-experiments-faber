@@ -292,7 +292,9 @@ impl StreamDecoder {
             };
             events.push(Event::BlockDelta {
                 index,
-                delta: Delta::Thinking(thinking.to_owned()),
+                delta: Delta::Thinking {
+                    content: thinking.to_owned(),
+                },
             });
         }
 
@@ -316,7 +318,9 @@ impl StreamDecoder {
             };
             events.push(Event::BlockDelta {
                 index,
-                delta: Delta::Text(text.to_owned()),
+                delta: Delta::Text {
+                    content: text.to_owned(),
+                },
             });
         }
 
@@ -357,7 +361,9 @@ impl StreamDecoder {
         {
             events.push(Event::BlockDelta {
                 index,
-                delta: Delta::ToolInputJson(arguments.to_owned()),
+                delta: Delta::ToolInputJson {
+                    content: arguments.to_owned(),
+                },
             });
         }
     }
@@ -660,7 +666,7 @@ mod tests {
         // No second BlockStart: one open text block across chunks.
         assert_eq!(events.len(), 1);
         assert!(
-            matches!(&events[0], Event::BlockDelta { index: 0, delta: Delta::Text(text) } if text == "llo")
+            matches!(&events[0], Event::BlockDelta { index: 0, delta: Delta::Text { content } } if content == "llo")
         );
     }
 
@@ -682,7 +688,7 @@ mod tests {
             matches!(&events[0], Event::BlockStart { index: 1, block: BlockStart::ToolUse { id, name } } if id == "call_1" && name == "read_file")
         );
         assert!(
-            matches!(&events[1], Event::BlockDelta { index: 1, delta: Delta::ToolInputJson(json) } if json == "{\"path\":")
+            matches!(&events[1], Event::BlockDelta { index: 1, delta: Delta::ToolInputJson { content } } if content == "{\"path\":")
         );
 
         // Later fragments carry only arguments.
@@ -693,7 +699,7 @@ mod tests {
             .unwrap();
         assert_eq!(events.len(), 1);
         assert!(
-            matches!(&events[0], Event::BlockDelta { index: 1, delta: Delta::ToolInputJson(json) } if json == "\"/tmp/x\"}")
+            matches!(&events[0], Event::BlockDelta { index: 1, delta: Delta::ToolInputJson { content } } if content == "\"/tmp/x\"}")
         );
     }
 
@@ -721,7 +727,7 @@ mod tests {
             }
         ));
         assert!(
-            matches!(&events[2], Event::BlockDelta { index: 0, delta: Delta::ToolInputJson(json) } if json == "th\":")
+            matches!(&events[2], Event::BlockDelta { index: 0, delta: Delta::ToolInputJson { content } } if content == "th\":")
         );
         assert!(
             !events
@@ -736,7 +742,7 @@ mod tests {
             })))
             .unwrap();
         assert!(
-            matches!(&events[0], Event::BlockDelta { index: 0, delta: Delta::ToolInputJson(json) } if json == "\"/tmp/x\"}")
+            matches!(&events[0], Event::BlockDelta { index: 0, delta: Delta::ToolInputJson { content } } if content == "\"/tmp/x\"}")
         );
 
         // Both blocks are still open, and finish stops them in order.
