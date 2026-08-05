@@ -1,6 +1,6 @@
 "use client"
 
-import type { ComponentType } from "react"
+import type { ComponentType, ReactNode } from "react"
 import { Plus } from "lucide-react"
 import { motion } from "framer-motion"
 
@@ -10,31 +10,45 @@ type NavItem = {
   label: string
   icon: ComponentType<{ className?: string }>
   active?: boolean
+  badge?: ReactNode
+  onClick?: () => void
 }
 
 type NavSection = {
   label?: string
+  /** Renders a divider above the section, for grouping unlabeled sections. */
+  separator?: boolean
   items: NavItem[]
 }
 
 export function SidebarNav({
   sections,
   newLabel,
+  onNewClick,
+  ariaLabel,
   className,
 }: {
   sections: NavSection[]
   newLabel?: string
+  onNewClick?: () => void
+  ariaLabel?: string
   className?: string
 }) {
   return (
     <nav
+      aria-label={ariaLabel}
       className={cn(
         "flex h-full flex-col gap-2 rounded-xl border border-sidebar-border bg-sidebar p-3",
         className
       )}
     >
-      {sections.map((section) => (
-        <div key={section.label ?? section.items.map((item) => item.label).join("-")}>
+      {sections.map((section, index) => (
+        <div
+          key={section.label ?? section.items.map((item) => item.label).join("-")}
+          className={cn(
+            section.separator && index > 0 && "mt-2 border-t border-sidebar-border/60 pt-2"
+          )}
+        >
           {section.label ? (
             <div className="px-2 py-2 text-[10.5px] font-medium uppercase tracking-[0.12em] text-muted-foreground/70">
               {section.label}
@@ -48,6 +62,8 @@ export function SidebarNav({
                 <button
                   key={item.label}
                   type="button"
+                  onClick={item.onClick}
+                  aria-current={item.active ? "page" : undefined}
                   className={cn(
                     "relative flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-[13.5px] transition-colors",
                     item.active
@@ -63,7 +79,8 @@ export function SidebarNav({
                     />
                   ) : null}
                   <Icon className={cn("h-4 w-4 shrink-0", item.active && "text-primary")} />
-                  <span>{item.label}</span>
+                  <span className="flex-1">{item.label}</span>
+                  {item.badge}
                 </button>
               )
             })}
@@ -74,6 +91,7 @@ export function SidebarNav({
       {newLabel ? (
         <button
           type="button"
+          onClick={onNewClick}
           className="mt-1 flex items-center gap-2 rounded-lg border border-dashed border-sidebar-border px-3 py-2 text-[13px] text-muted-foreground transition-colors hover:border-primary/60 hover:bg-primary/5 hover:text-primary"
         >
           <Plus className="h-4 w-4" />
