@@ -1,6 +1,102 @@
 // @generated automatically by Diesel CLI.
 
 diesel::table! {
+    blob (digest) {
+        digest -> Bytea,
+        data -> Nullable<Bytea>,
+        storage_path -> Nullable<Text>,
+        byte_length -> Int8,
+        refcount -> Int8,
+        created_at -> Int8,
+    }
+}
+
+diesel::table! {
+    exchange (id) {
+        id -> Uuid,
+        run_id -> Uuid,
+        request_blob_digest -> Bytea,
+        provider_events_digest -> Nullable<Bytea>,
+        usage -> Nullable<Jsonb>,
+        outcome -> Nullable<Jsonb>,
+        expected_cache_tokens -> Int8,
+        actual_cache_tokens -> Nullable<Int8>,
+        started_at -> Int8,
+        completed_at -> Nullable<Int8>,
+    }
+}
+
+diesel::table! {
+    run (id) {
+        id -> Uuid,
+        thread_id -> Uuid,
+        created_at -> Int8,
+        completed_at -> Nullable<Int8>,
+    }
+}
+
+diesel::table! {
+    session (id) {
+        id -> Uuid,
+        workspace_id -> Uuid,
+        title -> Nullable<Text>,
+        created_at -> Int8,
+        closed_at -> Nullable<Int8>,
+    }
+}
+
+diesel::table! {
+    session_ref (token) {
+        token -> Text,
+        session_id -> Uuid,
+        issued_at -> Int8,
+        revoked_at -> Nullable<Int8>,
+    }
+}
+
+diesel::table! {
+    span (id) {
+        id -> Uuid,
+        exchange_id -> Uuid,
+        start_offset -> Int8,
+        end_offset -> Int8,
+        created_at -> Int8,
+    }
+}
+
+diesel::table! {
+    spine (thread_id, seq) {
+        thread_id -> Uuid,
+        seq -> Int8,
+        exchange_id -> Uuid,
+        explicit_commit -> Bool,
+        created_at -> Int8,
+    }
+}
+
+diesel::table! {
+    thread (id) {
+        id -> Uuid,
+        session_id -> Uuid,
+        parent_id -> Nullable<Uuid>,
+        forked_at_seq -> Nullable<Int4>,
+        next_seq -> Int4,
+        created_at -> Int8,
+    }
+}
+
+diesel::table! {
+    transcript (id) {
+        id -> Uuid,
+        run_id -> Uuid,
+        seq -> Int8,
+        kind -> Text,
+        payload -> Jsonb,
+        created_at -> Int8,
+    }
+}
+
+diesel::table! {
     users (id) {
         id -> Uuid,
         identity_id -> Uuid,
@@ -11,3 +107,49 @@ diesel::table! {
         updated_at -> Timestamptz,
     }
 }
+
+diesel::table! {
+    workspace (id) {
+        id -> Uuid,
+        kind -> Text,
+        user_id -> Nullable<Uuid>,
+        created_at -> Int8,
+    }
+}
+
+diesel::table! {
+    workspace_member (workspace_id, user_id) {
+        workspace_id -> Uuid,
+        user_id -> Uuid,
+        role -> Text,
+        joined_at -> Int8,
+    }
+}
+
+diesel::joinable!(exchange -> run (run_id));
+diesel::joinable!(run -> thread (thread_id));
+diesel::joinable!(session -> workspace (workspace_id));
+diesel::joinable!(session_ref -> session (session_id));
+diesel::joinable!(span -> exchange (exchange_id));
+diesel::joinable!(spine -> exchange (exchange_id));
+diesel::joinable!(spine -> thread (thread_id));
+diesel::joinable!(thread -> session (session_id));
+diesel::joinable!(transcript -> run (run_id));
+diesel::joinable!(workspace -> users (user_id));
+diesel::joinable!(workspace_member -> users (user_id));
+diesel::joinable!(workspace_member -> workspace (workspace_id));
+
+diesel::allow_tables_to_appear_in_same_query!(
+    blob,
+    exchange,
+    run,
+    session,
+    session_ref,
+    span,
+    spine,
+    thread,
+    transcript,
+    users,
+    workspace,
+    workspace_member,
+);
