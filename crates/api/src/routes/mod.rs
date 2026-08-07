@@ -1,3 +1,6 @@
+mod credentials;
+mod models;
+
 use axum::{
     Json, Router,
     extract::State,
@@ -23,6 +26,8 @@ pub fn router() -> Router<AppState> {
         .route("/health", get(|| async { Json(json!({ "ok": true })) }))
         .route("/api/me", get(me).patch(update_me))
         .route("/api/logout", post(logout))
+        .merge(credentials::router())
+        .merge(models::router())
 }
 
 /// Revokes the caller's Surge session (best-effort) and clears the `surge_session` cookie

@@ -1,6 +1,35 @@
 // @generated automatically by Diesel CLI.
 
 diesel::table! {
+    credentials (id) {
+        id -> Uuid,
+        user_id -> Uuid,
+        label -> Text,
+        key_ciphertext -> Bytea,
+        key_nonce -> Bytea,
+        key_version -> Text,
+        last_four -> Text,
+        created_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    models (id) {
+        id -> Uuid,
+        user_id -> Uuid,
+        alias -> Text,
+        base_url -> Text,
+        wire -> Text,
+        wire_id -> Text,
+        family -> Nullable<Text>,
+        credential_id -> Nullable<Uuid>,
+        params -> Jsonb,
+        capabilities -> Jsonb,
+        created_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
     blob (digest) {
         digest -> Bytea,
         data -> Nullable<Bytea>,
@@ -126,7 +155,10 @@ diesel::table! {
     }
 }
 
+diesel::joinable!(credentials -> users (user_id));
 diesel::joinable!(exchange -> run (run_id));
+diesel::joinable!(models -> users (user_id));
+diesel::joinable!(models -> credentials (credential_id));
 diesel::joinable!(run -> thread (thread_id));
 diesel::joinable!(session -> workspace (workspace_id));
 diesel::joinable!(session_ref -> session (session_id));
@@ -141,7 +173,9 @@ diesel::joinable!(workspace_member -> workspace (workspace_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     blob,
+    credentials,
     exchange,
+    models,
     run,
     session,
     session_ref,

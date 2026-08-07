@@ -1,19 +1,23 @@
+use base64::Engine as _;
 use diesel::Connection;
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
+use std::sync::Arc;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 mod auth;
 mod config;
+mod crypto;
 mod db;
 mod error;
 mod models;
+mod resolve;
 mod routes;
 mod schema;
 mod state;
 
-use state::AppState;
+use state::{AppState, MasterKey};
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
@@ -30,6 +34,18 @@ async fn main() {
         .init();
 
     let config = config::Config::from_env();
+
+    let master_key = {
+        let raw = std::env::var("FABER_MASTER_KEY")
+            .expect("FABER_MASTER_KEY must be set (32 random bytes, base64-encoded)");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(raw.trim())
+            .expect("FABER_MASTER_KEY must be valid base64");
+        let arr: [u8; 32] = decoded
+            .try_into()
+            .expect("FABER_MASTER_KEY must decode to exactly 32 bytes");
+        Arc::new(MasterKey::new(arr))
+    };
 
     {
         let mut sync_conn = diesel::PgConnection::establish(&config.database_url)
@@ -61,6 +77,7 @@ async fn main() {
         config: config.clone(),
         http,
         auth,
+        master_key,
     };
 
     let cors_origins = config
