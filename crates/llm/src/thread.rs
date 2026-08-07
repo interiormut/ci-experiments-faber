@@ -8,7 +8,7 @@
 use crate::client::{ModelClient, complete, complete_observed};
 use crate::error::{Error, Result};
 use crate::event::{Completion, Event};
-use crate::types::{ContentBlock, Message, Request, Role};
+use crate::types::{ContentBlock, Message, Request, Role, Turn};
 
 /// A forkable conversation.
 #[derive(Clone, Debug, Default)]
@@ -101,7 +101,7 @@ impl Thread {
         mut request: Request,
     ) -> Result<Completion> {
         self.guard_trailing_assistant()?;
-        request.messages = self.messages.clone();
+        request.messages = self.messages.iter().cloned().map(Turn::Value).collect();
 
         let completion = complete(client, request).await?;
         self.messages.push(completion.message.clone());
@@ -119,7 +119,7 @@ impl Thread {
         F: FnMut(&Event),
     {
         self.guard_trailing_assistant()?;
-        request.messages = self.messages.clone();
+        request.messages = self.messages.iter().cloned().map(Turn::Value).collect();
 
         let completion = complete_observed(client, request, observer).await?;
         self.messages.push(completion.message.clone());

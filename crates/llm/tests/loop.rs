@@ -3,8 +3,8 @@
 //! appends to it.
 
 use llm::{
-    BlockStart, ContentBlock, Delta, Event, EventStream, Message, ModelClient, Request, Role,
-    StopReason, Thread, UsageDelta, complete,
+    BlockStart, ContentBlock, Delta, Event, EventStream, Message, ModelClient, RenderedRequest,
+    RenderedSpan, Request, Role, StopReason, Thread, Turn, UsageDelta, complete,
 };
 
 /// A model that replays a fixed script and records what it was asked.
@@ -26,13 +26,36 @@ impl Scripted {
     }
 }
 
+/// Pulls the plain [`Message`] out of a [`Turn`], for tests that only ever
+/// deal in by-value turns and never resume a span.
+fn message_at(request: &Request, index: usize) -> &Message {
+    match &request.messages[index] {
+        Turn::Value(message) => message,
+        Turn::Span(_) => panic!("expected a plain message at index {index}, found a span"),
+    }
+}
+
 impl ModelClient for Scripted {
     fn provider(&self) -> &str {
         "scripted"
     }
 
-    fn stream(&self, request: Request) -> EventStream<'_> {
-        self.seen.lock().unwrap().push(request);
+    // No wire format to render against: this fake records the request as
+    // given and replays a fixed script regardless, so `render` just captures
+    // it and `send` ignores the (empty) rendered body entirely.
+    fn render(&self, request: &Request) -> llm::Result<RenderedRequest> {
+        self.seen.lock().unwrap().push(request.clone());
+        Ok(RenderedRequest {
+            body: Vec::new(),
+            prefix: RenderedSpan {
+                provider: "scripted".into(),
+                model: request.model.clone(),
+                regions: Default::default(),
+            },
+        })
+    }
+
+    fn send(&self, _rendered: RenderedRequest) -> EventStream<'_> {
         let events = self.events.clone();
         Box::pin(futures_util::stream::iter(events.into_iter().map(Ok)))
     }
@@ -102,8 +125,9 @@ async fn a_thread_reads_history_and_appends() {
     assert_eq!(thread.messages()[2].text(), "second");
 
     // The system prompt travels with the call as a leading turn.
-    assert_eq!(client.last_request().messages.len(), 2);
-    assert_eq!(client.last_request().messages[0].role, Role::System);
+    let last_request = client.last_request();
+    assert_eq!(last_request.messages.len(), 2);
+    assert_eq!(message_at(&last_request, 0).role, Role::System);
 }
 
 #[tokio::test]

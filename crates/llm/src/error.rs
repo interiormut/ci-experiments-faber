@@ -51,6 +51,30 @@ pub enum Error {
         "thread ends with an assistant turn; append a user turn or tool results before calling again"
     )]
     ExpectedUserTurn,
+
+    /// A [`crate::Turn::Span`] was rendered against one provider/model and
+    /// reused against another.
+    ///
+    /// The tempting handling is a silent fall back to sending the span's
+    /// content by value. That is exactly the failure the design calls out as
+    /// unacceptable: expensive, silent, and attributable to nothing. This is
+    /// a typed refusal instead.
+    #[error(
+        "span was rendered for {span_provider}/{span_model}, cannot be reused against {request_provider}/{request_model}"
+    )]
+    SpanScope {
+        span_provider: String,
+        span_model: String,
+        request_provider: String,
+        request_model: String,
+    },
+
+    /// A [`crate::Turn::Span`] appeared somewhere other than index 0.
+    ///
+    /// A span names a *prefix*; only the tail may be sent by value, so a span
+    /// anywhere but the front of the array is not expressible.
+    #[error("a span turn may only appear as the first message; found at index {index}")]
+    SpanPosition { index: usize },
 }
 
 impl Error {

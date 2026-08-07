@@ -65,6 +65,23 @@ impl Message {
     }
 }
 
+/// The length of the maximal prefix of [`Role::System`] turns — the run a
+/// provider hoists into a top-level system prompt (see [`Message::system`]).
+///
+/// Pure and provider-neutral, so anything that needs the same rule a wire
+/// module uses to decide what's "the system prompt" versus "a mid-conversation
+/// system message" gets it from one place rather than reimplementing
+/// `take_while`.
+pub fn leading_system_run<'a, I>(messages: I) -> usize
+where
+    I: IntoIterator<Item = &'a Message>,
+{
+    messages
+        .into_iter()
+        .take_while(|message| message.role == Role::System)
+        .count()
+}
+
 /// A piece of a message.
 ///
 /// `Unknown` exists so a provider that grows a block type we don't model yet
@@ -118,6 +135,30 @@ impl ContentBlock {
             content: content.into(),
             is_error: true,
         }
+    }
+}
+
+/// One entry in a request's message list: an ordinary message, or a
+/// previously-rendered prefix spliced back in by reference.
+///
+/// A [`Turn::Span`] may appear only at index 0. A span names a *prefix* —
+/// H5 frames editing as "send the prefix as a span and the edited tail by
+/// value" — so it can never be anything but the front of the array; a span
+/// found elsewhere is a [`crate::Error::SpanPosition`].
+///
+/// Not `Serialize`/`Deserialize`: nothing here crosses the wire as JSON.
+/// Wire modules build provider bytes directly from this by matching on it
+/// (see `crate::span`), and a [`RenderedSpan`](crate::RenderedSpan)'s
+/// content must never round-trip through a parsed value tree (H5).
+#[derive(Clone, Debug)]
+pub enum Turn {
+    Value(Message),
+    Span(crate::span::RenderedSpan),
+}
+
+impl From<Message> for Turn {
+    fn from(message: Message) -> Self {
+        Turn::Value(message)
     }
 }
 
@@ -191,11 +232,14 @@ impl Sampling {
 ///
 /// `model` is a plain string: roles are an indirection the workflow resolves
 /// before anything reaches this crate.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+///
+/// Not `Serialize`/`Deserialize` — `messages` carries a [`Turn::Span`] whose
+/// content is provider-rendered bytes, not a value tree to round-trip.
+#[derive(Clone, Debug)]
 pub struct Request {
     pub model: String,
     pub max_tokens: u32,
-    pub messages: Vec<Message>,
+    pub messages: Vec<Turn>,
     pub tools: Vec<ToolDef>,
     pub tool_choice: Option<ToolChoice>,
     pub thinking: Option<Thinking>,
@@ -218,7 +262,7 @@ impl Request {
         Self {
             model: model.into(),
             max_tokens: DEFAULT_MAX_TOKENS,
-            messages,
+            messages: messages.into_iter().map(Turn::Value).collect(),
             tools: Vec::new(),
             tool_choice: None,
             thinking: None,
@@ -261,6 +305,7 @@ pub struct Usage {
     pub output_tokens: u64,
     pub cache_read_input_tokens: u64,
     pub cache_creation_input_tokens: u64,
+    pub reasoning_tokens: u64,
 }
 
 impl Usage {
@@ -284,6 +329,9 @@ impl Usage {
         if let Some(count) = delta.cache_creation_input_tokens {
             self.cache_creation_input_tokens = count;
         }
+        if let Some(count) = delta.reasoning_tokens {
+            self.reasoning_tokens = count;
+        }
     }
 }
 
@@ -295,6 +343,7 @@ pub struct UsageDelta {
     pub output_tokens: Option<u64>,
     pub cache_read_input_tokens: Option<u64>,
     pub cache_creation_input_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
 }
 
 impl From<Usage> for UsageDelta {
@@ -304,6 +353,47 @@ impl From<Usage> for UsageDelta {
             output_tokens: Some(usage.output_tokens),
             cache_read_input_tokens: Some(usage.cache_read_input_tokens),
             cache_creation_input_tokens: Some(usage.cache_creation_input_tokens),
+            reasoning_tokens: Some(usage.reasoning_tokens),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_history_has_no_leading_system_run() {
+        assert_eq!(leading_system_run(&[]), 0);
+    }
+
+    #[test]
+    fn a_wholly_system_history_is_entirely_the_run() {
+        let messages = vec![Message::system("a"), Message::system("b")];
+        assert_eq!(leading_system_run(&messages), 2);
+    }
+
+    #[test]
+    fn no_leading_system_turn_is_a_zero_length_run() {
+        let messages = vec![Message::user("hi")];
+        assert_eq!(leading_system_run(&messages), 0);
+    }
+
+    #[test]
+    fn the_run_stops_at_the_first_non_system_turn() {
+        let messages = vec![
+            Message::system("a"),
+            Message::system("b"),
+            Message::user("hi"),
+            Message::system("mid-conversation"),
+        ];
+        assert_eq!(leading_system_run(&messages), 2);
+    }
+
+    #[test]
+    fn it_accepts_a_borrowed_reference_iterator_too() {
+        let messages = [Message::system("a"), Message::user("hi")];
+        let refs: Vec<&Message> = messages.iter().collect();
+        assert_eq!(leading_system_run(refs), 1);
     }
 }

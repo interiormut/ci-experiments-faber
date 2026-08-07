@@ -8,6 +8,7 @@ use url::Url;
 
 use crate::error::{Error, Result};
 use crate::event::{Accumulator, Completion, Event};
+use crate::span::RenderedRequest;
 use crate::types::Request;
 
 /// A stream of events from one model call.
@@ -36,14 +37,34 @@ pub(crate) fn endpoint<'a>(
 
 /// A model endpoint.
 ///
-/// Deliberately one method. A client holds a connection and a credential and
-/// nothing else: no retry policy, no context management, no tool dispatch, no
-/// notion of a turn. Implementations are handed to a harness through the
-/// capability object a workflow constructs, which is why this is object-safe
-/// and why it takes `&self`.
+/// A client holds a connection and a credential and nothing else: no retry
+/// policy, no context management, no tool dispatch, no notion of a turn.
+/// Implementations are handed to a harness through the capability object a
+/// workflow constructs, which is why this is object-safe and why every
+/// method takes `&self`.
 pub trait ModelClient: Send + Sync {
+    /// Turns a [`Request`] into provider bytes, without sending them.
+    ///
+    /// Split from [`send`](ModelClient::send) so the caller can capture
+    /// [`RenderedRequest::prefix`] before or independently of dispatch — a
+    /// harness inspecting what would be sent, or the frame log recording
+    /// ground truth at the capability boundary (J1), needs the bytes whether
+    /// or not the call ever runs.
+    fn render(&self, request: &Request) -> Result<RenderedRequest>;
+
+    /// Sends bytes [`render`](ModelClient::render) already produced.
+    fn send(&self, rendered: RenderedRequest) -> EventStream<'_>;
+
     /// Starts a call. The request is not sent until the stream is polled.
-    fn stream(&self, request: Request) -> EventStream<'_>;
+    ///
+    /// The one-call convenience path: render then send. A caller that wants
+    /// the rendered prefix span calls the two methods directly instead.
+    fn stream(&self, request: Request) -> EventStream<'_> {
+        match self.render(&request) {
+            Ok(rendered) => self.send(rendered),
+            Err(error) => Box::pin(futures_util::stream::once(async move { Err(error) })),
+        }
+    }
 
     /// A name for logs and traces. Not a model id.
     fn provider(&self) -> &str;

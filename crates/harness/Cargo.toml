@@ -1,0 +1,25 @@
+[package]
+name = "harness"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+llm = { path = "../llm" }
+deno_core = "0.409"
+deno_error = "0.7"
+url = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "sync", "macros"] }
+futures-util = "0.3"
+async-stream = "0.3"
+thiserror = "1"
+tracing = "0.1"
+secrecy = "0.10"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+
+[[example]]
+name = "run"
+path = "examples/run.rs"

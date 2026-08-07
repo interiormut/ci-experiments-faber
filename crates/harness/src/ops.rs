@@ -1,0 +1,547 @@
+//! The op layer: everything `faber:context.js` calls into.
+//!
+//! Every op reaches shared state through `Rc<RefCell<HarnessState>>`, put
+//! into `OpState` once at startup (`runtime.rs`). Async ops take
+//! `Rc<RefCell<OpState>>` and are careful never to hold that borrow, or our
+//! own `RefCell` borrow, across an `.await` — the pattern throughout is:
+//! borrow, extract what's needed as owned values, drop the borrow, await,
+//! re-borrow to store the result.
+
+use std::cell::RefCell;
+use std::pin::Pin;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use deno_core::{OpState, op2};
+use futures_util::{Stream, StreamExt};
+use llm::{Accumulator, ModelClient, RenderedRequest};
+use serde::Serialize;
+
+use crate::error::OpError;
+use crate::frame::{CoreEvent, FrameDetail, Outcome};
+use crate::mapping::{
+    CommitOptions, Completion, HarnessErrorInfo, LLMEvent, LLMRequest, Message, RequestOptions,
+    ToolDef, ToolResult,
+};
+use crate::state::{Baseline, Committed, HarnessState, Sent, SentTurn, StreamSlot};
+use crate::validate::Refusal;
+
+fn shared(state: &OpState) -> Rc<RefCell<HarnessState>> {
+    state.borrow::<Rc<RefCell<HarnessState>>>().clone()
+}
+
+async fn shared_async(state: &Rc<RefCell<OpState>>) -> Rc<RefCell<HarnessState>> {
+    let op_state = state.borrow();
+    shared(&op_state)
+}
+
+// ---------------------------------------------------------------------------
+// Capabilities and tools
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct Capabilities {
+    pub commit: bool,
+}
+
+#[op2]
+#[serde]
+pub fn op_capabilities(state: &mut OpState) -> Capabilities {
+    let harness = shared(state);
+    let harness = harness.borrow();
+    Capabilities {
+        commit: harness.grant.commit_granted,
+    }
+}
+
+#[op2]
+#[serde]
+pub fn op_tools_available(state: &mut OpState) -> Vec<ToolDef> {
+    let harness = shared(state);
+    let harness = harness.borrow();
+    harness.grant.tools.iter().map(ToolDef::from).collect()
+}
+
+#[op2]
+#[serde]
+pub async fn op_tool_invoke(
+    state: Rc<RefCell<OpState>>,
+    #[string] name: String,
+    #[serde] input: serde_json::Value,
+) -> Result<ToolResult, OpError> {
+    let harness = shared_async(&state).await;
+
+    let invocation = {
+        let harness = harness.borrow();
+        let Some(invoker) = harness.grant.tool_invoker.as_ref() else {
+            return Err(OpError::UnknownTool { name });
+        };
+        (invoker)(name.clone(), input)
+    };
+
+    invocation
+        .await
+        .map(|result| ToolResult {
+            content: result.content,
+            is_error: result.is_error,
+        })
+        .map_err(|message| OpError::ToolDispatchFailed { name, message })
+}
+
+// ---------------------------------------------------------------------------
+// History
+// ---------------------------------------------------------------------------
+
+/// Exact, not reconstructed (§3.1) — `committed_messages` is the ground
+/// truth Core holds, so this is a clone with ids attached, not a re-parse of
+/// rendered bytes. The lossy reconstruction path this replaced
+/// (`parse_region`/`reconstruct_message`/`reconstruct_content`) is gone: it
+/// existed only because bytes, not turns, used to be canonical.
+#[op2]
+#[serde]
+pub fn op_history_read(state: &mut OpState) -> Vec<Message> {
+    let harness = shared(state);
+    let harness = harness.borrow();
+    harness
+        .committed_messages
+        .iter()
+        .map(|committed| Message::committed(&committed.id, &committed.message))
+        .collect()
+}
+
+/// The committed lineage's own request options (`proposal.md` §4) —
+/// `Context.committedRequest()`'s answer, and the exact baseline
+/// `op_llm_stream_open`'s merge fills unset fields from. Both read the same
+/// stored `Baseline`, so they cannot independently drift.
+#[op2]
+#[serde]
+pub fn op_committed_request(state: &mut OpState) -> RequestOptions {
+    let harness = shared(state);
+    let harness = harness.borrow();
+    RequestOptions::from(&harness.baseline)
+}
+
+// ---------------------------------------------------------------------------
+// Model calls
+// ---------------------------------------------------------------------------
+
+/// Merges the request against the committed baseline, validates it (§7),
+/// renders, and opens a stream slot — but does not send. `types.d.ts`: "the
+/// request is not sent until the stream is polled." Rendering (and
+/// therefore validating) here rather than at first `next` means a refusal
+/// surfaces synchronously at `open`, and the frame log records ground truth
+/// (J1) the moment the call is opened, not after the network round trip
+/// starts.
+#[op2]
+pub fn op_llm_stream_open(
+    state: &mut OpState,
+    #[serde] request: LLMRequest,
+) -> Result<u32, OpError> {
+    let harness = shared(state);
+    let mut harness = harness.borrow_mut();
+
+    let baseline = harness.baseline.clone();
+
+    // Every field but `messages` defaults to the committed baseline
+    // (`proposal.md` §4) — an explicit override on the request always wins.
+    let tools: Vec<llm::ToolDef> = match request.tools.clone() {
+        Some(tools) => tools.into_iter().map(llm::ToolDef::from).collect(),
+        None => baseline.tools.clone(),
+    };
+    let max_tokens = request.max_tokens.or(baseline.max_tokens);
+    let tool_choice = request
+        .tool_choice
+        .clone()
+        .map(llm::ToolChoice::from)
+        .or_else(|| baseline.tool_choice.clone());
+    let thinking = request.thinking.map(llm::Thinking::from).or(baseline.thinking);
+    let effort = request.effort.map(llm::Effort::from).or(baseline.effort);
+    let sampling = request
+        .sampling
+        .map(llm::Sampling::from)
+        .or(baseline.sampling);
+    let stop_sequences = request
+        .stop_sequences
+        .clone()
+        .or_else(|| baseline.stop_sequences.clone());
+    let extra = request.extra.clone().or_else(|| baseline.extra.clone());
+
+    let sent_turns = crate::validate::check(
+        &request.messages,
+        &harness.committed_messages,
+        &tools,
+        harness.grant.client.provider(),
+        &harness.grant.model,
+        &harness.scaffold,
+    )
+    .map_err(|refusal| OpError::from(&refusal))?;
+
+    let mut llm_messages = Vec::with_capacity(sent_turns.len());
+    for turn in &sent_turns {
+        let message = match turn {
+            SentTurn::Ref { id } => {
+                harness
+                    .resolve(id)
+                    .expect("validate::check only ever returns ids it resolved against this lineage")
+                    .1
+                    .clone()
+            }
+            SentTurn::Value(message) => message.clone(),
+        };
+        llm_messages.push(llm::Turn::Value(message));
+    }
+
+    let mut llm_request = llm::Request::new(harness.grant.model.clone(), vec![]);
+    llm_request.messages = llm_messages;
+    llm_request.max_tokens = max_tokens.unwrap_or(llm::DEFAULT_MAX_TOKENS);
+    llm_request.tools = tools.clone();
+    llm_request.tool_choice = tool_choice.clone();
+    llm_request.thinking = thinking;
+    llm_request.effort = effort;
+    llm_request.sampling = sampling.unwrap_or_default();
+    llm_request.stop_sequences = stop_sequences.clone().unwrap_or_default();
+    llm_request.extra = extra.clone().unwrap_or_default();
+
+    let rendered = harness
+        .grant
+        .client
+        .render(&llm_request)
+        .map_err(|error| OpError::from(&error))?;
+
+    let frame = harness.frame_counter.next_child();
+    let model = harness.grant.model.clone();
+    let _ = harness.frames_tx.send(CoreEvent::FrameStart {
+        frame: frame.clone(),
+        parent: Some(crate::frame::FrameCounter::ROOT.to_string()),
+        detail: FrameDetail::Model { model },
+    });
+
+    let sent = Sent {
+        turns: sent_turns,
+        options: Baseline {
+            max_tokens,
+            tools,
+            tool_choice,
+            thinking,
+            effort,
+            sampling,
+            stop_sequences,
+            extra,
+        },
+    };
+
+    let rid = harness.insert_stream(StreamSlot::Pending { rendered, sent, frame });
+    Ok(rid)
+}
+
+fn owned_stream(
+    client: Arc<dyn ModelClient>,
+    rendered: RenderedRequest,
+) -> Pin<Box<dyn Stream<Item = llm::Result<llm::Event>>>> {
+    Box::pin(async_stream::stream! {
+        let stream = client.send(rendered);
+        futures_util::pin_mut!(stream);
+        while let Some(item) = stream.next().await {
+            yield item;
+        }
+    })
+}
+
+/// Advances stream `rid` by exactly one event, updating its slot. Shared by
+/// `op_llm_stream_next` (which reports each event to the harness) and
+/// `op_llm_stream_completion`/`op_commit` (which drain silently if asked
+/// before the harness finished iterating).
+async fn advance(
+    harness: &Rc<RefCell<HarnessState>>,
+    rid: u32,
+) -> Result<Option<LLMEvent>, OpError> {
+    let (mut inner, mut accumulator, sent, frame) = {
+        let mut state = harness.borrow_mut();
+        let slot = state.streams.remove(&rid).ok_or(OpError::UnknownStream { rid })?;
+        match slot {
+            // Another `advance()` for this rid is between removing its slot
+            // and re-inserting it (i.e. mid-`.await`). Put the marker back
+            // and reject clearly, rather than letting this call also see
+            // "missing" and misreport `UnknownStream` on a live stream.
+            StreamSlot::Polling => {
+                state.streams.insert(rid, StreamSlot::Polling);
+                return Err(OpError::StreamBusy { rid });
+            }
+            StreamSlot::Pending { rendered, sent, frame } => {
+                let client = state.grant.client.clone();
+                state.streams.insert(rid, StreamSlot::Polling);
+                (owned_stream(client, rendered), Accumulator::new(), sent, frame)
+            }
+            StreamSlot::Active {
+                inner,
+                accumulator,
+                sent,
+                frame,
+            } => {
+                state.streams.insert(rid, StreamSlot::Polling);
+                (inner, accumulator, sent, frame)
+            }
+            StreamSlot::Done { sent, completion } => {
+                state.streams.insert(rid, StreamSlot::Done { sent, completion });
+                return Ok(None);
+            }
+            // Re-polling an already-failed stream returns its *original*
+            // failure, not a misleading "unknown stream" — `Call.completion`
+            // on a call that broke mid-iteration must see the real reason.
+            StreamSlot::Failed { sent, partial, error } => {
+                let info = error.clone();
+                state.streams.insert(rid, StreamSlot::Failed { sent, partial, error });
+                return Err(info.into());
+            }
+        }
+    };
+
+    let next = inner.next().await;
+
+    match next {
+        Some(Ok(event)) => {
+            let mapped = LLMEvent::from(event.clone());
+            accumulator.push(&event);
+            let mut state = harness.borrow_mut();
+            let _ = state.frames_tx.send(CoreEvent::ModelEvent {
+                frame: frame.clone(),
+                event,
+            });
+            state.streams.insert(
+                rid,
+                StreamSlot::Active {
+                    inner,
+                    accumulator,
+                    sent,
+                    frame,
+                },
+            );
+            Ok(Some(mapped))
+        }
+        Some(Err(error)) => {
+            let info = HarnessErrorInfo::from(&error);
+            // Whatever the accumulator folded before the stream broke is
+            // recovered here, best-effort, so `commit(call, { partial: true
+            // })` (§6.3) has something to adopt.
+            let partial = accumulator.finish().ok();
+            let mut state = harness.borrow_mut();
+            if let Some(completion) = &partial {
+                let _ = state.frames_tx.send(CoreEvent::ModelUsage {
+                    frame: frame.clone(),
+                    usage: completion.usage,
+                });
+            }
+            let _ = state.frames_tx.send(CoreEvent::FrameStop {
+                frame: frame.clone(),
+                outcome: Outcome::Failed { error: info.clone() },
+            });
+            state.streams.insert(rid, StreamSlot::Failed { sent, partial, error: info.clone() });
+            Err(info.into())
+        }
+        None => {
+            let mut state = harness.borrow_mut();
+            match accumulator.finish() {
+                Ok(completion) => {
+                    let _ = state.frames_tx.send(CoreEvent::ModelUsage {
+                        frame: frame.clone(),
+                        usage: completion.usage,
+                    });
+                    let _ = state.frames_tx.send(CoreEvent::FrameStop {
+                        frame,
+                        outcome: Outcome::Ok,
+                    });
+                    state.streams.insert(rid, StreamSlot::Done { sent, completion });
+                    Ok(None)
+                }
+                Err(error) => {
+                    // `Accumulator::finish` consumed itself failing (e.g.
+                    // truncated tool-call JSON) — there is no completion left
+                    // to recover, so `partial` is genuinely `None` here, not
+                    // just unset.
+                    let info = HarnessErrorInfo::from(&error);
+                    let _ = state.frames_tx.send(CoreEvent::FrameStop {
+                        frame,
+                        outcome: Outcome::Failed { error: info.clone() },
+                    });
+                    state.streams.insert(rid, StreamSlot::Failed { sent, partial: None, error: info.clone() });
+                    Err(info.into())
+                }
+            }
+        }
+    }
+}
+
+#[op2]
+#[serde]
+pub async fn op_llm_stream_next(
+    state: Rc<RefCell<OpState>>,
+    rid: u32,
+) -> Result<Option<LLMEvent>, OpError> {
+    let harness = shared_async(&state).await;
+    advance(&harness, rid).await
+}
+
+/// Drains to a terminal state and returns the completion — `Call.completion`.
+/// A failed call rejects with the failure that actually happened, whether
+/// this call is what triggered it or it had already happened by the time
+/// this was awaited.
+#[op2]
+#[serde]
+pub async fn op_llm_stream_completion(
+    state: Rc<RefCell<OpState>>,
+    rid: u32,
+) -> Result<Completion, OpError> {
+    let harness = shared_async(&state).await;
+
+    loop {
+        let is_done = {
+            let harness = harness.borrow();
+            matches!(harness.streams.get(&rid), Some(StreamSlot::Done { .. }))
+        };
+        if is_done {
+            break;
+        }
+        advance(&harness, rid).await?;
+    }
+
+    let harness = harness.borrow();
+    match harness.streams.get(&rid) {
+        Some(StreamSlot::Done { completion, .. }) => Ok(Completion::from(completion)),
+        _ => Err(OpError::UnknownStream { rid }),
+    }
+}
+
+/// Adopts a call's turn list as canonical (§6.1). A `Ref` turn keeps its
+/// existing id; a by-value turn and the completion each get a freshly minted
+/// one. Repeatable within a run — the last commit wins (§6.2).
+#[op2]
+pub async fn op_commit(
+    state: Rc<RefCell<OpState>>,
+    rid: u32,
+    #[serde] options: CommitOptions,
+) -> Result<(), OpError> {
+    let harness = shared_async(&state).await;
+
+    {
+        let harness = harness.borrow();
+        if !harness.grant.commit_granted {
+            return Err(OpError::CommitNotGranted);
+        }
+    }
+
+    loop {
+        // Inspected *before* calling `advance`, and not just for `Done`/
+        // `Failed`: `Missing` (this rid was already committed and removed —
+        // a double `commit(call)`) and `Polling` (racing a concurrent
+        // `next()`/`.completion` on the same `Call`) both make `advance`
+        // return `Err` *without* an `.await` inside it. Swallowing that with
+        // `let _ =` and looping again — the previous shape of this code —
+        // spun forever: neither state ever becomes terminal on its own, and
+        // an `Err` returned before any await point never yields control back
+        // to the isolate's event loop, so this was a hang, not a busy-wait.
+        let next = {
+            let harness = harness.borrow();
+            match harness.streams.get(&rid) {
+                Some(StreamSlot::Done { .. }) | Some(StreamSlot::Failed { .. }) => None,
+                Some(StreamSlot::Polling) => return Err(OpError::StreamBusy { rid }),
+                None => return Err(OpError::UnknownStream { rid }),
+                // Pending/Active: real progress is possible — `advance`'s
+                // only paths from here go through `inner.next().await`.
+                Some(_) => Some(()),
+            }
+        };
+        let Some(()) = next else { break };
+        // A harness may commit a call it never iterated — drain silently,
+        // same as `.completion`. The eventual terminal state (Done or
+        // Failed) is what's inspected below; a transient poll error here
+        // isn't this op's to report.
+        let _ = advance(&harness, rid).await;
+    }
+
+    let mut harness = harness.borrow_mut();
+    let slot = harness
+        .streams
+        .remove(&rid)
+        .ok_or(OpError::UnknownStream { rid })?;
+
+    let (sent, completion) = match slot {
+        StreamSlot::Done { sent, completion } => (sent, completion),
+        StreamSlot::Failed {
+            sent,
+            partial: Some(completion),
+            ..
+        } if options.partial => (sent, completion),
+        StreamSlot::Failed { sent, partial, error } => {
+            harness.streams.insert(rid, StreamSlot::Failed { sent, partial, error });
+            return Err(OpError::from(&Refusal::IncompleteCompletion));
+        }
+        // Unreachable after the drain loop above (it only exits once the
+        // slot is Done or Failed) — put back defensively rather than lose a
+        // slot to a future change in that loop's behaviour.
+        other => {
+            harness.streams.insert(rid, other);
+            return Err(OpError::UnknownStream { rid });
+        }
+    };
+
+    let mut lineage = Vec::with_capacity(sent.turns.len() + 1);
+    for turn in sent.turns {
+        match turn {
+            SentTurn::Ref { id } => {
+                let message = harness
+                    .resolve(&id)
+                    .expect("a Sent ref only ever names an id already in the lineage")
+                    .1
+                    .clone();
+                lineage.push(Committed { id, message });
+            }
+            SentTurn::Value(message) => {
+                let id = harness.mint_id();
+                lineage.push(Committed { id, message });
+            }
+        }
+    }
+    let completion_id = harness.mint_id();
+    lineage.push(Committed {
+        id: completion_id,
+        message: completion.message,
+    });
+
+    harness.adopt_lineage(lineage);
+    harness.baseline = sent.options;
+    harness.recompute_scaffold();
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Transcript
+// ---------------------------------------------------------------------------
+
+/// Records exactly what the harness yielded — H2: the transcript "is the
+/// user-facing conversation, not a rendering of one." Takes a raw
+/// [`serde_json::Value`] rather than a typed `TranscriptEvent`: this op's job
+/// is to record what crossed the boundary, not re-validate it against a Rust
+/// enum the harness never sees.
+#[op2]
+pub fn op_yield(state: &mut OpState, #[serde] event: serde_json::Value) {
+    let harness = shared(state);
+    let harness = harness.borrow();
+    let _ = harness.transcript_tx.send(event);
+}
+
+deno_core::extension!(
+    faber,
+    ops = [
+        op_capabilities,
+        op_tools_available,
+        op_tool_invoke,
+        op_history_read,
+        op_committed_request,
+        op_commit,
+        op_llm_stream_open,
+        op_llm_stream_next,
+        op_llm_stream_completion,
+        op_yield,
+    ],
+);

@@ -4,16 +4,113 @@
 //! for persistence, and a provider's wire format is free to drift away from
 //! them.
 
+use serde::Serialize;
+use serde_json::value::RawValue;
 use serde_json::{Map, Value, json};
 
 use crate::error::Error;
 use crate::event::{BlockStart, Delta, Event};
+use crate::span::{RenderedRequest, RenderedSpan, append_element, split_span, wrap_array};
 use crate::types::{
     ContentBlock, Effort, Message, Request, Role, StopDetails, StopReason, Thinking,
-    ThinkingDisplay, ToolChoice, UsageDelta,
+    ThinkingDisplay, ToolChoice, UsageDelta, leading_system_run,
 };
 
-pub(super) fn request_body(request: &Request) -> Value {
+const PROVIDER: &str = "anthropic";
+
+/// Renders a [`Request`] to Anthropic's wire format.
+///
+/// Two regions get spliced rather than reconstructed: `system` (present only
+/// once a leading run of system turns has been seen) and `messages`. Both
+/// carry forward from a resumed [`crate::Turn::Span`] byte-for-byte — see
+/// `crate::span` for why that matters (H5).
+pub fn render(request: &Request) -> Result<RenderedRequest, Error> {
+    let (span, new_turns) = split_span(&request.messages, PROVIDER, &request.model)?;
+
+    let mut system_bytes = span
+        .and_then(|span| span.regions.get("system"))
+        .cloned()
+        .unwrap_or_default();
+    let mut messages_bytes = span
+        .and_then(|span| span.regions.get("messages"))
+        .cloned()
+        .unwrap_or_default();
+
+    // Anthropic takes a system prompt only as a top-level field, never as
+    // `messages[0]`. A leading run of system turns becomes that field — but
+    // only when nothing precedes them; a resumed span already has its head
+    // settled, so a system turn appended after it is mid-conversation and
+    // stays inline, in place, as an ordinary `role: "system"` entry.
+    let leading_system = if span.is_none() {
+        leading_system_run(new_turns.iter().copied())
+    } else {
+        0
+    };
+    let (leading, rest) = new_turns.split_at(leading_system);
+
+    for message in leading {
+        append_element(
+            &mut system_bytes,
+            &json!({"type": "text", "text": message.text()}),
+        );
+    }
+    for message in rest {
+        append_element(&mut messages_bytes, &message_to_json(message));
+    }
+
+    let prefix = RenderedSpan {
+        provider: PROVIDER.into(),
+        model: request.model.clone(),
+        regions: [
+            ("system".to_string(), system_bytes.clone()),
+            ("messages".to_string(), messages_bytes.clone()),
+        ]
+        .into_iter()
+        .collect(),
+    };
+
+    let body = build_body(request, &messages_bytes, &system_bytes)?;
+    Ok(RenderedRequest { body, prefix })
+}
+
+fn build_body(request: &Request, messages_bytes: &[u8], system_bytes: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut head = request_head(request);
+    // `messages`/`system` are spliced separately below; a colliding `extra`
+    // key must lose to that, same as every other modelled field.
+    head.remove("messages");
+    head.remove("system");
+
+    let messages_raw = RawValue::from_string(wrap_array(messages_bytes)?)
+        .map_err(|error| Error::Decode(format!("rendered messages region: {error}")))?;
+    let system_raw = if system_bytes.is_empty() {
+        None
+    } else {
+        Some(
+            RawValue::from_string(wrap_array(system_bytes)?)
+                .map_err(|error| Error::Decode(format!("rendered system region: {error}")))?,
+        )
+    };
+
+    #[derive(Serialize)]
+    struct Body<'a> {
+        #[serde(flatten)]
+        head: Map<String, Value>,
+        messages: &'a RawValue,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        system: Option<&'a RawValue>,
+    }
+
+    serde_json::to_vec(&Body {
+        head,
+        messages: &messages_raw,
+        system: system_raw.as_deref(),
+    })
+    .map_err(|error| Error::Decode(format!("failed to serialize request body: {error}")))
+}
+
+/// Every field except `messages`/`system`, which the caller splices in
+/// separately so their bytes never round-trip through this map.
+fn request_head(request: &Request) -> Map<String, Value> {
     let mut body = Map::new();
 
     // Caller-supplied passthrough first, so modelled fields always win.
@@ -25,33 +122,6 @@ pub(super) fn request_body(request: &Request) -> Value {
     body.insert("max_tokens".into(), json!(request.max_tokens));
     body.insert("stream".into(), json!(true));
 
-    // Anthropic takes a system prompt only as a top-level field, never as
-    // `messages[0]`. A leading run of system turns becomes that field; a
-    // system turn anywhere later is a mid-conversation system message and is
-    // sent inline, in place, as an ordinary `role: "system"` entry.
-    let leading_system = request
-        .messages
-        .iter()
-        .take_while(|message| message.role == Role::System)
-        .count();
-    let (system_messages, rest) = request.messages.split_at(leading_system);
-
-    body.insert(
-        "messages".into(),
-        Value::Array(rest.iter().map(message_to_json).collect()),
-    );
-
-    if !system_messages.is_empty() {
-        body.insert(
-            "system".into(),
-            Value::Array(
-                system_messages
-                    .iter()
-                    .map(|message| json!({"type": "text", "text": message.text()}))
-                    .collect(),
-            ),
-        );
-    }
     if !request.tools.is_empty() {
         body.insert(
             "tools".into(),
@@ -132,7 +202,7 @@ pub(super) fn request_body(request: &Request) -> Value {
         body.insert("stop_sequences".into(), json!(request.stop_sequences));
     }
 
-    Value::Object(body)
+    body
 }
 
 fn message_to_json(message: &Message) -> Value {
@@ -334,16 +404,35 @@ fn usage_from(usage: Option<&Value>) -> UsageDelta {
         output_tokens: count("output_tokens"),
         cache_read_input_tokens: count("cache_read_input_tokens"),
         cache_creation_input_tokens: count("cache_creation_input_tokens"),
+        // Not reported separately by this API.
+        reasoning_tokens: None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Sampling;
+    use crate::types::{Sampling, Turn};
 
     fn request() -> Request {
         Request::new("claude-opus-5", vec![Message::user("hi")])
+    }
+
+    /// Test-only convenience: renders and parses the body back into a
+    /// `Value` for structural assertions. Production code never does this —
+    /// see the `*_prefix_bytes_survive_a_round_trip` tests below for the
+    /// assertions that actually matter (H5).
+    fn request_body(request: &Request) -> Value {
+        let rendered = render(request).unwrap();
+        serde_json::from_slice(&rendered.body).unwrap()
+    }
+
+    fn push(request: &mut Request, message: Message) {
+        request.messages.push(Turn::Value(message));
+    }
+
+    fn insert_leading(request: &mut Request, message: Message) {
+        request.messages.insert(0, Turn::Value(message));
     }
 
     #[test]
@@ -408,7 +497,7 @@ mod tests {
     #[test]
     fn leading_system_messages_become_the_system_field() {
         let mut request = request();
-        request.messages.insert(0, Message::system("be brief"));
+        insert_leading(&mut request, Message::system("be brief"));
         let body = request_body(&request);
         assert_eq!(body["system"], json!([{"type": "text", "text": "be brief"}]));
         assert_eq!(body["messages"][0]["role"], json!("user"));
@@ -418,7 +507,7 @@ mod tests {
     #[test]
     fn a_mid_conversation_system_message_is_sent_inline() {
         let mut request = request();
-        request.messages.push(Message::system("terse mode"));
+        push(&mut request, Message::system("terse mode"));
         let body = request_body(&request);
         assert!(body.get("system").is_none());
         assert_eq!(body["messages"][1]["role"], json!("system"));
@@ -426,6 +515,59 @@ mod tests {
             body["messages"][1]["content"],
             json!([{"type": "text", "text": "terse mode"}])
         );
+    }
+
+    #[test]
+    fn turn_one_has_an_empty_prefix_and_no_stray_comma() {
+        // §4's default path: nothing committed yet, so the resumed prefix is
+        // an empty span. Splicing it must still produce valid JSON.
+        let empty_prefix = render(&Request::new("claude-opus-5", vec![]))
+            .unwrap()
+            .prefix;
+        let mut resumed = Request::new("claude-opus-5", vec![]);
+        resumed.messages = vec![Turn::Span(empty_prefix), Turn::Value(Message::user("hi"))];
+        let rendered = render(&resumed).unwrap();
+        let body: Value = serde_json::from_slice(&rendered.body).unwrap();
+        assert_eq!(body["messages"], json!([{"role": "user", "content": [{"type": "text", "text": "hi"}]}]));
+    }
+
+    #[test]
+    fn a_resumed_prefix_splices_byte_identically() {
+        // H5's stated test: render, capture the prefix, render again
+        // splicing it in, and the prefix region must match byte for byte —
+        // not just structurally.
+        let mut first = request();
+        insert_leading(&mut first, Message::system("be brief"));
+        let first_rendered = render(&first).unwrap();
+
+        let mut second = Request::new("claude-opus-5", vec![]);
+        second.messages = vec![
+            Turn::Span(first_rendered.prefix.clone()),
+            Turn::Value(Message::user("again")),
+        ];
+        let second_rendered = render(&second).unwrap();
+
+        assert_eq!(
+            second_rendered.prefix.regions["system"],
+            first_rendered.prefix.regions["system"],
+        );
+        // The messages region is a strict byte-extension: the old content
+        // unchanged, followed by exactly one new comma-joined element.
+        let old = &first_rendered.prefix.regions["messages"];
+        let new = &second_rendered.prefix.regions["messages"];
+        assert!(new.starts_with(old), "prefix bytes must not be rewritten");
+    }
+
+    #[test]
+    fn a_span_from_a_different_model_is_a_typed_refusal() {
+        let rendered = render(&request()).unwrap();
+        let mut other_model = Request::new("claude-haiku-4-5", vec![]);
+        other_model.messages = vec![
+            Turn::Span(rendered.prefix),
+            Turn::Value(Message::user("hi")),
+        ];
+        let error = render(&other_model).unwrap_err();
+        assert!(matches!(error, Error::SpanScope { .. }));
     }
 
     #[test]

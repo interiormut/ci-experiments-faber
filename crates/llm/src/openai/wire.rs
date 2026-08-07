@@ -6,15 +6,78 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+use serde::Serialize;
+use serde_json::value::RawValue;
 use serde_json::{Map, Value, json};
 
 use crate::error::Error;
 use crate::event::{BlockStart, Delta, Event};
+use crate::span::{RenderedRequest, RenderedSpan, append_element, split_span, wrap_array};
 use crate::types::{
     ContentBlock, Effort, Message, Request, Role, StopReason, Thinking, ToolChoice, UsageDelta,
 };
 
-pub(super) fn request_body(request: &Request) -> Value {
+const PROVIDER: &str = "openai";
+
+/// Renders a [`Request`] to the Chat Completions wire format.
+///
+/// Unlike Anthropic there is one region, `messages` — a system turn stays
+/// inline here regardless of position, so nothing is ever hoisted out of it.
+pub(super) fn render(request: &Request) -> Result<RenderedRequest, Error> {
+    let (span, new_turns) = split_span(&request.messages, PROVIDER, &request.model)?;
+
+    let mut messages_bytes = span
+        .and_then(|span| span.regions.get("messages"))
+        .cloned()
+        .unwrap_or_default();
+
+    for message in new_turns {
+        match message.role {
+            Role::System => append_element(
+                &mut messages_bytes,
+                &json!({"role": "system", "content": message.text()}),
+            ),
+            Role::User => append_user_elements(message, &mut messages_bytes),
+            Role::Assistant => append_element(&mut messages_bytes, &assistant_message(message)),
+        }
+    }
+
+    let prefix = RenderedSpan {
+        provider: PROVIDER.into(),
+        model: request.model.clone(),
+        regions: [("messages".to_string(), messages_bytes.clone())]
+            .into_iter()
+            .collect(),
+    };
+
+    let body = build_body(request, &messages_bytes)?;
+    Ok(RenderedRequest { body, prefix })
+}
+
+fn build_body(request: &Request, messages_bytes: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut head = request_head(request);
+    head.remove("messages");
+
+    let messages_raw = RawValue::from_string(wrap_array(messages_bytes)?)
+        .map_err(|error| Error::Decode(format!("rendered messages region: {error}")))?;
+
+    #[derive(Serialize)]
+    struct Body<'a> {
+        #[serde(flatten)]
+        head: Map<String, Value>,
+        messages: &'a RawValue,
+    }
+
+    serde_json::to_vec(&Body {
+        head,
+        messages: &messages_raw,
+    })
+    .map_err(|error| Error::Decode(format!("failed to serialize request body: {error}")))
+}
+
+/// Every field except `messages`, which the caller splices in separately so
+/// its bytes never round-trip through this map.
+fn request_head(request: &Request) -> Map<String, Value> {
     let mut body = Map::new();
 
     // Caller-supplied passthrough first, so modelled fields always win.
@@ -27,7 +90,6 @@ pub(super) fn request_body(request: &Request) -> Value {
     // Token accounting arrives in a usage-only chunk just before [DONE].
     body.insert("stream_options".into(), json!({"include_usage": true}));
     body.insert("max_completion_tokens".into(), json!(request.max_tokens));
-    body.insert("messages".into(), messages_to_json(request));
 
     if !request.tools.is_empty() {
         body.insert(
@@ -93,31 +155,13 @@ pub(super) fn request_body(request: &Request) -> Value {
         body.insert("stop".into(), json!(request.stop_sequences));
     }
 
-    Value::Object(body)
-}
-
-fn messages_to_json(request: &Request) -> Value {
-    let mut messages = Vec::new();
-
-    for message in &request.messages {
-        match message.role {
-            // `system`, not `developer`: the two are aliases on current
-            // models, and system is what OpenAI-compatible third-party
-            // endpoints all accept. Content is a bare string, not a parts
-            // array — third-party endpoints are less reliable about array
-            // content on system messages.
-            Role::System => messages.push(json!({"role": "system", "content": message.text()})),
-            Role::User => user_messages(message, &mut messages),
-            Role::Assistant => messages.push(assistant_message(message)),
-        }
-    }
-
-    Value::Array(messages)
+    body
 }
 
 /// A user turn can hold both text and tool results; on this wire those are
-/// different roles, so one neutral message can become several.
-fn user_messages(message: &Message, messages: &mut Vec<Value>) {
+/// different roles, so one neutral message can become several — each
+/// appended as its own element, in order, straight into the byte region.
+fn append_user_elements(message: &Message, region: &mut Vec<u8>) {
     let mut parts = Vec::new();
     let mut results = Vec::new();
     for block in &message.content {
@@ -143,9 +187,11 @@ fn user_messages(message: &Message, messages: &mut Vec<Value>) {
     // Results first, whatever order the blocks came in: a `tool` message is
     // only accepted immediately after the assistant turn that asked for it, so
     // text sharing the turn has to follow rather than split the run.
-    messages.append(&mut results);
+    for result in &results {
+        append_element(region, result);
+    }
     if !parts.is_empty() {
-        messages.push(json!({"role": "user", "content": parts}));
+        append_element(region, &json!({"role": "user", "content": parts}));
     }
 }
 
@@ -431,6 +477,10 @@ fn usage_from(usage: Option<&Value>) -> UsageDelta {
             .and_then(|details| details.get("cached_tokens"))
             .and_then(Value::as_u64),
         cache_creation_input_tokens: None,
+        reasoning_tokens: usage
+            .get("completion_tokens_details")
+            .and_then(|details| details.get("reasoning_tokens"))
+            .and_then(Value::as_u64),
     }
 }
 
@@ -445,10 +495,27 @@ fn string_at(value: &Value, key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Sampling;
+    use crate::types::{Sampling, Turn};
 
     fn request() -> Request {
         Request::new("gpt-5", vec![Message::user("hi")])
+    }
+
+    /// Test-only convenience: renders and parses the body back into a
+    /// `Value` for structural assertions. Production code never does this —
+    /// see the `*_prefix_bytes_survive_a_round_trip` test below for the
+    /// assertion that actually matters (H5).
+    fn request_body(request: &Request) -> Value {
+        let rendered = render(request).unwrap();
+        serde_json::from_slice(&rendered.body).unwrap()
+    }
+
+    fn push(request: &mut Request, message: Message) {
+        request.messages.push(Turn::Value(message));
+    }
+
+    fn insert_leading(request: &mut Request, message: Message) {
+        request.messages.insert(0, Turn::Value(message));
     }
 
     #[test]
@@ -477,7 +544,7 @@ mod tests {
     #[test]
     fn system_becomes_the_first_message() {
         let mut request = request();
-        request.messages.insert(0, Message::system("be brief"));
+        insert_leading(&mut request, Message::system("be brief"));
         let body = request_body(&request);
         assert_eq!(
             body["messages"][0],
@@ -489,7 +556,7 @@ mod tests {
     #[test]
     fn a_mid_conversation_system_message_stays_in_place() {
         let mut request = request();
-        request.messages.push(Message::system("terse mode"));
+        push(&mut request, Message::system("terse mode"));
         let body = request_body(&request);
         assert_eq!(body["messages"][0]["role"], json!("user"));
         assert_eq!(
@@ -548,17 +615,21 @@ mod tests {
     #[test]
     fn tool_results_become_tool_messages() {
         let mut request = request();
-        request
-            .messages
-            .push(Message::assistant(vec![ContentBlock::ToolUse {
+        push(
+            &mut request,
+            Message::assistant(vec![ContentBlock::ToolUse {
                 id: "call_1".into(),
                 name: "read_file".into(),
                 input: json!({"path": "/tmp/x"}),
-            }]));
-        request.messages.push(Message {
-            role: Role::User,
-            content: vec![ContentBlock::tool_result("call_1", "42")],
-        });
+            }]),
+        );
+        push(
+            &mut request,
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::tool_result("call_1", "42")],
+            },
+        );
         let body = request_body(&request);
 
         let assistant = &body["messages"][1];
@@ -577,24 +648,28 @@ mod tests {
     #[test]
     fn text_sharing_a_turn_with_a_result_follows_it() {
         let mut request = request();
-        request
-            .messages
-            .push(Message::assistant(vec![ContentBlock::ToolUse {
+        push(
+            &mut request,
+            Message::assistant(vec![ContentBlock::ToolUse {
                 id: "call_1".into(),
                 name: "read_file".into(),
                 input: json!({}),
-            }]));
+            }]),
+        );
         // Blocks in the order that would otherwise split the assistant turn
         // from its tool message.
-        request.messages.push(Message {
-            role: Role::User,
-            content: vec![
-                ContentBlock::Text {
-                    text: "and then?".into(),
-                },
-                ContentBlock::tool_result("call_1", "42"),
-            ],
-        });
+        push(
+            &mut request,
+            Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::Text {
+                        text: "and then?".into(),
+                    },
+                    ContentBlock::tool_result("call_1", "42"),
+                ],
+            },
+        );
         let body = request_body(&request);
 
         assert_eq!(body["messages"][2]["role"], json!("tool"));
@@ -632,6 +707,48 @@ mod tests {
         let body = request_body(&request);
         assert_eq!(body["model"], json!("gpt-5"));
         assert_eq!(body["service_tier"], json!("flex"));
+    }
+
+    #[test]
+    fn turn_one_has_an_empty_prefix_and_no_stray_comma() {
+        let empty_prefix = render(&Request::new("gpt-5", vec![])).unwrap().prefix;
+        let mut resumed = Request::new("gpt-5", vec![]);
+        resumed.messages = vec![Turn::Span(empty_prefix), Turn::Value(Message::user("hi"))];
+        let body = request_body(&resumed);
+        assert_eq!(
+            body["messages"],
+            json!([{"role": "user", "content": [{"type": "text", "text": "hi"}]}])
+        );
+    }
+
+    #[test]
+    fn a_resumed_prefix_splices_byte_identically() {
+        let mut first = request();
+        insert_leading(&mut first, Message::system("be brief"));
+        let first_rendered = render(&first).unwrap();
+
+        let mut second = Request::new("gpt-5", vec![]);
+        second.messages = vec![
+            Turn::Span(first_rendered.prefix.clone()),
+            Turn::Value(Message::user("again")),
+        ];
+        let second_rendered = render(&second).unwrap();
+
+        let old = &first_rendered.prefix.regions["messages"];
+        let new = &second_rendered.prefix.regions["messages"];
+        assert!(new.starts_with(old), "prefix bytes must not be rewritten");
+    }
+
+    #[test]
+    fn a_span_from_a_different_model_is_a_typed_refusal() {
+        let rendered = render(&request()).unwrap();
+        let mut other_model = Request::new("gpt-5-mini", vec![]);
+        other_model.messages = vec![
+            Turn::Span(rendered.prefix),
+            Turn::Value(Message::user("hi")),
+        ];
+        let error = render(&other_model).unwrap_err();
+        assert!(matches!(error, Error::SpanScope { .. }));
     }
 
     fn chunk(delta: Value) -> Value {
@@ -879,6 +996,29 @@ mod tests {
             .unwrap();
         assert!(
             matches!(&events[0], Event::MessageDelta { usage, .. } if usage.input_tokens == Some(12) && usage.output_tokens == Some(3) && usage.cache_read_input_tokens == Some(5))
+        );
+    }
+
+    #[test]
+    fn the_usage_chunk_reports_reasoning_tokens() {
+        let mut decoder = StreamDecoder::default();
+        decoder
+            .push_chunk(&chunk(json!({"content": "hi"})))
+            .unwrap();
+        let events = decoder
+            .push_chunk(&json!({
+                "id": "chatcmpl_1",
+                "model": "gpt-5",
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 12,
+                    "completion_tokens": 3,
+                    "completion_tokens_details": {"reasoning_tokens": 7},
+                },
+            }))
+            .unwrap();
+        assert!(
+            matches!(&events[0], Event::MessageDelta { usage, .. } if usage.reasoning_tokens == Some(7))
         );
     }
 

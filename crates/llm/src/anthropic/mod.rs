@@ -8,7 +8,7 @@
 //! arrives through [`Config`], so a workflow that withholds one cannot be
 //! bypassed.
 
-mod wire;
+pub mod wire;
 
 use futures_util::StreamExt;
 use secrecy::{ExposeSecret, SecretString};
@@ -17,7 +17,8 @@ use std::time::Duration;
 use url::Url;
 
 use crate::client::{EventStream, ModelClient, endpoint};
-use crate::error::Error;
+use crate::error::{Error, Result};
+use crate::span::RenderedRequest;
 use crate::sse;
 use crate::types::Request;
 
@@ -73,7 +74,7 @@ pub struct Anthropic {
 }
 
 impl Anthropic {
-    pub fn new(config: Config) -> Result<Self, Error> {
+    pub fn new(config: Config) -> Result<Self> {
         let base = match config.base_url {
             Some(url) => url,
             None => Url::parse("https://api.anthropic.com").expect("valid literal URL"),
@@ -96,7 +97,7 @@ impl Anthropic {
         })
     }
 
-    fn build(&self, request: &Request) -> reqwest::RequestBuilder {
+    fn build(&self, body: Vec<u8>) -> reqwest::RequestBuilder {
         let mut builder = self
             .http
             .post(self.endpoint.clone())
@@ -104,7 +105,7 @@ impl Anthropic {
             .header("anthropic-version", API_VERSION)
             .header("content-type", "application/json")
             .header("accept", "text/event-stream")
-            .json(&wire::request_body(request));
+            .body(body);
 
         if let Some(betas) = &self.betas {
             builder = builder.header("anthropic-beta", betas);
@@ -118,9 +119,13 @@ impl ModelClient for Anthropic {
         "anthropic"
     }
 
-    fn stream(&self, request: Request) -> EventStream<'_> {
-        let builder = self.build(&request);
-        let model = request.model.clone();
+    fn render(&self, request: &Request) -> Result<RenderedRequest> {
+        wire::render(request)
+    }
+
+    fn send(&self, rendered: RenderedRequest) -> EventStream<'_> {
+        let model = rendered.prefix.model.clone();
+        let builder = self.build(rendered.body);
 
         Box::pin(async_stream::try_stream! {
             let response = builder.send().await?;

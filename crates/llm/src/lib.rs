@@ -43,6 +43,7 @@ mod client;
 mod error;
 mod event;
 pub mod openai;
+mod span;
 mod sse;
 mod thread;
 mod types;
@@ -50,8 +51,10 @@ mod types;
 pub use client::{EventStream, ModelClient, complete, complete_observed};
 pub use error::{Error, Result};
 pub use event::{Accumulator, BlockStart, Completion, Delta, Event};
+pub use span::{RenderedRequest, RenderedSpan};
 pub use thread::Thread;
 pub use types::{
     ContentBlock, DEFAULT_MAX_TOKENS, Effort, Message, Request, Role, Sampling, StopDetails,
-    StopReason, Thinking, ThinkingDisplay, ToolChoice, ToolDef, Usage, UsageDelta,
+    StopReason, Thinking, ThinkingDisplay, ToolChoice, ToolDef, Turn, Usage, UsageDelta,
+    leading_system_run,
 };

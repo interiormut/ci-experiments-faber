@@ -18,7 +18,8 @@ use std::time::Duration;
 use url::Url;
 
 use crate::client::{EventStream, ModelClient, endpoint};
-use crate::error::Error;
+use crate::error::{Error, Result};
+use crate::span::RenderedRequest;
 use crate::sse;
 use crate::types::Request;
 
@@ -67,7 +68,7 @@ pub struct OpenAI {
 }
 
 impl OpenAI {
-    pub fn new(config: Config) -> Result<Self, Error> {
+    pub fn new(config: Config) -> Result<Self> {
         let base = match config.base_url {
             Some(url) => url,
             None => Url::parse("https://api.openai.com").expect("valid literal URL"),
@@ -89,7 +90,7 @@ impl OpenAI {
         })
     }
 
-    fn build(&self, request: &Request) -> reqwest::RequestBuilder {
+    fn build(&self, body: Vec<u8>) -> reqwest::RequestBuilder {
         self.http
             .post(self.endpoint.clone())
             .header(
@@ -98,7 +99,7 @@ impl OpenAI {
             )
             .header("content-type", "application/json")
             .header("accept", "text/event-stream")
-            .json(&wire::request_body(request))
+            .body(body)
     }
 }
 
@@ -107,9 +108,13 @@ impl ModelClient for OpenAI {
         "openai"
     }
 
-    fn stream(&self, request: Request) -> EventStream<'_> {
-        let builder = self.build(&request);
-        let model = request.model.clone();
+    fn render(&self, request: &Request) -> Result<RenderedRequest> {
+        wire::render(request)
+    }
+
+    fn send(&self, rendered: RenderedRequest) -> EventStream<'_> {
+        let model = rendered.prefix.model.clone();
+        let builder = self.build(rendered.body);
 
         Box::pin(async_stream::try_stream! {
             let response = builder.send().await?;
