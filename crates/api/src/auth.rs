@@ -5,7 +5,7 @@ use axum::{
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, SelectableHelper};
 use diesel_async::RunQueryDsl;
 use std::time::Instant;
-use surge::{AuthError, SessionToken};
+use surge::{AuthRejection, AuthSession};
 use uuid::Uuid;
 
 use crate::{
@@ -48,41 +48,12 @@ impl FromRequestParts<AppState> for SurgeIdentity {
     ) -> Result<Self, Self::Rejection> {
         let started_at = Instant::now();
 
-        let Some(raw_token) = extract_token(&parts.headers) else {
-            tracing::info!(
-                elapsed_ms = started_at.elapsed().as_millis(),
-                "surge auth rejected before verify: no session cookie or Bearer token"
-            );
-            return Err(AppError::Unauthorized(
-                "missing session cookie or Bearer token".into(),
-            ));
-        };
-
-        let Some(token) = SessionToken::from_raw(&raw_token) else {
-            return Err(AppError::Unauthorized("malformed session token".into()));
-        };
-
-        let verify_started = Instant::now();
-        let session = state.auth.verify_session(&token).await;
-        tracing::info!(
-            elapsed_ms = verify_started.elapsed().as_millis(),
-            ok = session.is_ok(),
-            "surge verify_session"
-        );
-
-        let session = session.map_err(|err| match err {
-            AuthError::InvalidToken | AuthError::SessionExpired => {
-                AppError::Unauthorized("invalid or expired session".into())
-            }
-            AuthError::IdentityDisabled => AppError::Unauthorized("identity disabled".into()),
-            AuthError::Unavailable | AuthError::Timeout => {
-                AppError::ServiceUnavailable("identity provider unavailable".into())
-            }
-            other => {
-                tracing::error!(error = %other, "unexpected error verifying surge session");
-                AppError::ServiceUnavailable("identity provider session verification failed".into())
-            }
-        })?;
+        let AuthSession(session) = AuthSession::from_request_parts(parts, state)
+            .await
+            .map_err(|rejection| match rejection {
+                AuthRejection::Unauthorized(message) => AppError::Unauthorized(message),
+                AuthRejection::ServiceUnavailable(message) => AppError::ServiceUnavailable(message),
+            })?;
 
         tracing::info!(
             elapsed_ms = started_at.elapsed().as_millis(),

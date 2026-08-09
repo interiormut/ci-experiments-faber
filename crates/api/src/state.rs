@@ -34,6 +34,13 @@ pub struct AppState {
     pub master_key: Arc<MasterKey>,
 }
 
+/// Required by `surge::AuthSession`, which resolves the provider off the router state.
+impl AsRef<Arc<dyn surge::AuthProvider>> for AppState {
+    fn as_ref(&self) -> &Arc<dyn surge::AuthProvider> {
+        &self.auth
+    }
+}
+
 impl FromRef<AppState> for DbPool {
     fn from_ref(s: &AppState) -> Self {
         s.db.clone()

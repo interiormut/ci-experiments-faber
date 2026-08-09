@@ -28,4 +28,4 @@ secrecy = "0.10"
 chacha20poly1305 = "0.10"
 rand = "0.8"
 base64 = "0.22"
-surge = { git = "https://github.com/panitdev/surge", rev = "5447a26fe4fd8ca5d485e90061f5762557e37f9a" }
+surge = { git = "https://github.com/panitdev/surge", rev = "98097a38ff8f6a33aa5165d64703a205f66dcd7c", features = ["router"] }

@@ -72,6 +72,26 @@ async fn main() {
     .await
     .expect("failed to build surge auth provider");
 
+    // The browser-facing perimeter, mounted at `/v1` on faber's own origin. In remote
+    // mode this reverse-proxies to surge-server, so the frontend only ever talks to
+    // faber and never learns whether Surge is embedded or served.
+    //
+    // The embedded-only fields are ignored by `RemoteProvider` — upstream owns rate
+    // limiting, registration policy, and the maintenance sweep.
+    let browser_router = Arc::clone(&auth).browser_router(surge::router::BrowserRouterConfig {
+        cookie_domain: config.surge_cookie_domain.clone(),
+        session_ttl: config.surge_session_ttl,
+        auth_ui_origin: config.surge_auth_ui_origin.clone(),
+        session_cors_origins: vec![],
+        rate_limiter: None,
+        return_origins: None,
+        registration: None,
+        factor_policy: None,
+        allow_inline: None,
+        oauth_bridge: None,
+        maintenance_interval: None,
+    });
+
     let state = AppState {
         db,
         config: config.clone(),
@@ -101,15 +121,25 @@ async fn main() {
         ])
         .allow_credentials(true);
 
+    // `cors` covers faber's own routes only — the browser router brings its own policy,
+    // scoped to the credential-entry and session-management zones.
     let app = routes::router()
-        .layer(TraceLayer::new_for_http())
         .layer(cors)
-        .with_state(state);
+        .with_state(state)
+        .merge(browser_router)
+        .layer(TraceLayer::new_for_http());
 
     let addr = format!("0.0.0.0:{}", config.api_port);
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .expect("failed to bind");
     tracing::info!("listening on {addr}");
-    axum::serve(listener, app).await.unwrap();
+    // `into_make_service_with_connect_info` is what makes the peer address visible to
+    // the proxy, which forwards it upstream so rate limits key on the end user.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }
