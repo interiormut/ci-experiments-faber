@@ -64,9 +64,9 @@ async fn main() {
 
     let auth = build_auth_provider(&config).await;
 
-    // The browser-facing perimeter, mounted at `/v1` on faber's own origin. In remote
-    // mode this reverse-proxies to surge-server, so the frontend only ever talks to
-    // faber and never learns whether Surge is embedded or served.
+    // The browser-facing perimeter, mounted under `/api/surge` on faber's own origin. In
+    // remote mode this reverse-proxies to surge-server, so the frontend only ever talks
+    // to faber and never learns whether Surge is embedded or served.
     //
     // The embedded-only fields are ignored by `RemoteProvider` — upstream owns rate
     // limiting, registration policy, and the maintenance sweep.
@@ -115,10 +115,16 @@ async fn main() {
 
     // `cors` covers faber's own routes only — the browser router brings its own policy,
     // scoped to the credential-entry and session-management zones.
+    //
+    // Nested rather than merged: the router's paths are absolute `/v1/...`, so merging
+    // would hand Surge the whole `/v1` namespace at faber's root and make any future
+    // faber route under it a boot-time panic. The prefix is local addressing only —
+    // the proxy strips it before forwarding upstream — but the frontend's surge-client
+    // `baseUrl` must match.
     let app = routes::router()
         .layer(cors)
         .with_state(state)
-        .merge(browser_router)
+        .nest("/api/surge", browser_router)
         .layer(TraceLayer::new_for_http());
 
     let addr = format!("0.0.0.0:{}", config.api_port);
