@@ -120,3 +120,14 @@ fn validate_display_name(value: &str) -> Result<(), AppError> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    /// Axum validates path syntax when the route is registered, not when the crate is
+    /// compiled — a v0.7-style `:id` capture type-checks and then panics at boot. Building
+    /// the router here moves that failure into `cargo test`.
+    #[test]
+    fn router_builds() {
+        let _ = super::router();
+    }
+}

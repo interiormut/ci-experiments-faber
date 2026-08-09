@@ -22,7 +22,7 @@ use crate::{
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/models", post(create).get(list))
-        .route("/api/models/:id", patch(update).delete(remove))
+        .route("/api/models/{id}", patch(update).delete(remove))
 }
 
 #[derive(Deserialize)]
