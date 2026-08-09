@@ -62,15 +62,7 @@ async fn main() {
         .build()
         .expect("failed to build HTTP client");
 
-    let auth = surge::remote(surge::RemoteConfig {
-        base_url: config.surge_url.parse().expect("invalid SURGE_URL"),
-        service_token: secrecy::SecretString::from(config.surge_service_token.clone()),
-        cache_ttl: std::time::Duration::from_secs(30),
-        cache_max_entries: 10_000,
-        timeout: std::time::Duration::from_secs(3),
-    })
-    .await
-    .expect("failed to build surge auth provider");
+    let auth = build_auth_provider(&config).await;
 
     // The browser-facing perimeter, mounted at `/v1` on faber's own origin. In remote
     // mode this reverse-proxies to surge-server, so the frontend only ever talks to
@@ -142,4 +134,50 @@ async fn main() {
     )
     .await
     .unwrap();
+}
+
+/// Builds the remote provider that talks to `surge-server`.
+async fn remote_auth_provider(config: &config::Config) -> Arc<dyn surge::AuthProvider> {
+    let service_token = config
+        .surge_service_token
+        .clone()
+        .expect("SURGE_SERVICE_TOKEN must be set");
+
+    surge::remote(surge::RemoteConfig {
+        base_url: config.surge_url.parse().expect("invalid SURGE_URL"),
+        service_token: secrecy::SecretString::from(service_token),
+        cache_ttl: std::time::Duration::from_secs(30),
+        cache_max_entries: 10_000,
+        timeout: std::time::Duration::from_secs(3),
+    })
+    .await
+    .expect("failed to build surge auth provider")
+}
+
+/// Selects the auth provider. `TestProvider` needs two locks turned: the
+/// `test-provider` Cargo feature at build time and `SURGE_TEST_PROVIDER=true` at
+/// run time. It authenticates *every* request as a fixed identity, so a
+/// production binary must be built without the feature — the env var alone can
+/// then do nothing.
+#[cfg(feature = "test-provider")]
+async fn build_auth_provider(config: &config::Config) -> Arc<dyn surge::AuthProvider> {
+    if std::env::var("SURGE_TEST_PROVIDER").as_deref() == Ok("true") {
+        let username =
+            std::env::var("SURGE_TEST_USERNAME").unwrap_or_else(|_| "test-user".to_owned());
+        let display_name =
+            std::env::var("SURGE_TEST_DISPLAY_NAME").unwrap_or_else(|_| "Test User".to_owned());
+
+        return surge::test(surge::TestConfig {
+            username,
+            display_name,
+        })
+        .expect("failed to build test auth provider");
+    }
+
+    remote_auth_provider(config).await
+}
+
+#[cfg(not(feature = "test-provider"))]
+async fn build_auth_provider(config: &config::Config) -> Arc<dyn surge::AuthProvider> {
+    remote_auth_provider(config).await
 }

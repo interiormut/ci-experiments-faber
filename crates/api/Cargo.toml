@@ -7,6 +7,11 @@ edition = "2024"
 name = "api"
 path = "src/main.rs"
 
+[features]
+# Compiles TestProvider in. Never enable for a production build — see
+# `build_auth_provider`, which still requires SURGE_TEST_PROVIDER=true on top.
+test-provider = ["surge/test-provider"]
+
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }

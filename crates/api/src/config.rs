@@ -5,7 +5,9 @@ use std::time::Duration;
 pub struct Config {
     pub database_url: String,
     pub surge_url: String,
-    pub surge_service_token: String,
+    /// Required for the remote provider; absent is only valid under the test provider,
+    /// which talks to no server. `build_auth_provider` enforces that.
+    pub surge_service_token: Option<String>,
     pub surge_cookie_domain: String,
     /// Origin serving the auth UI. The browser perimeter redirects here to start a
     /// login flow, and it is the sole allowed origin for credential entry.
@@ -21,8 +23,7 @@ impl Config {
         Self {
             database_url: env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
             surge_url: env::var("SURGE_URL").unwrap_or_else(|_| "http://localhost:3000".to_owned()),
-            surge_service_token: env::var("SURGE_SERVICE_TOKEN")
-                .expect("SURGE_SERVICE_TOKEN must be set"),
+            surge_service_token: env::var("SURGE_SERVICE_TOKEN").ok(),
             surge_cookie_domain: env::var("SURGE_COOKIE_DOMAIN")
                 .unwrap_or_else(|_| ".panit.dev".to_owned()),
             surge_auth_ui_origin: env::var("SURGE_AUTH_UI_ORIGIN")
