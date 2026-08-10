@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils"
 
-type LogoName = "brand" | "dispatch" | "herald" | "naos" | "strophe"
+type LogoName = "brand" | "dispatch" | "faber" | "herald" | "naos" | "strophe"
 type ServiceName = Exclude<LogoName, "brand">
 
 type LogoProps = Omit<React.ComponentProps<"img">, "alt" | "height" | "src" | "width"> & {
@@ -32,6 +32,7 @@ const logoSources: Record<LogoName, LogoSource> = {
     ...createLogoSource("logo", "Panit"),
   },
   dispatch: createLogoSource("dispatch-logo", "Dispatch"),
+  faber: createLogoSource("faber-logo", "Faber"),
   herald: createLogoSource("herald-logo", "Herald"),
   naos: createLogoSource("naos-logo", "Naos"),
   strophe: createLogoSource("strophe-logo", "Strophe"),
@@ -68,6 +69,10 @@ export function DispatchLogo(props: LogoProps) {
 
 export function HeraldLogo(props: LogoProps) {
   return <Logo name="herald" {...props} />
+}
+
+export function FaberLogo(props: LogoProps) {
+  return <Logo name="faber" {...props} />
 }
 
 export function NaosLogo(props: LogoProps) {
