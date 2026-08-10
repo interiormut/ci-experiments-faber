@@ -12,6 +12,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { useOptionalSurgeAuth } from "@/components/ui/surge-auth"
 
 type ProfileMenuProps = {
   displayName?: string
@@ -20,12 +21,35 @@ type ProfileMenuProps = {
   avatarUrl?: string
 }
 
+/** First letters of the first two words, e.g. "Ada Lovelace" → "AL". */
+function initialsOf(name: string) {
+  const letters = name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((word) => word[0])
+    .join("")
+  return letters.toUpperCase() || "?"
+}
+
 export function ProfileMenu({
-  displayName = "Ada Lovelace",
-  email = "ada@faber.dev",
-  initials = "AL",
-  avatarUrl,
+  displayName: displayNameProp,
+  email: emailProp,
+  initials: initialsProp,
+  avatarUrl: avatarUrlProp,
 }: ProfileMenuProps) {
+  // Optional so the menu still renders in isolation (stories, previews) —
+  // props win over the session, and the placeholders only fill in the gap.
+  const auth = useOptionalSurgeAuth()
+  const identity = auth?.session?.identity
+
+  const displayName =
+    displayNameProp ?? identity?.display_name ?? identity?.username ?? "Signed in"
+  const email =
+    emailProp ?? (identity ? `@${identity.username}` : "Not signed in")
+  const initials = initialsProp ?? initialsOf(displayName)
+  const avatarUrl = avatarUrlProp ?? identity?.avatar_url ?? undefined
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -78,7 +102,11 @@ export function ProfileMenu({
 
         <DropdownMenuSeparator />
 
-        <DropdownMenuItem variant="destructive">
+        <DropdownMenuItem
+          variant="destructive"
+          disabled={!auth}
+          onSelect={() => void auth?.logout()}
+        >
           <LogOut className="h-4 w-4" />
           Sign out
         </DropdownMenuItem>

@@ -2,6 +2,9 @@ import type { Metadata } from "next";
 import { Geist_Mono } from "next/font/google";
 import "./globals.css";
 
+import { AmbientBackground } from "@/components/ui/ambient-background";
+import { AppAuth } from "@/components/shell/app-auth";
+
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
@@ -40,7 +43,10 @@ export default function RootLayout({
           href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css"
         />
       </head>
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        <AmbientBackground />
+        <AppAuth>{children}</AppAuth>
+      </body>
     </html>
   );
 }

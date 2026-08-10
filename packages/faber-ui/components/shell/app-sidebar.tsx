@@ -10,7 +10,7 @@ import {
 import { FaberLogo } from "@/components/ui/logos"
 import { Button } from "@/components/ui/button"
 import { SidebarNav } from "@/components/ui/sidebar-nav"
-import { ProfileMenu } from "@/components/ui/profile-menu"
+import { ProfileMenu } from "@/components/shell/profile-menu"
 
 export function AppSidebar() {
   return (
