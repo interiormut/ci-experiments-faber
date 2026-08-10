@@ -7,7 +7,7 @@ import {
   Plus,
 } from "lucide-react"
 
-import { BrandLogo } from "@/components/ui/logos"
+import { FaberLogo } from "@/components/ui/logos"
 import { Button } from "@/components/ui/button"
 import { SidebarNav } from "@/components/ui/sidebar-nav"
 import { ProfileMenu } from "@/components/ui/profile-menu"
@@ -15,8 +15,8 @@ import { ProfileMenu } from "@/components/ui/profile-menu"
 export function AppSidebar() {
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-sidebar/60 text-sidebar-foreground">
-      <div className="flex items-center gap-2 px-5 pt-5 pb-4">
-        <BrandLogo size={32} aria-hidden />
+      <div className="flex items-center gap-3 px-5 pt-5 pb-4">
+        <FaberLogo size={28} aria-hidden />
         <span className="text-[15px] font-semibold tracking-tight">Faber</span>
       </div>
 
