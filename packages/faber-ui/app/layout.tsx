@@ -10,6 +10,13 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "faber",
   description: "faber UI",
+  icons: {
+    icon: {
+      url: "https://ui.registry.panit.dev/assets/faber-logo-28.png",
+      type: "image/png",
+      sizes: "28x28",
+    },
+  },
 };
 
 export default function RootLayout({
