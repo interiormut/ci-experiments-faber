@@ -102,6 +102,7 @@ function Button({
 
   const content = (
     <>
+      {/* Invisible in-flow spacer so the button holds its natural width */}
       <span ref={spacerRef} aria-hidden className="invisible shrink-0 pointer-events-none inline-flex items-center gap-2">
         {loading ? (
           <>
