@@ -5,6 +5,7 @@
     "": {
       "name": "faber-ui",
       "dependencies": {
+        "@panit/surge-client": "npm:@jsr/panit__surge-client@^0.2.0",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
         "cmdk": "^1.1.1",
@@ -233,6 +234,8 @@
     "@nodelib/fs.walk": ["@nodelib/fs.walk@1.2.8", "", { "dependencies": { "@nodelib/fs.scandir": "2.1.5", "fastq": "^1.6.0" } }, "sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg=="],
 
     "@nolyfill/is-core-module": ["@nolyfill/is-core-module@1.0.39", "", {}, "sha512-nn5ozdjYQpUCZlWGuxcJY/KpxkWQs4DcbMCmKojjyrYDEAGy4Ce19NN4v5MduafTwJlbKc99UA8YhSVqq9yPZA=="],
+
+    "@panit/surge-client": ["@jsr/panit__surge-client@0.2.0", "https://npm.jsr.io/~/11/@jsr/panit__surge-client/0.2.0.tgz", {}, "sha512-3TAUjRSnyQpj6wWU4e3zimt0Do1FDJtucaDBVh9oQ1FCGtvyQ6SLFTGZOHnVhEEzU1CIbsCveAl+YCTt6QdFOA=="],
 
     "@radix-ui/number": ["@radix-ui/number@1.1.2", "", {}, "sha512-ceTwaxc4I5IOi97DgCotl3pqiyRGvffcc0oOsE2dQYaJOFIDsDt4VWG6xEbg1QePv9QWausCEIppud/tJ1wNig=="],
 
