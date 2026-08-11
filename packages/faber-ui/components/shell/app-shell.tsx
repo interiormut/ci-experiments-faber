@@ -41,6 +41,14 @@ export function useAppShell(): AppShellContextValue {
 
 const SESSION_PATH_PREFIX = "/session/"
 
+/** Static routes the sidebar highlights. Sessions key off their id instead. */
+const NAV_KEY_BY_PATH: Record<string, string> = {
+  "/models": "models",
+  "/credentials": "credentials",
+  "/hosts": "hosts",
+  "/environments": "environments",
+}
+
 /**
  * The app frame: sidebar plus the session/model state it and every page under
  * it need. Lives in the root layout so it persists across navigations between
@@ -51,11 +59,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const activeNavKey: string | null = pathname?.startsWith(SESSION_PATH_PREFIX)
     ? sessionNavKey(pathname.slice(SESSION_PATH_PREFIX.length))
-    : pathname === "/models"
-      ? "models"
-      : pathname === "/credentials"
-        ? "credentials"
-        : null
+    : (NAV_KEY_BY_PATH[pathname ?? ""] ?? null)
 
   const [sessions, setSessions] = React.useState<Session[]>([])
   const [sessionsLoading, setSessionsLoading] = React.useState(true)
@@ -185,6 +189,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           onSelectSession={(id) => router.push(`/session/${id}`)}
           onSelectModels={() => router.push("/models")}
           onSelectCredentials={() => router.push("/credentials")}
+          onSelectHosts={() => router.push("/hosts")}
+          onSelectEnvironments={() => router.push("/environments")}
           onCreateSession={() => {
             void createSession().then((created) => {
               if (created) router.push(`/session/${created.id}`)

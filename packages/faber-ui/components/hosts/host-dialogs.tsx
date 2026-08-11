@@ -1,0 +1,485 @@
+"use client"
+
+import * as React from "react"
+
+import {
+  FaberError,
+  type CreateContainerRequest,
+  type CreateHostRequest,
+  type CreateImageRequest,
+  type ExecMode,
+  type Host,
+  type HostContainer,
+  type Image,
+  type Transport,
+  type UpdateContainerRequest,
+  type UpdateHostRequest,
+  type UpdateImageRequest,
+  type Uuid,
+} from "@/lib/api"
+import { Button } from "@/components/ui/button"
+import { AnimatedField } from "@/components/ui/animated-field"
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/responsive-dialog"
+
+/** Matches the `<select>` styling the models page established. */
+const SELECT_CLASS =
+  "w-full rounded-lg border border-border bg-card px-3 py-2.5 text-[15px] text-foreground outline-none transition-colors hover:border-foreground/20 focus:border-primary focus:ring-4 focus:ring-primary/10"
+
+function Field({
+  id,
+  label,
+  children,
+  hint,
+}: {
+  id: string
+  label: string
+  children: React.ReactNode
+  hint?: string
+}) {
+  return (
+    <div className="w-full">
+      <label htmlFor={id} className="mb-1.5 block text-sm font-medium text-foreground/80">
+        {label}
+      </label>
+      {children}
+      {hint ? <p className="mt-1.5 text-xs text-muted-foreground">{hint}</p> : null}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Host
+// ---------------------------------------------------------------------------
+
+type HostFormState = {
+  name: string
+  transport: Transport
+  exec_mode: ExecMode
+  ssh_address: string
+  ssh_key_ref: string
+  docker_endpoint: string
+}
+
+const EMPTY_HOST_FORM: HostFormState = {
+  name: "",
+  transport: "local",
+  exec_mode: "direct",
+  ssh_address: "",
+  ssh_key_ref: "",
+  docker_endpoint: "",
+}
+
+function formFromHost(host: Host): HostFormState {
+  return {
+    name: host.name,
+    transport: host.transport,
+    exec_mode: host.exec_mode,
+    ssh_address: host.ssh_address ?? "",
+    ssh_key_ref: host.ssh_key_ref ?? "",
+    docker_endpoint: host.docker_endpoint ?? "",
+  }
+}
+
+/**
+ * `ssh_address` is sent only on an SSH host: the server rejects it on a local
+ * one, and clearing it here is what lets a host switch transports in one save.
+ */
+function requestFromHostForm(form: HostFormState): CreateHostRequest {
+  const ssh = form.transport === "ssh"
+  return {
+    name: form.name.trim(),
+    transport: form.transport,
+    exec_mode: form.exec_mode,
+    ssh_address: ssh ? form.ssh_address.trim() : null,
+    ssh_key_ref: ssh && form.ssh_key_ref.trim() ? form.ssh_key_ref.trim() : null,
+    docker_endpoint:
+      form.exec_mode === "docker" && form.docker_endpoint.trim()
+        ? form.docker_endpoint.trim()
+        : null,
+  }
+}
+
+export function HostFormDialog({
+  open,
+  onOpenChange,
+  editing,
+  onCreate,
+  onUpdate,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  editing: Host | null
+  onCreate: (body: CreateHostRequest) => Promise<Host>
+  onUpdate: (id: Uuid, patch: UpdateHostRequest) => Promise<Host>
+}) {
+  // The parent remounts this via `key` on each open, so the lazy initializer
+  // alone seeds a fresh draft.
+  const [form, setForm] = React.useState<HostFormState>(() =>
+    editing ? formFromHost(editing) : EMPTY_HOST_FORM,
+  )
+  const [submitting, setSubmitting] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    setSubmitting(true)
+    setError(null)
+    try {
+      const body = requestFromHostForm(form)
+      if (editing) await onUpdate(editing.id, body)
+      else await onCreate(body)
+      onOpenChange(false)
+    } catch (err) {
+      setError(err instanceof FaberError ? err.message : "failed to save the host")
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <DialogHeader>
+            <DialogTitle>{editing ? `Edit ${editing.name}` : "Add host"}</DialogTitle>
+          </DialogHeader>
+
+          <AnimatedField
+            id="host-name"
+            label="Name"
+            value={form.name}
+            onChange={(v) => setForm((f) => ({ ...f, name: v }))}
+            placeholder="workbench"
+            required
+          />
+
+          <Field
+            id="host-transport"
+            label="Transport"
+            hint="How faber reaches the machine."
+          >
+            <select
+              id="host-transport"
+              value={form.transport}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, transport: e.target.value as Transport }))
+              }
+              className={SELECT_CLASS}
+            >
+              <option value="local">local — this machine</option>
+              <option value="ssh">ssh — a remote machine</option>
+            </select>
+          </Field>
+
+          {form.transport === "ssh" ? (
+            <>
+              <AnimatedField
+                id="host-ssh-address"
+                label="SSH address"
+                value={form.ssh_address}
+                onChange={(v) => setForm((f) => ({ ...f, ssh_address: v }))}
+                placeholder="user@host:22"
+                required
+              />
+              <AnimatedField
+                id="host-ssh-key-ref"
+                label="SSH key reference"
+                value={form.ssh_key_ref}
+                onChange={(v) => setForm((f) => ({ ...f, ssh_key_ref: v }))}
+                placeholder="Optional"
+                hint="A handle into the secret store — never the key itself."
+              />
+            </>
+          ) : null}
+
+          <Field
+            id="host-exec-mode"
+            label="Execution mode"
+            hint="What faber execs into once it has reached the machine. This is a choice, not a consequence of the endpoint below."
+          >
+            <select
+              id="host-exec-mode"
+              value={form.exec_mode}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, exec_mode: e.target.value as ExecMode }))
+              }
+              className={SELECT_CLASS}
+            >
+              <option value="direct">direct — the machine&apos;s own filesystem</option>
+              <option value="docker">docker — containers on the machine</option>
+            </select>
+          </Field>
+
+          {form.exec_mode === "docker" ? (
+            <AnimatedField
+              id="host-docker-endpoint"
+              label="Docker endpoint"
+              value={form.docker_endpoint}
+              onChange={(v) => setForm((f) => ({ ...f, docker_endpoint: v }))}
+              placeholder="Optional"
+              hint="unix:// or tcp://. Leave empty to use the host's local socket."
+            />
+          ) : null}
+
+          {form.exec_mode === "direct" ? (
+            <p className="rounded-lg border border-border bg-muted/40 px-3 py-2.5 text-xs text-muted-foreground">
+              Direct mode gives the agent the whole filesystem this account can
+              reach. Anything you take away is taken away by convention — the
+              harness subtracts it, nothing below it does.
+            </p>
+          ) : null}
+
+          {error ? <p className="text-sm text-destructive">{error}</p> : null}
+
+          <DialogFooter>
+            <Button type="submit" loading={submitting} loadingText={editing ? "Saving" : "Adding"}>
+              {editing ? "Save" : "Add host"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Container
+// ---------------------------------------------------------------------------
+
+type ContainerFormState = {
+  container_ref: string
+  name: string
+  root_path: string
+}
+
+const EMPTY_CONTAINER_FORM: ContainerFormState = {
+  container_ref: "",
+  name: "",
+  root_path: "",
+}
+
+export function ContainerFormDialog({
+  open,
+  onOpenChange,
+  host,
+  editing,
+  onCreate,
+  onUpdate,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  host: Host | null
+  editing: HostContainer | null
+  onCreate: (hostId: Uuid, body: CreateContainerRequest) => Promise<HostContainer>
+  onUpdate: (
+    hostId: Uuid,
+    id: Uuid,
+    patch: UpdateContainerRequest,
+  ) => Promise<HostContainer>
+}) {
+  const [form, setForm] = React.useState<ContainerFormState>(() =>
+    editing
+      ? {
+          container_ref: editing.container_ref,
+          name: editing.name ?? "",
+          root_path: editing.root_path,
+        }
+      : EMPTY_CONTAINER_FORM,
+  )
+  const [submitting, setSubmitting] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!host) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      const body = {
+        container_ref: form.container_ref.trim(),
+        name: form.name.trim() ? form.name.trim() : null,
+        root_path: form.root_path.trim(),
+      }
+      if (editing) await onUpdate(host.id, editing.id, body)
+      else await onCreate(host.id, body)
+      onOpenChange(false)
+    } catch (err) {
+      setError(
+        err instanceof FaberError ? err.message : "failed to save the registration",
+      )
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <DialogHeader>
+            <DialogTitle>
+              {editing ? "Edit registration" : `Register a container on ${host?.name ?? ""}`}
+            </DialogTitle>
+          </DialogHeader>
+
+          <p className="text-sm text-muted-foreground">
+            This records a container faber should know about. It does not create
+            or start one — you own the container, faber only reaches it.
+          </p>
+
+          <AnimatedField
+            id="container-ref"
+            label="Container"
+            value={form.container_ref}
+            onChange={(v) => setForm((f) => ({ ...f, container_ref: v }))}
+            placeholder="my-dev-box"
+            required
+            hint="Name or id. It is resolved when faber connects, not now."
+          />
+
+          <AnimatedField
+            id="container-name"
+            label="Label"
+            value={form.name}
+            onChange={(v) => setForm((f) => ({ ...f, name: v }))}
+            placeholder="Optional"
+          />
+
+          <AnimatedField
+            id="container-root-path"
+            label="Root path"
+            value={form.root_path}
+            onChange={(v) => setForm((f) => ({ ...f, root_path: v }))}
+            placeholder="/workspace"
+            required
+            hint="Absolute, and normalized to what the agent should see — bind-mounted and native paths both arrive here."
+          />
+
+          {error ? <p className="text-sm text-destructive">{error}</p> : null}
+
+          <DialogFooter>
+            <Button type="submit" loading={submitting} loadingText="Saving">
+              {editing ? "Save" : "Register"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Image
+// ---------------------------------------------------------------------------
+
+type ImageFormState = {
+  name: string
+  reference: string
+  default_root_path: string
+}
+
+const EMPTY_IMAGE_FORM: ImageFormState = {
+  name: "",
+  reference: "",
+  default_root_path: "",
+}
+
+export function ImageFormDialog({
+  open,
+  onOpenChange,
+  editing,
+  onCreate,
+  onUpdate,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  editing: Image | null
+  onCreate: (body: CreateImageRequest) => Promise<Image>
+  onUpdate: (id: Uuid, patch: UpdateImageRequest) => Promise<Image>
+}) {
+  const [form, setForm] = React.useState<ImageFormState>(() =>
+    editing
+      ? {
+          name: editing.name,
+          reference: editing.reference,
+          default_root_path: editing.default_root_path,
+        }
+      : EMPTY_IMAGE_FORM,
+  )
+  const [submitting, setSubmitting] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    setSubmitting(true)
+    setError(null)
+    try {
+      const body = {
+        name: form.name.trim(),
+        reference: form.reference.trim(),
+        default_root_path: form.default_root_path.trim(),
+      }
+      if (editing) await onUpdate(editing.id, body)
+      else await onCreate(body)
+      onOpenChange(false)
+    } catch (err) {
+      setError(err instanceof FaberError ? err.message : "failed to save the image")
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <DialogHeader>
+            <DialogTitle>{editing ? `Edit ${editing.name}` : "Add image"}</DialogTitle>
+          </DialogHeader>
+
+          <AnimatedField
+            id="image-name"
+            label="Name"
+            value={form.name}
+            onChange={(v) => setForm((f) => ({ ...f, name: v }))}
+            placeholder="dev"
+            required
+          />
+
+          <AnimatedField
+            id="image-reference"
+            label="Registry reference"
+            value={form.reference}
+            onChange={(v) => setForm((f) => ({ ...f, reference: v }))}
+            placeholder="ghcr.io/acme/dev:latest"
+            required
+          />
+
+          <AnimatedField
+            id="image-root-path"
+            label="Default root path"
+            value={form.default_root_path}
+            onChange={(v) => setForm((f) => ({ ...f, default_root_path: v }))}
+            placeholder="/workspace"
+            required
+            hint="Absolute. Seeds the root path of containers registered from this image."
+          />
+
+          {error ? <p className="text-sm text-destructive">{error}</p> : null}
+
+          <DialogFooter>
+            <Button type="submit" loading={submitting} loadingText={editing ? "Saving" : "Adding"}>
+              {editing ? "Save" : "Add image"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}

@@ -4,11 +4,13 @@ import * as React from "react"
 import {
   Cpu,
   KeyRound,
+  Layers,
   MessageSquare,
   MessageSquareText,
   MoreHorizontal,
   Pencil,
   Plus,
+  Server,
   Trash2,
 } from "lucide-react"
 import { motion } from "framer-motion"
@@ -52,11 +54,16 @@ export function sessionNavKey(id: Uuid): string {
 
 export type AppSidebarProps = {
   sessions: Session[]
-  /** Which row is current — `sessionNavKey(id)`, `"models"`, `"credentials"`, or `null`. */
+  /**
+   * Which row is current — `sessionNavKey(id)`, one of the static nav keys
+   * (`"models"`, `"credentials"`, `"hosts"`, `"environments"`), or `null`.
+   */
   activeNavKey: string | null
   onSelectSession: (id: Uuid) => void
   onSelectModels: () => void
   onSelectCredentials: () => void
+  onSelectHosts: () => void
+  onSelectEnvironments: () => void
   onCreateSession: () => void
   onRenameSession: (id: Uuid, title: string) => Promise<Session>
   onDeleteSession: (id: Uuid) => Promise<void>
@@ -74,6 +81,8 @@ export function AppSidebar({
   onSelectSession,
   onSelectModels,
   onSelectCredentials,
+  onSelectHosts,
+  onSelectEnvironments,
   onCreateSession,
   onRenameSession,
   onDeleteSession,
@@ -121,6 +130,18 @@ export function AppSidebar({
                   icon: KeyRound,
                   active: activeNavKey === "credentials",
                   onClick: onSelectCredentials,
+                },
+                {
+                  label: "Hosts",
+                  icon: Server,
+                  active: activeNavKey === "hosts",
+                  onClick: onSelectHosts,
+                },
+                {
+                  label: "Environments",
+                  icon: Layers,
+                  active: activeNavKey === "environments",
+                  onClick: onSelectEnvironments,
                 },
               ],
             },

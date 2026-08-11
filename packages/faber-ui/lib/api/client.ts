@@ -1,14 +1,24 @@
 import { FaberError, errorFromResponse } from "./errors"
 import type {
+  CreateContainerRequest,
   CreateCredentialRequest,
+  CreateHostRequest,
+  CreateImageRequest,
   CreateModelRequest,
   CreateSessionRequest,
   CreateThreadRequest,
   CreatedSession,
   Credential,
+  Host,
+  HostContainer,
+  HostProbe,
+  Image,
+  ListContainersQuery,
+  ListProbesQuery,
   ListSessionsQuery,
   Me,
   ModelConfig,
+  RecordProbeRequest,
   Run,
   SendMessageRequest,
   SendMessageResponse,
@@ -19,6 +29,9 @@ import type {
   Thread,
   TranscriptEvent,
   TranscriptQuery,
+  UpdateContainerRequest,
+  UpdateHostRequest,
+  UpdateImageRequest,
   UpdateModelRequest,
   UpdateSessionRequest,
   Uuid,
@@ -123,6 +136,132 @@ export class FaberClient {
 
   async deleteModel(id: Uuid): Promise<void> {
     await this.request("DELETE", `/api/models/${encodeURIComponent(id)}`)
+  }
+
+  // -------------------------------------------------------------------------
+  // Execution environments
+  // -------------------------------------------------------------------------
+
+  /**
+   * Every host the caller registered, each with its active container
+   * registrations and its most recent probe.
+   *
+   * Note what is *not* here: nothing reports whether a host is reachable right
+   * now. `last_probe` describes a past attempt, and there is no probe-now
+   * route — the authoritative answer is the connection attempt itself.
+   */
+  async listHosts(): Promise<Host[]> {
+    return this.request("GET", "/api/hosts")
+  }
+
+  async createHost(body: CreateHostRequest): Promise<Host> {
+    return this.request("POST", "/api/hosts", { body })
+  }
+
+  async getHost(id: Uuid): Promise<Host> {
+    return this.request("GET", `/api/hosts/${encodeURIComponent(id)}`)
+  }
+
+  async updateHost(id: Uuid, patch: UpdateHostRequest): Promise<Host> {
+    return this.request("PATCH", `/api/hosts/${encodeURIComponent(id)}`, {
+      body: patch,
+    })
+  }
+
+  /**
+   * Drops the registration and, by cascade, its containers and probe history.
+   * Nothing on the machine itself is touched.
+   * `updateHost(id, { disabled: true })` is the reversible alternative.
+   */
+  async deleteHost(id: Uuid): Promise<void> {
+    await this.request("DELETE", `/api/hosts/${encodeURIComponent(id)}`)
+  }
+
+  /** Unregistered rows are omitted unless `include_unregistered` is set. */
+  async listContainers(
+    hostId: Uuid,
+    query: ListContainersQuery = {},
+  ): Promise<HostContainer[]> {
+    return this.request(
+      "GET",
+      `/api/hosts/${encodeURIComponent(hostId)}/containers`,
+      { query },
+    )
+  }
+
+  /**
+   * Registers a container faber should know about — it does not create one.
+   * The user owns container lifecycle; this row only asserts that faber knows
+   * the ref. Requires the host's `exec_mode` to be `docker`.
+   */
+  async createContainer(
+    hostId: Uuid,
+    body: CreateContainerRequest,
+  ): Promise<HostContainer> {
+    return this.request(
+      "POST",
+      `/api/hosts/${encodeURIComponent(hostId)}/containers`,
+      { body },
+    )
+  }
+
+  async updateContainer(
+    id: Uuid,
+    patch: UpdateContainerRequest,
+  ): Promise<HostContainer> {
+    return this.request("PATCH", `/api/host-containers/${encodeURIComponent(id)}`, {
+      body: patch,
+    })
+  }
+
+  /**
+   * Ends the registration. The container itself keeps running — faber never
+   * owned it. `updateContainer(id, { unregistered: false })` brings the row
+   * back.
+   */
+  async unregisterContainer(id: Uuid): Promise<void> {
+    await this.request("DELETE", `/api/host-containers/${encodeURIComponent(id)}`)
+  }
+
+  /** The host's observation log, newest first. */
+  async listProbes(hostId: Uuid, query: ListProbesQuery = {}): Promise<HostProbe[]> {
+    return this.request("GET", `/api/hosts/${encodeURIComponent(hostId)}/probes`, {
+      query,
+    })
+  }
+
+  /**
+   * Appends one observation. Write-only history: there is no route to amend or
+   * delete a probe, which is what makes "last attempt: connection refused" a
+   * fact rather than a cached status.
+   */
+  async recordProbe(hostId: Uuid, body: RecordProbeRequest): Promise<HostProbe> {
+    return this.request("POST", `/api/hosts/${encodeURIComponent(hostId)}/probes`, {
+      body,
+    })
+  }
+
+  /**
+   * Spawn templates. Registration only — faber has no spawn route, because
+   * issuing the create needs a reach-the-machine layer that does not exist
+   * yet.
+   */
+  async listImages(): Promise<Image[]> {
+    return this.request("GET", "/api/images")
+  }
+
+  async createImage(body: CreateImageRequest): Promise<Image> {
+    return this.request("POST", "/api/images", { body })
+  }
+
+  async updateImage(id: Uuid, patch: UpdateImageRequest): Promise<Image> {
+    return this.request("PATCH", `/api/images/${encodeURIComponent(id)}`, {
+      body: patch,
+    })
+  }
+
+  async deleteImage(id: Uuid): Promise<void> {
+    await this.request("DELETE", `/api/images/${encodeURIComponent(id)}`)
   }
 
   // -------------------------------------------------------------------------

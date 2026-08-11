@@ -101,6 +101,170 @@ export interface UpdateModelRequest {
 }
 
 // ---------------------------------------------------------------------------
+// Execution environments
+// ---------------------------------------------------------------------------
+
+/** How faber reaches the machine. */
+export type Transport = "local" | "ssh"
+
+/**
+ * What faber execs into once it has reached the machine. Deliberately not
+ * derived from `docker_endpoint` — an SSH host that *could* run docker but is
+ * deliberately used direct is a real configuration.
+ */
+export type ExecMode = "direct" | "docker"
+
+/**
+ * One past observation of a host. Advisory only, and never a status: it says
+ * what happened at `probed_at`, not what is true now. Render it as
+ * "last reachable 3h ago" / "last attempt: connection refused" — the
+ * authoritative answer to "is it up" is the next connection attempt.
+ */
+export interface HostProbe {
+  id: Uuid
+  host_id: Uuid
+  /** Set when the observation was scoped to one registered container. */
+  container_id: Uuid | null
+  probed_at: Timestamp
+  ok: boolean
+  /** Populated when `ok` is false. */
+  error: string | null
+  os: string | null
+  arch: string | null
+  shell: string | null
+  /** Capability manifest, e.g. `{ "git": "2.43.0" }`. */
+  tools: JsonValue | null
+  root_path: string | null
+}
+
+/**
+ * A registration pointing at a container on a docker-mode host. The row asserts
+ * *faber knows about this container*, not *this container exists*.
+ */
+export interface HostContainer {
+  id: Uuid
+  host_id: Uuid
+  /** Name or id, resolved lazily — it may no longer resolve to anything. */
+  container_ref: string
+  name: string | null
+  /** Normalized agent-visible root; always absolute. */
+  root_path: string
+  created_at: Timestamp
+  /** State of the *registration*, not of the container. */
+  unregistered_at: Timestamp | null
+}
+
+/** A reachable machine. Everything else in this section hangs off one. */
+export interface Host {
+  id: Uuid
+  name: string
+  transport: Transport
+  exec_mode: ExecMode
+  /** `user@host:port`. Set if and only if `transport` is `ssh`. */
+  ssh_address: string | null
+  /** Secret-store handle, never key material. */
+  ssh_key_ref: string | null
+  /** `unix://` or `tcp://`; `null` means the host's local socket. */
+  docker_endpoint: string | null
+  created_at: Timestamp
+  /** Operator intent, not observed state — an unreachable host is still enabled. */
+  disabled_at: Timestamp | null
+  /** Registrations that have not been unregistered, oldest first. */
+  containers: HostContainer[]
+  /** The most recent observation, or `null` if never probed. */
+  last_probe: HostProbe | null
+}
+
+export interface CreateHostRequest {
+  name: string
+  transport: Transport
+  exec_mode: ExecMode
+  /** Required when `transport` is `ssh`, rejected when it is `local`. */
+  ssh_address?: string | null
+  ssh_key_ref?: string | null
+  docker_endpoint?: string | null
+}
+
+/** Every field is optional; `null` clears a nullable column. */
+export interface UpdateHostRequest {
+  name?: string
+  transport?: Transport
+  exec_mode?: ExecMode
+  ssh_address?: string | null
+  ssh_key_ref?: string | null
+  docker_endpoint?: string | null
+  /** `true` stamps `disabled_at`, `false` clears it. */
+  disabled?: boolean
+}
+
+export interface CreateContainerRequest {
+  container_ref: string
+  name?: string | null
+  /** Must be absolute — a relative root does not transfer between hosts. */
+  root_path: string
+}
+
+export interface UpdateContainerRequest {
+  container_ref?: string
+  name?: string | null
+  root_path?: string
+  /** `false` re-registers a row that was unregistered earlier. */
+  unregistered?: boolean
+}
+
+/** Appended to the host's observation log. There is no route to amend one. */
+export interface RecordProbeRequest {
+  container_id?: Uuid | null
+  ok: boolean
+  /** Required when `ok` is false. */
+  error?: string | null
+  os?: string | null
+  arch?: string | null
+  shell?: string | null
+  tools?: JsonValue | null
+  root_path?: string | null
+}
+
+export type ListContainersQuery = {
+  /** Unregistered rows are history, and hidden unless asked for. */
+  include_unregistered?: boolean
+}
+
+export type ListProbesQuery = {
+  limit?: number
+}
+
+/**
+ * A spawn template. Not a host, not a container, and not owned by either —
+ * nothing points at it, because a spawned container's origin is provenance
+ * nobody branches on.
+ */
+export interface Image {
+  id: Uuid
+  name: string
+  /** Registry ref, e.g. `ghcr.io/acme/dev:latest`. */
+  reference: string
+  default_mounts: JsonValue | null
+  default_root_path: string
+  created_at: Timestamp
+}
+
+export interface CreateImageRequest {
+  name: string
+  reference: string
+  default_mounts?: JsonValue | null
+  /** Must be absolute, same as a container's `root_path`. */
+  default_root_path: string
+}
+
+export interface UpdateImageRequest {
+  name?: string
+  reference?: string
+  default_mounts?: JsonValue | null
+  default_root_path?: string
+}
+
+// ---------------------------------------------------------------------------
 // Workspaces
 // ---------------------------------------------------------------------------
 
