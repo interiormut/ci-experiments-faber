@@ -29,18 +29,12 @@ export type JsonValue =
 // Identity
 // ---------------------------------------------------------------------------
 
+/**
+ * Local user identity only. username/display_name/avatar_url are not stored here —
+ * fetch those from Surge's own whoami rather than this API.
+ */
 export interface Me {
   id: Uuid
-  username: string
-  /** Falls back to `username` when the stored display name is blank. */
-  display_name: string
-  avatar_url: string | null
-}
-
-export interface UpdateMeRequest {
-  display_name?: string
-  /** `null` clears the avatar; omit the key to leave it unchanged. */
-  avatar_url?: string | null
 }
 
 // ---------------------------------------------------------------------------

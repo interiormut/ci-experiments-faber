@@ -18,7 +18,6 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct SurgeIdentity {
     pub identity_id: Uuid,
-    pub username: String,
 }
 
 /// Reads the raw session token out of the `surge_session` cookie, falling back to a
@@ -63,7 +62,6 @@ impl FromRequestParts<AppState> for SurgeIdentity {
 
         Ok(SurgeIdentity {
             identity_id: session.identity.id.into(),
-            username: session.identity.username.as_str().to_owned(),
         })
     }
 }
@@ -91,9 +89,6 @@ impl SurgeIdentity {
         let new_user = NewUser {
             id: Uuid::now_v7(),
             identity_id: self.identity_id,
-            username: &self.username,
-            display_name: &self.username,
-            avatar_url: None,
         };
 
         // ON CONFLICT DO NOTHING handles concurrent first-logins racing to insert the same user.

@@ -19,7 +19,6 @@ import type {
   Thread,
   TranscriptEvent,
   TranscriptQuery,
-  UpdateMeRequest,
   UpdateModelRequest,
   UpdateSessionRequest,
   Uuid,
@@ -70,13 +69,13 @@ export class FaberClient {
     return this.request("GET", "/health")
   }
 
-  /** The caller's faber user row, provisioned on first call. */
+  /**
+   * The caller's local faber user row, provisioned on first call. Only carries
+   * the local user id — fetch username/display_name/avatar_url from Surge's
+   * own whoami instead.
+   */
   async me(): Promise<Me> {
     return this.request("GET", "/api/me")
-  }
-
-  async updateMe(patch: UpdateMeRequest): Promise<Me> {
-    return this.request("PATCH", "/api/me", { body: patch })
   }
 
   /**
