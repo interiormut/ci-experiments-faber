@@ -1,7 +1,7 @@
 //! The OpenAI Chat Completions API.
 //!
 //! Rust has no first-party OpenAI SDK in this workspace, so this speaks the
-//! REST API over `reqwest` directly: `POST /v1/chat/completions` with
+//! REST API over `reqwest` directly: `POST /chat/completions` with
 //! `stream: true`, framed as SSE.
 //!
 //! The client holds a base URL, an HTTP client, and a credential. It reads no
@@ -30,7 +30,7 @@ pub const DEFAULT_MODEL: &str = "gpt-5";
 /// Everything the client is allowed to do.
 pub struct Config {
     pub api_key: SecretString,
-    /// Defaults to `https://api.openai.com`.
+    /// Defaults to `https://api.openai.com/v1`.
     pub base_url: Option<Url>,
     /// An existing HTTP client to share connection pooling with.
     ///
@@ -71,9 +71,9 @@ impl OpenAI {
     pub fn new(config: Config) -> Result<Self> {
         let base = match config.base_url {
             Some(url) => url,
-            None => Url::parse("https://api.openai.com").expect("valid literal URL"),
+            None => Url::parse("https://api.openai.com/v1").expect("valid literal URL"),
         };
-        let endpoint = endpoint(base, ["v1", "chat", "completions"])?;
+        let endpoint = endpoint(base, ["chat", "completions"])?;
 
         let http = match config.http {
             Some(http) => http,
@@ -210,8 +210,8 @@ mod tests {
         // The case `base_url` exists for: dropping the prefix would route the
         // request past the gateway entirely.
         for base in [
-            "https://gw.example.com/openai",
-            "https://gw.example.com/openai/",
+            "https://gw.example.com/openai/v1",
+            "https://gw.example.com/openai/v1/",
         ] {
             assert_eq!(
                 endpoint_for(base),

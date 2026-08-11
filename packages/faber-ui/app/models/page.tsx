@@ -344,8 +344,9 @@ function ModelFormDialog({
             label="Base URL"
             value={form.base_url}
             onChange={(v) => setForm((f) => ({ ...f, base_url: v }))}
-            placeholder="https://api.anthropic.com"
+            placeholder={form.wire === "openai" ? "https://api.openai.com/v1" : "https://api.anthropic.com"}
             required
+            hint={form.wire === "openai" ? "Include the provider's API prefix, such as /v1." : undefined}
           />
 
           <AnimatedField
