@@ -1,6 +1,6 @@
 "use client"
 
-import { MessageSquare, MessageSquareText, Plus } from "lucide-react"
+import { Cpu, KeyRound, MessageSquare, MessageSquareText, Plus } from "lucide-react"
 
 import type { Session, Uuid } from "@/lib/api"
 import { FaberLogo } from "@/components/ui/logos"
@@ -8,10 +8,18 @@ import { Button } from "@/components/ui/button"
 import { SidebarNav } from "@/components/ui/sidebar-nav"
 import { ProfileMenu } from "@/components/shell/profile-menu"
 
+/** The sidebar's one active-item key, shared across every kind of nav row it renders. */
+export function sessionNavKey(id: Uuid): string {
+  return `session:${id}`
+}
+
 export type AppSidebarProps = {
   sessions: Session[]
-  activeSessionId: Uuid | null
+  /** Which row is current — `sessionNavKey(id)`, `"models"`, `"credentials"`, or `null`. */
+  activeNavKey: string | null
   onSelectSession: (id: Uuid) => void
+  onSelectModels: () => void
+  onSelectCredentials: () => void
   onCreateSession: () => void
   loading?: boolean
   creating?: boolean
@@ -23,8 +31,10 @@ function sessionLabel(session: Session): string {
 
 export function AppSidebar({
   sessions,
-  activeSessionId,
+  activeNavKey,
   onSelectSession,
+  onSelectModels,
+  onSelectCredentials,
   onCreateSession,
   loading = false,
   creating = false,
@@ -49,6 +59,31 @@ export function AppSidebar({
         </Button>
       </div>
 
+      <div className="px-2 pb-2">
+        <SidebarNav
+          ariaLabel="Primary navigation"
+          className="rounded-none border-none bg-transparent p-0"
+          sections={[
+            {
+              items: [
+                {
+                  label: "Models",
+                  icon: Cpu,
+                  active: activeNavKey === "models",
+                  onClick: onSelectModels,
+                },
+                {
+                  label: "Credentials",
+                  icon: KeyRound,
+                  active: activeNavKey === "credentials",
+                  onClick: onSelectCredentials,
+                },
+              ],
+            },
+          ]}
+        />
+      </div>
+
       {!loading && sessions.length === 0 ? (
         <div className="min-h-0 flex-1 overflow-y-auto px-5 pt-2">
           <p className="text-[13px] text-muted-foreground">No threads yet.</p>
@@ -62,12 +97,15 @@ export function AppSidebar({
               label: "Threads",
               items: loading
                 ? []
-                : sessions.map((session) => ({
-                    label: sessionLabel(session),
-                    icon: session.id === activeSessionId ? MessageSquareText : MessageSquare,
-                    active: session.id === activeSessionId,
-                    onClick: () => onSelectSession(session.id),
-                  })),
+                : sessions.map((session) => {
+                    const key = sessionNavKey(session.id)
+                    return {
+                      label: sessionLabel(session),
+                      icon: key === activeNavKey ? MessageSquareText : MessageSquare,
+                      active: key === activeNavKey,
+                      onClick: () => onSelectSession(session.id),
+                    }
+                  }),
             },
           ]}
         />

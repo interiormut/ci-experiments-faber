@@ -3,8 +3,17 @@
 import * as React from "react"
 import { usePathname, useRouter } from "next/navigation"
 
-import { faber, FaberError, type CreatedSession, type ModelConfig, type Session, type Uuid } from "@/lib/api"
-import { AppSidebar } from "@/components/shell/app-sidebar"
+import {
+  faber,
+  FaberError,
+  type CreateModelRequest,
+  type CreatedSession,
+  type ModelConfig,
+  type Session,
+  type UpdateModelRequest,
+  type Uuid,
+} from "@/lib/api"
+import { AppSidebar, sessionNavKey } from "@/components/shell/app-sidebar"
 
 type AppShellContextValue = {
   sessions: Session[]
@@ -14,6 +23,9 @@ type AppShellContextValue = {
   creatingSession: boolean
   createError: string | null
   createSession: () => Promise<CreatedSession | null>
+  addModel: (body: CreateModelRequest) => Promise<ModelConfig>
+  editModel: (id: Uuid, patch: UpdateModelRequest) => Promise<ModelConfig>
+  removeModel: (id: Uuid) => Promise<void>
 }
 
 const AppShellContext = React.createContext<AppShellContextValue | null>(null)
@@ -35,9 +47,13 @@ const SESSION_PATH_PREFIX = "/session/"
 export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter()
   const pathname = usePathname()
-  const activeSessionId: Uuid | null = pathname?.startsWith(SESSION_PATH_PREFIX)
-    ? pathname.slice(SESSION_PATH_PREFIX.length)
-    : null
+  const activeNavKey: string | null = pathname?.startsWith(SESSION_PATH_PREFIX)
+    ? sessionNavKey(pathname.slice(SESSION_PATH_PREFIX.length))
+    : pathname === "/models"
+      ? "models"
+      : pathname === "/credentials"
+        ? "credentials"
+        : null
 
   const [sessions, setSessions] = React.useState<Session[]>([])
   const [sessionsLoading, setSessionsLoading] = React.useState(true)
@@ -92,6 +108,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
+  const addModel = React.useCallback(async (body: CreateModelRequest): Promise<ModelConfig> => {
+    const created = await faber.createModel(body)
+    setModels((prev) => [...prev, created])
+    return created
+  }, [])
+
+  const editModel = React.useCallback(
+    async (id: Uuid, patch: UpdateModelRequest): Promise<ModelConfig> => {
+      const updated = await faber.updateModel(id, patch)
+      setModels((prev) => prev.map((model) => (model.id === id ? updated : model)))
+      return updated
+    },
+    [],
+  )
+
+  const removeModel = React.useCallback(async (id: Uuid): Promise<void> => {
+    await faber.deleteModel(id)
+    setModels((prev) => prev.filter((model) => model.id !== id))
+  }, [])
+
   const value = React.useMemo<AppShellContextValue>(
     () => ({
       sessions,
@@ -101,8 +137,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       creatingSession,
       createError,
       createSession,
+      addModel,
+      editModel,
+      removeModel,
     }),
-    [sessions, sessionsLoading, models, modelsLoaded, creatingSession, createError, createSession],
+    [
+      sessions,
+      sessionsLoading,
+      models,
+      modelsLoaded,
+      creatingSession,
+      createError,
+      createSession,
+      addModel,
+      editModel,
+      removeModel,
+    ],
   )
 
   return (
@@ -110,8 +160,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="relative flex min-h-0 flex-1">
         <AppSidebar
           sessions={sessions}
-          activeSessionId={activeSessionId}
+          activeNavKey={activeNavKey}
           onSelectSession={(id) => router.push(`/session/${id}`)}
+          onSelectModels={() => router.push("/models")}
+          onSelectCredentials={() => router.push("/credentials")}
           onCreateSession={() => {
             void createSession().then((created) => {
               if (created) router.push(`/session/${created.id}`)
