@@ -104,8 +104,8 @@ function SessionThread({ sessionId }: { sessionId: Uuid }) {
           {loading && !threadError ? (
             <p className="text-sm text-muted-foreground">Loading…</p>
           ) : null}
-          {turns.map((turn) => (
-            <TurnView key={turn.runId} turn={turn} />
+          {turns.map((turn, index) => (
+            <TurnView key={turn.runId} turn={turn} isLast={index === turns.length - 1} />
           ))}
           {error ? <p className="text-sm text-destructive">{error}</p> : null}
         </div>

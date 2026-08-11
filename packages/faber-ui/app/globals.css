@@ -46,6 +46,19 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+  --animate-text-shimmer: text-shimmer 2.6s linear infinite;
+}
+
+/* A highlight band sweeping across text painted with `bg-clip-text`. The
+   travel is exactly one background width, so the end state repaints the start
+   state and the loop has no seam. */
+@keyframes text-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
 }
 
 :root {
