@@ -4,6 +4,7 @@ import "./globals.css";
 
 import { AmbientBackground } from "@/components/ui/ambient-background";
 import { AppAuth } from "@/components/shell/app-auth";
+import { AppShell } from "@/components/shell/app-shell";
 
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
@@ -45,7 +46,9 @@ export default function RootLayout({
       </head>
       <body className="h-full flex flex-col overflow-hidden">
         <AmbientBackground />
-        <AppAuth>{children}</AppAuth>
+        <AppAuth>
+          <AppShell>{children}</AppShell>
+        </AppAuth>
       </body>
     </html>
   );
