@@ -1,4 +1,4 @@
-import { errorFromResponse } from "./errors"
+import { FaberError, errorFromResponse } from "./errors"
 import type {
   CreateCredentialRequest,
   CreateModelRequest,
@@ -10,8 +10,12 @@ import type {
   Me,
   ModelConfig,
   Run,
+  SendMessageRequest,
+  SendMessageResponse,
   Session,
   SpineEntry,
+  StreamEvent,
+  StreamQuery,
   Thread,
   TranscriptEvent,
   TranscriptQuery,
@@ -194,13 +198,114 @@ export class FaberClient {
     )
   }
 
+  // -------------------------------------------------------------------------
+  // Messages and streaming
+  // -------------------------------------------------------------------------
+
+  /**
+   * Starts a harness run and returns as soon as it is registered — the answer
+   * arrives over {@link streamSession}, not here.
+   *
+   * The run is detached server-side: it survives this response and every
+   * subscriber disconnecting, so a dropped stream loses the live view, not the
+   * work.
+   */
+  async sendMessage(
+    sessionId: Uuid,
+    body: SendMessageRequest,
+  ): Promise<SendMessageResponse> {
+    return this.request(
+      "POST",
+      `/api/sessions/${encodeURIComponent(sessionId)}/messages`,
+      { body },
+    )
+  }
+
+  /**
+   * Everything happening in the session, as it happens.
+   *
+   * ```ts
+   * const controller = new AbortController()
+   * for await (const event of faber.streamSession(id, {}, controller.signal)) {
+   *   if (event.kind === "run_end") break
+   * }
+   * ```
+   *
+   * Pass `{ run_id, after_seq }` to resume: the server replays that run's
+   * events past the cursor before switching to live, so reconnecting leaves no
+   * gap. Both fields or neither.
+   *
+   * Uses `fetch` rather than `EventSource` — `EventSource` cannot set headers
+   * and its cross-origin credential story is worse than the `credentials:
+   * "include"` this client already depends on everywhere else.
+   *
+   * A `lagged` frame means the subscription fell too far behind and events
+   * were dropped; refetch through {@link listTranscript} and resume. It is
+   * surfaced as a thrown {@link FaberError} rather than swallowed, because
+   * silently continuing would leave a hole in the conversation.
+   */
+  async *streamSession(
+    sessionId: Uuid,
+    query: StreamQuery = {},
+    signal?: AbortSignal,
+  ): AsyncGenerator<StreamEvent> {
+    const url = `${this.baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/stream${queryString(query)}`
+
+    const response = await this.fetch(url, {
+      method: "GET",
+      credentials: "include",
+      signal,
+      headers: { Accept: "text/event-stream" },
+    })
+
+    if (!response.ok) throw await errorFromResponse(response)
+    if (!response.body) throw new FaberError(0, "the stream response had no body")
+
+    const reader = response.body
+      .pipeThrough(new TextDecoderStream())
+      .getReader()
+
+    let buffer = ""
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += value
+
+        for (;;) {
+          // SSE frames are separated by a blank line; `\r\n` is legal too.
+          const boundary = /\r?\n\r?\n/.exec(buffer)
+          if (!boundary) break
+          const frame = buffer.slice(0, boundary.index)
+          buffer = buffer.slice(boundary.index + boundary[0].length)
+
+          const parsed = parseFrame(frame)
+          if (!parsed) continue
+          if (parsed.event === "lagged") {
+            throw new FaberError(
+              0,
+              `the stream fell behind by ${parsed.data} events; refetch the transcript and resume`,
+            )
+          }
+          if (parsed.event === "transcript") {
+            yield JSON.parse(parsed.data) as StreamEvent
+          }
+        }
+      }
+    } finally {
+      // Releasing the lock lets an abort actually tear the connection down
+      // rather than leaving it half-open until GC.
+      reader.releaseLock()
+    }
+  }
+
   async getThread(id: Uuid): Promise<Thread> {
     return this.request("GET", `/api/threads/${encodeURIComponent(id)}`)
   }
 
   /**
-   * The thread's canonical history chain, in `seq` order. Empty until
-   * something writes it — nothing in the API records exchanges yet.
+   * The thread's canonical history chain, in `seq` order — one position per
+   * committed run, which is what the next turn's history is rebuilt from.
    */
   async listSpine(threadId: Uuid): Promise<SpineEntry[]> {
     return this.request(
@@ -221,8 +326,9 @@ export class FaberClient {
   // -------------------------------------------------------------------------
 
   /**
-   * The run's event stream in `seq` order. There is no streaming endpoint yet;
-   * pass the last `seq` you saw as `after_seq` to poll for the tail.
+   * The run's event stream in `seq` order — the durable record behind
+   * {@link streamSession}. Pass the last `seq` you saw as `after_seq` to fetch
+   * the tail, which is also how you re-sync after a `lagged` frame.
    */
   async listTranscript(
     runId: Uuid,
@@ -270,6 +376,30 @@ export class FaberClient {
 
     return (await response.json()) as T
   }
+}
+
+/**
+ * Splits one SSE frame into its `event:` name and joined `data:` payload.
+ *
+ * Returns `null` for a frame carrying no data — a comment-only keep-alive
+ * (`: ping`) is exactly that, and arrives on every idle interval.
+ */
+function parseFrame(frame: string): { event: string; data: string } | null {
+  let event = "message"
+  const data: string[] = []
+
+  for (const line of frame.split(/\r?\n/)) {
+    if (line.startsWith(":")) continue
+    const colon = line.indexOf(":")
+    const field = colon === -1 ? line : line.slice(0, colon)
+    // One optional space after the colon is part of the framing, not the value.
+    const value = colon === -1 ? "" : line.slice(colon + 1).replace(/^ /, "")
+
+    if (field === "event") event = value
+    else if (field === "data") data.push(value)
+  }
+
+  return data.length === 0 ? null : { event, data: data.join("\n") }
 }
 
 function queryString(query?: Record<string, QueryValue>): string {

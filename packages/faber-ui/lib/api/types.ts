@@ -198,6 +198,53 @@ export interface TranscriptEvent {
 }
 
 // ---------------------------------------------------------------------------
+// Messages and streaming
+// ---------------------------------------------------------------------------
+
+export interface SendMessageRequest {
+  content: string
+  /**
+   * A model **alias** the caller owns (what you'd type as `faber -m fast`),
+   * not a provider model id.
+   */
+  model: string
+  /** Required once a session has more than one thread. */
+  thread_id?: Uuid
+}
+
+/** `202 Accepted` — the run is detached and observed through the stream. */
+export interface SendMessageResponse {
+  run_id: Uuid
+  thread_id: Uuid
+}
+
+/**
+ * One event off `streamSession`. `kind` is the harness event's own `type` for
+ * model output, plus three the API adds: `input` (the user's own turn) and the
+ * terminal `run_end` / `run_error`.
+ *
+ * The terminal markers are live-only — they are stream control, not something
+ * the harness yielded, so they are never persisted. A client that connects
+ * after a run finished learns that from `Run.completed_at`.
+ */
+export interface StreamEvent {
+  run_id: Uuid
+  /** Position within `run_id`, **not** within the session. `-1` on a marker. */
+  seq: number
+  kind: string
+  payload: JsonValue
+}
+
+/**
+ * Resume cursor. Both fields together or neither — `seq` is unique per run,
+ * not per session, so one alone names nothing and is rejected as a 400.
+ */
+export type StreamQuery = {
+  run_id?: Uuid
+  after_seq?: number
+}
+
+// ---------------------------------------------------------------------------
 // Query parameters
 // ---------------------------------------------------------------------------
 
