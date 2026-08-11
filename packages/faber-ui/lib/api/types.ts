@@ -1,0 +1,217 @@
+/**
+ * Wire types for the faber REST API, mirroring the `*Response` / `*Request`
+ * structs in `crates/api/src/routes/`. Field names stay snake_case: they are
+ * protocol values, not identifiers.
+ *
+ * Two timestamp conventions cross this boundary, matching the two halves of
+ * the schema — `users`, `credentials`, and `models` store `TIMESTAMPTZ` and
+ * serialize as RFC 3339; the conversation tables store epoch seconds and
+ * serialize as a number. See `crates/api/src/models/mod.rs`.
+ */
+
+export type Uuid = string
+
+/** RFC 3339 instant, e.g. `2026-08-11T09:12:00.482Z`. */
+export type Timestamp = string
+
+/** Epoch **seconds** — not milliseconds. `new Date(value * 1000)` to widen. */
+export type EpochSeconds = number
+
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue }
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+export interface Me {
+  id: Uuid
+  username: string
+  /** Falls back to `username` when the stored display name is blank. */
+  display_name: string
+  avatar_url: string | null
+}
+
+export interface UpdateMeRequest {
+  display_name?: string
+  /** `null` clears the avatar; omit the key to leave it unchanged. */
+  avatar_url?: string | null
+}
+
+// ---------------------------------------------------------------------------
+// Credentials
+// ---------------------------------------------------------------------------
+
+/** The key itself is write-only — only its last four characters ever come back. */
+export interface Credential {
+  id: Uuid
+  label: string
+  last_four: string
+  created_at: Timestamp
+}
+
+export interface CreateCredentialRequest {
+  /** Unique per user; a duplicate is a 400, not a conflict. */
+  label: string
+  key: string
+}
+
+// ---------------------------------------------------------------------------
+// Models
+// ---------------------------------------------------------------------------
+
+/** Provider protocol the model speaks. */
+export type Wire = "openai" | "anthropic"
+
+export interface ModelConfig {
+  id: Uuid
+  alias: string
+  base_url: string
+  wire: Wire
+  /** The provider's own id for the model, e.g. `claude-opus-5`. */
+  wire_id: string
+  family: string | null
+  credential_id: Uuid | null
+  params: JsonValue
+  capabilities: JsonValue
+  created_at: Timestamp
+}
+
+export interface CreateModelRequest {
+  alias: string
+  base_url: string
+  wire: Wire
+  wire_id: string
+  family?: string | null
+  /** Must name a credential the caller owns, or the request is a 400. */
+  credential_id?: Uuid | null
+  params?: JsonValue
+  capabilities?: JsonValue
+}
+
+/** Every field is optional; `null` on `family`/`credential_id` clears the column. */
+export interface UpdateModelRequest {
+  alias?: string
+  base_url?: string
+  wire?: Wire
+  wire_id?: string
+  family?: string | null
+  credential_id?: Uuid | null
+  params?: JsonValue
+  capabilities?: JsonValue
+}
+
+// ---------------------------------------------------------------------------
+// Workspaces
+// ---------------------------------------------------------------------------
+
+export interface Workspace {
+  id: Uuid
+  /** `user` for the personal workspace, `common` for a shared one. */
+  kind: "user" | "common"
+  /** Set only on a `user` workspace. */
+  user_id: Uuid | null
+  created_at: EpochSeconds
+}
+
+// ---------------------------------------------------------------------------
+// Sessions and threads
+// ---------------------------------------------------------------------------
+
+export interface Session {
+  id: Uuid
+  workspace_id: Uuid
+  title: string | null
+  created_at: EpochSeconds
+  /** Set while the session is closed; `PATCH { closed: false }` reopens it. */
+  closed_at: EpochSeconds | null
+}
+
+/** A session is always created with its root thread — the API returns both. */
+export interface CreatedSession extends Session {
+  root_thread: Thread
+}
+
+export interface CreateSessionRequest {
+  /** Defaults to the caller's personal workspace. */
+  workspace_id?: Uuid
+  title?: string
+}
+
+export interface UpdateSessionRequest {
+  /** `null` clears the title; omit the key to leave it unchanged. */
+  title?: string | null
+  /** `true` stamps `closed_at`, `false` reopens. */
+  closed?: boolean
+}
+
+export interface Thread {
+  id: Uuid
+  session_id: Uuid
+  /** Set on a fork, always together with `forked_at_seq`. */
+  parent_id: Uuid | null
+  forked_at_seq: number | null
+  /** Core-owned allocator — the next `spine.seq` this thread will hand out. */
+  next_seq: number
+  created_at: EpochSeconds
+}
+
+/** Both fields or neither: a fork needs its source, a root thread takes no arguments. */
+export interface CreateThreadRequest {
+  parent_id?: Uuid
+  /** Inclusive position in the parent, in `0..parent.next_seq`. */
+  forked_at_seq?: number
+}
+
+/** One position in a thread's canonical history chain. */
+export interface SpineEntry {
+  seq: number
+  exchange_id: Uuid
+  /** `true` when a best-of-N winner was committed deliberately. */
+  explicit_commit: boolean
+  created_at: EpochSeconds
+}
+
+export interface Run {
+  id: Uuid
+  thread_id: Uuid
+  created_at: EpochSeconds
+  completed_at: EpochSeconds | null
+}
+
+/**
+ * One harness-yielded event — what the user saw, in order. Not the provider
+ * exchange; the two are separate logs and neither derives the other.
+ */
+export interface TranscriptEvent {
+  id: Uuid
+  seq: number
+  /** Free-form tag, deliberately not an enum on either side. */
+  kind: string
+  payload: JsonValue
+  created_at: EpochSeconds
+}
+
+// ---------------------------------------------------------------------------
+// Query parameters
+// ---------------------------------------------------------------------------
+
+// Written as type aliases, not interfaces: only an alias picks up the implicit
+// index signature the client's query-string builder takes.
+
+/** `limit` is clamped server-side to 1..=500 and defaults to 100. */
+export type ListSessionsQuery = {
+  workspace_id?: Uuid
+  limit?: number
+}
+
+export type TranscriptQuery = {
+  /** Only events strictly after this `seq` — poll the tail without refetching. */
+  after_seq?: number
+  limit?: number
+}
