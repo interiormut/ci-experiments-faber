@@ -95,7 +95,8 @@ async fn get_thread(
 
 /// The thread's canonical history chain: one exchange per position, in `seq` order.
 ///
-/// Empty until something writes it — nothing in the API records exchanges yet.
+/// Written by `crate::run` when a run commits — each position names the exchange whose
+/// lineage seeds the next turn.
 async fn list_spine(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,

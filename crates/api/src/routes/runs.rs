@@ -25,8 +25,10 @@ pub fn router() -> Router<AppState> {
 
 #[derive(Deserialize)]
 struct TranscriptQuery {
-    /// Return only events strictly after this `seq`, so a client can poll for the tail
-    /// without refetching the run. There is no streaming endpoint yet.
+    /// Return only events strictly after this `seq`, so a client can fetch the tail
+    /// without refetching the run. This is the durable record behind
+    /// `GET /api/sessions/{id}/stream`, and where a subscriber that fell behind
+    /// re-syncs from.
     after_seq: Option<i64>,
     limit: Option<i64>,
 }

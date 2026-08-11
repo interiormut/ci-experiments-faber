@@ -1,7 +1,7 @@
 use axum::extract::FromRef;
 use std::sync::Arc;
 
-use crate::{config::Config, db::DbPool};
+use crate::{config::Config, db::DbPool, run::RunRegistry};
 
 /// 32-byte master key for envelope encryption. Never printed — Debug is intentionally redacted.
 #[derive(Clone)]
@@ -32,6 +32,10 @@ pub struct AppState {
     pub auth: Arc<dyn surge::AuthProvider>,
     /// Envelope encryption master key. Loaded at boot; absent key panics before serving traffic.
     pub master_key: Arc<MasterKey>,
+    /// Live harness runs, keyed by session — what the SSE endpoint subscribes
+    /// to. In-process, so it only reaches subscribers on the instance that
+    /// owns the run.
+    pub runs: RunRegistry,
 }
 
 /// Required by `surge::AuthSession`, which resolves the provider off the router state.

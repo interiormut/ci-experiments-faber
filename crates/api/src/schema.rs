@@ -46,6 +46,7 @@ diesel::table! {
         run_id -> Uuid,
         request_blob_digest -> Bytea,
         provider_events_digest -> Nullable<Bytea>,
+        canonical_blob_digest -> Nullable<Bytea>,
         usage -> Nullable<Jsonb>,
         outcome -> Nullable<Jsonb>,
         expected_cache_tokens -> Int8,

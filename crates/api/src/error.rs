@@ -33,6 +33,14 @@ pub enum AppError {
     #[error("upstream request failed: {0}")]
     Http(#[from] reqwest::Error),
 
+    /// A harness run that ended in a failure the harness did not handle —
+    /// almost always the provider, occasionally the harness's own code. The
+    /// message is carried rather than flattened to "internal error": this
+    /// reaches a user as a `run_error` on their stream, and "the provider
+    /// refused the key" and "faber is broken" are not the same news.
+    #[error("{0}")]
+    Harness(String),
+
     #[error("internal error")]
     Internal,
 }
@@ -71,6 +79,8 @@ impl AppError {
             AppError::Internal => {
                 tracing::error!(status = %status, "request failed with internal error");
             }
+            // Already logged in full at the run that produced it.
+            AppError::Harness(_) => {}
             AppError::Unauthorized(_)
             | AppError::ServiceUnavailable(_)
             | AppError::NotFound
@@ -110,6 +120,7 @@ impl IntoResponse for AppError {
                 "service unavailable".to_owned(),
             ),
             AppError::Http(_) => (StatusCode::BAD_GATEWAY, "upstream error".to_owned()),
+            AppError::Harness(msg) => (StatusCode::BAD_GATEWAY, msg.clone()),
             AppError::Internal => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal error".to_owned(),

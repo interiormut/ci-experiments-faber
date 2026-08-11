@@ -2,11 +2,14 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::get,
+    response::sse::{Event, KeepAlive, Sse},
+    routing::{get, post},
 };
 use diesel::{ExpressionMethods, JoinOnDsl, QueryDsl, SelectableHelper};
 use diesel_async::{AsyncConnection, RunQueryDsl, scoped_futures::ScopedFutureExt};
+use futures::stream::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
+use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
 use uuid::Uuid;
 
 use crate::{
@@ -15,13 +18,20 @@ use crate::{
     error::{ApiResult, AppError},
     models::{
         now_epoch,
+        run::NewRun,
         session::{NewSession, Session, UpdateSession},
         thread::{NewThread, Thread},
+        transcript::Transcript,
     },
+    resolve::resolve_model,
     routes::{clamp_limit, deserialize_optional_field, threads::{ThreadResponse, thread_response}},
-    schema::{session, thread, workspace_member},
+    run::{RunRequest, StreamEvent},
+    schema::{run, session, thread, transcript, workspace_member},
     state::AppState,
 };
+// Aliased: `crate::run` (the runner) and `crate::schema::run` (the table) are
+// both reached from this file.
+use crate::run as runner;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -34,6 +44,8 @@ pub fn router() -> Router<AppState> {
             "/api/sessions/{id}/threads",
             get(list_threads).post(create_thread),
         )
+        .route("/api/sessions/{id}/messages", post(send_message))
+        .route("/api/sessions/{id}/stream", get(stream))
 }
 
 const MAX_TITLE_CHARS: usize = 200;
@@ -370,4 +382,253 @@ async fn create_thread(
         .map_err(|err| AppError::db(err, "sessions.create_thread"))?;
 
     Ok((StatusCode::CREATED, Json(thread_response(&created))))
+}
+
+// ---------------------------------------------------------------------------
+// Messages and the live stream
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct SendMessageRequest {
+    content: String,
+    /// A model alias the caller owns (`faber -m fast`), not a provider model
+    /// id. `a.md`: the alias is what the user types; `wire_id` is what goes in
+    /// the request body.
+    model: String,
+    /// Which thread to run in. Optional while a session has exactly one.
+    thread_id: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+struct SendMessageResponse {
+    run_id: Uuid,
+    thread_id: Uuid,
+}
+
+#[derive(Deserialize)]
+struct StreamQuery {
+    /// Resume cursor, together with `after_seq`: replay that run's events past
+    /// `after_seq` before switching to live. `transcript.seq` is unique per
+    /// run, not per session, so neither half means anything alone.
+    run_id: Option<Uuid>,
+    after_seq: Option<i64>,
+}
+
+/// Starts a harness run against the session and returns immediately.
+///
+/// The run is detached: it outlives this response and every subscriber, and is
+/// observed through `GET /api/sessions/{id}/stream` (live) or
+/// `GET /api/runs/{id}/transcript` (durable).
+async fn send_message(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<Uuid>,
+    Json(input): Json<SendMessageRequest>,
+) -> ApiResult<(StatusCode, Json<SendMessageResponse>)> {
+    let content = input.content.trim();
+    if content.is_empty() {
+        return Err(AppError::BadRequest("content cannot be empty".into()));
+    }
+
+    let mut conn = state.db.get().await?;
+    let found = authorize_session(&mut conn, user.id, id).await?;
+
+    // A closed session is the reversible half of delete; writing to one would
+    // make "closed" mean nothing.
+    if found.closed_at.is_some() {
+        return Err(AppError::BadRequest(
+            "session is closed; reopen it with PATCH { \"closed\": false }".into(),
+        ));
+    }
+
+    let thread_id = resolve_thread(&mut conn, id, input.thread_id).await?;
+    let resolved = resolve_model(&state, user.id, &input.model).await?;
+
+    let run_id = Uuid::now_v7();
+    diesel::insert_into(run::table)
+        .values(&NewRun {
+            id: run_id,
+            thread_id,
+            created_at: now_epoch(),
+        })
+        .execute(&mut conn)
+        .await
+        .map_err(|err| AppError::db(err, "sessions.send_message.insert_run"))?;
+
+    let message = llm::Message {
+        role: llm::Role::User,
+        content: vec![llm::ContentBlock::Text {
+            text: content.to_owned(),
+        }],
+    };
+
+    // Published on the same channel a subscriber is already holding, so the
+    // user's own turn arrives in band rather than only on the next refetch.
+    let input_event = runner::record_input(&mut conn, run_id, &message).await?;
+    drop(conn);
+
+    // Claimed before the response goes out, so a client that opens the stream
+    // on seeing the run id cannot arrive before the channel exists.
+    let sender = runner::open_run(&state.runs, id);
+    let _ = sender.send(input_event);
+
+    runner::spawn_run(
+        state,
+        sender.clone(),
+        RunRequest {
+            run_id,
+            session_id: id,
+            thread_id,
+            config: resolved.config,
+            api_key: resolved.api_key,
+            input: message,
+        },
+    );
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(SendMessageResponse { run_id, thread_id }),
+    ))
+}
+
+/// Picks the thread a message runs in.
+///
+/// A named thread is verified to belong to this session — the same check
+/// `create_thread` makes of a fork parent, for the same reason: a thread id is
+/// not a capability, membership in the session is.
+async fn resolve_thread(
+    conn: &mut diesel_async::AsyncPgConnection,
+    session_id: Uuid,
+    requested: Option<Uuid>,
+) -> ApiResult<Uuid> {
+    if let Some(thread_id) = requested {
+        let found: Thread = thread::table
+            .filter(thread::id.eq(thread_id))
+            .filter(thread::session_id.eq(session_id))
+            .select(Thread::as_select())
+            .first(conn)
+            .await
+            .map_err(|err| match err {
+                diesel::result::Error::NotFound => {
+                    AppError::BadRequest("thread not found in this session".into())
+                }
+                other => AppError::db(other, "sessions.resolve_thread.load"),
+            })?;
+        return Ok(found.id);
+    }
+
+    let mut candidates: Vec<Thread> = thread::table
+        .filter(thread::session_id.eq(session_id))
+        .order(thread::created_at.asc())
+        .limit(2)
+        .select(Thread::as_select())
+        .load(conn)
+        .await
+        .map_err(|err| AppError::db(err, "sessions.resolve_thread.list"))?;
+
+    match candidates.len() {
+        0 => Err(AppError::BadRequest(
+            "session has no thread to run in".into(),
+        )),
+        1 => Ok(candidates.remove(0).id),
+        // Guessing here would silently split a conversation across branches.
+        _ => Err(AppError::BadRequest(
+            "session has more than one thread; name one with thread_id".into(),
+        )),
+    }
+}
+
+/// Everything happening in the session, as it happens.
+///
+/// Subscription is taken **before** the replay query so nothing can land in
+/// the gap between the two; anything the replay already covered is then
+/// dropped from the live side by `(run_id, seq)`.
+async fn stream(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<Uuid>,
+    Query(params): Query<StreamQuery>,
+) -> ApiResult<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>> {
+    let cursor = match (params.run_id, params.after_seq) {
+        (Some(run_id), Some(after_seq)) => Some((run_id, after_seq)),
+        (None, None) => None,
+        _ => {
+            return Err(AppError::BadRequest(
+                "run_id and after_seq must be given together".into(),
+            ));
+        }
+    };
+
+    let mut conn = state.db.get().await?;
+    authorize_session(&mut conn, user.id, id).await?;
+
+    let live = runner::subscribe(&state.runs, id);
+
+    let replay: Vec<StreamEvent> = match cursor {
+        Some((run_id, after_seq)) => {
+            // Scoped to the session by the join, so a cursor naming someone
+            // else's run replays nothing rather than leaking it.
+            let rows: Vec<Transcript> = transcript::table
+                .inner_join(run::table.on(run::id.eq(transcript::run_id)))
+                .inner_join(thread::table.on(thread::id.eq(run::thread_id)))
+                .filter(transcript::run_id.eq(run_id))
+                .filter(thread::session_id.eq(id))
+                .filter(transcript::seq.gt(after_seq))
+                .order(transcript::seq.asc())
+                .limit(clamp_limit(None))
+                .select(Transcript::as_select())
+                .load(&mut conn)
+                .await
+                .map_err(|err| AppError::db(err, "sessions.stream.replay"))?;
+
+            rows.into_iter()
+                .map(|row| StreamEvent {
+                    run_id,
+                    seq: row.seq,
+                    kind: row.kind,
+                    payload: row.payload,
+                })
+                .collect()
+        }
+        None => Vec::new(),
+    };
+    drop(conn);
+
+    let replayed_through = cursor.map(|(run_id, _)| {
+        (
+            run_id,
+            replay.last().map(|event| event.seq).unwrap_or(i64::MIN),
+        )
+    });
+
+    let live = BroadcastStream::new(live).filter_map(move |item| {
+        futures::future::ready(match item {
+            Ok(event) => {
+                // Already delivered by the replay above.
+                if let Some((run_id, through)) = replayed_through
+                    && event.run_id == run_id
+                    && event.seq <= through
+                {
+                    return futures::future::ready(None);
+                }
+                Some(sse_event(&event))
+            }
+            // The subscriber fell behind far enough that events were dropped.
+            // Reported rather than swallowed, and the stream stays open: the
+            // client re-syncs through the durable transcript endpoint.
+            Err(BroadcastStreamRecvError::Lagged(count)) => Some(Ok(Event::default()
+                .event("lagged")
+                .data(count.to_string()))),
+        })
+    });
+
+    let stream = futures::stream::iter(replay.iter().map(sse_event).collect::<Vec<_>>()).chain(live);
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+fn sse_event(event: &StreamEvent) -> Result<Event, std::convert::Infallible> {
+    Ok(Event::default().event("transcript").data(
+        serde_json::to_string(event).unwrap_or_else(|_| "{}".to_owned()),
+    ))
 }

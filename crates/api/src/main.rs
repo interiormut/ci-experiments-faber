@@ -15,6 +15,7 @@ mod error;
 mod models;
 mod resolve;
 mod routes;
+mod run;
 mod schema;
 mod state;
 
@@ -91,6 +92,7 @@ async fn main() {
         http,
         auth,
         master_key,
+        runs: Default::default(),
     };
 
     let cors_origins = config
