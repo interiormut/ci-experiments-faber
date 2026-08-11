@@ -6,11 +6,12 @@ import { FaberLogo } from "@/components/ui/logos"
 import { AuthGate, SurgeAuthProvider } from "@/components/ui/surge-auth"
 
 /**
- * Origin serving the Surge `/v1` perimeter. Defaults to this app's own origin,
- * which is the deployment shape where the API mounts `browser_router()` itself
- * — set `NEXT_PUBLIC_SURGE_URL` when Surge lives somewhere else.
+ * The Surge `/v1` perimeter, which the API always mounts under `/api/surge` on
+ * its own origin — so it follows wherever the API lives. Defaults to this app's
+ * own origin, which is the deployment shape where the API serves the frontend.
  */
-const BASE_URL = process.env.NEXT_PUBLIC_SURGE_URL ?? "/"
+const API_URL = (process.env.NEXT_PUBLIC_FABER_API_URL ?? "").replace(/\/+$/, "")
+const BASE_URL = `${API_URL}/api/surge`
 
 /**
  * Everything below this renders only for a signed-in identity; the sign-in
