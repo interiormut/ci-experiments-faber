@@ -97,7 +97,7 @@ export default function Home() {
   const noModels = modelsLoaded && models.length === 0
 
   return (
-    <div className="relative flex flex-1">
+    <div className="relative flex min-h-0 flex-1">
       <AppSidebar
         sessions={sessions}
         activeSessionId={activeSessionId}
