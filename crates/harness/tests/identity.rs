@@ -26,7 +26,7 @@ fn identity_harness_end_to_end_matches_the_script() {
     );
 
     let events = drain_transcript(&mut run);
-    let frames = run.join().expect("run must finish cleanly");
+    let frames = run.join().expect("run must finish cleanly").frames;
 
     assert!(!events.is_empty(), "the identity harness must forward events");
     assert_eq!(events[0]["type"], "message_start");
@@ -92,7 +92,7 @@ fn the_fold_invariant_holds_for_a_completed_model_frame() {
     let client = Arc::new(Scripted::new(text_reply("fold me")));
     let mut run = HarnessRun::start(IDENTITY.to_string(), input("hi"), grant(client), Seed::default());
     let transcript = drain_transcript(&mut run);
-    let frames = run.join().expect("run must finish cleanly");
+    let frames = run.join().expect("run must finish cleanly").frames;
 
     let frame_id = frames
         .iter()

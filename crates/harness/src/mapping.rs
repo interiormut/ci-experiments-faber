@@ -792,7 +792,10 @@ pub enum ToolResultTag {
 /// the JS side directly — `crate::error::OpError` carries these fields as
 /// individual JS `Error` *properties* (`types.d.ts:296`'s requirement that a
 /// harness not have to regex an error message to decide whether to retry).
-#[derive(Debug, Clone)]
+/// `Serialize` for the *frame log*, not for the isolate: `crates/api` writes
+/// this into `exchange.outcome`, which is Core's own record of what happened.
+/// The harness-facing path is still `OpError`'s individual JS properties.
+#[derive(Debug, Clone, Serialize)]
 pub struct HarnessErrorInfo {
     pub kind: &'static str,
     pub message: String,

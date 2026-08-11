@@ -400,7 +400,7 @@ export default {
         let client = Arc::new(Scripted::new(text_reply("usage check")));
         let mut run = HarnessRun::start(STREAM_ONLY.to_string(), input("hi"), grant(client), Seed::default());
         let _ = drain_transcript(&mut run);
-        let frames = run.join().expect("run must finish cleanly");
+        let frames = run.join().expect("run must finish cleanly").frames;
         assert_usage_matches_the_fold(&frames);
     }
 
@@ -409,7 +409,7 @@ export default {
         let client: Arc<dyn llm::ModelClient> = Arc::new(support::Failing);
         let mut run = HarnessRun::start(STREAM_ONLY.to_string(), input("hi"), grant(client), Seed::default());
         let _ = drain_transcript(&mut run);
-        let frames = run.join().expect("run must finish even though the call failed");
+        let frames = run.join().expect("run must finish even though the call failed").frames;
         assert_usage_matches_the_fold(&frames);
     }
 }

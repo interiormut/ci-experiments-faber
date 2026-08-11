@@ -13,7 +13,7 @@ use std::rc::Rc;
 use deno_core::{JsRuntime, ModuleSpecifier, RuntimeOptions};
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use crate::frame::CoreEvent;
+use crate::frame::{CoreEvent, FrameId};
 use crate::loader::{BOOTSTRAP_SPECIFIER, CONTEXT_SPECIFIER, HARNESS_SPECIFIER, HarnessLoader};
 use crate::mapping;
 use crate::state::{Grant, HarnessState, Seed};
@@ -32,12 +32,26 @@ pub enum RunError {
     ThreadPanicked,
 }
 
+/// Everything a finished run leaves behind, beyond what already streamed.
+pub struct RunOutcome {
+    /// What happened, in order (`harness-events.md` §4).
+    pub frames: Vec<CoreEvent>,
+    /// The canonical lineage as this run left it — what seeds turn N+1
+    /// (`history-abstract.md` H7). Equal to the run's own [`Seed`] when the
+    /// harness never committed, since nothing moved the lineage.
+    pub committed: Seed,
+    /// The model frame whose commit produced [`Self::committed`], so a caller
+    /// writing a spine can point it at the matching exchange. `None` when the
+    /// harness never called `commit` — there is then no position to record.
+    pub committed_frame: Option<FrameId>,
+}
+
 /// A running (or finished) harness. `transcript` streams live; the frame log
 /// and any run-level error are only available after [`HarnessRun::join`].
 pub struct HarnessRun {
     pub transcript: UnboundedReceiver<serde_json::Value>,
     isolate_handle: Option<deno_core::v8::IsolateHandle>,
-    thread: std::thread::JoinHandle<Result<Vec<CoreEvent>, RunError>>,
+    thread: std::thread::JoinHandle<Result<RunOutcome, RunError>>,
 }
 
 impl HarnessRun {
@@ -58,11 +72,20 @@ impl HarnessRun {
 
         let thread = std::thread::Builder::new()
             .name("harness".into())
-            .spawn(move || -> Result<Vec<CoreEvent>, RunError> {
+            .spawn(move || -> Result<RunOutcome, RunError> {
                 let tokio_rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()?;
                 let local = tokio::task::LocalSet::new();
+
+                // The lineage has to outlive the isolate that produced it:
+                // `HarnessState` is created inside the async block (it moves
+                // `grant` and `seed`) but is read after the event loop has
+                // stopped. Everything here stays on this one thread, so an
+                // `Rc` is the whole of the machinery required.
+                let state_slot: Rc<RefCell<Option<Rc<RefCell<HarnessState>>>>> =
+                    Rc::new(RefCell::new(None));
+                let state_out = Rc::clone(&state_slot);
 
                 let result: Result<(), RunError> = local.block_on(&tokio_rt, async move {
                     let bootstrap_source = build_bootstrap(&input)?;
@@ -75,15 +98,14 @@ impl HarnessRun {
                     });
 
                     {
-                        let op_state = runtime.op_state();
-                        op_state
-                            .borrow_mut()
-                            .put(Rc::new(RefCell::new(HarnessState::new(
-                                grant,
-                                seed,
-                                transcript_tx,
-                                frames_tx,
-                            ))));
+                        let harness = Rc::new(RefCell::new(HarnessState::new(
+                            grant,
+                            seed,
+                            transcript_tx,
+                            frames_tx,
+                        )));
+                        *state_out.borrow_mut() = Some(Rc::clone(&harness));
+                        runtime.op_state().borrow_mut().put(harness);
                     }
 
                     // Grabbed before the run so the caller can terminate a
@@ -105,7 +127,31 @@ impl HarnessRun {
                 while let Ok(frame) = frames_rx.try_recv() {
                     frames.push(frame);
                 }
-                Ok(frames)
+
+                let (committed, committed_frame) = match state_slot.borrow().as_ref() {
+                    Some(harness) => {
+                        let harness = harness.borrow();
+                        (
+                            Seed {
+                                provider: harness.grant.client.provider().to_string(),
+                                model: harness.grant.model.clone(),
+                                messages: harness.lineage_iter().cloned().collect(),
+                                options: harness.baseline.clone(),
+                            },
+                            harness.committed_frame.clone(),
+                        )
+                    }
+                    // Unreachable in practice — the slot is filled before the
+                    // module is ever loaded — but a default keeps a future
+                    // reordering from turning this into a panic.
+                    None => (Seed::default(), None),
+                };
+
+                Ok(RunOutcome {
+                    frames,
+                    committed,
+                    committed_frame,
+                })
             })
             .expect("spawning the harness thread must not fail");
 
@@ -128,10 +174,15 @@ impl HarnessRun {
         }
     }
 
-    /// Blocks until the run finishes, returning the frame log or the error
-    /// that ended it (a thrown/rejected top-level error, an op rejection
-    /// that propagated, or termination).
-    pub fn join(self) -> Result<Vec<CoreEvent>, RunError> {
+    /// Blocks until the run finishes, returning what it left behind or the
+    /// error that ended it (a thrown/rejected top-level error, an op
+    /// rejection that propagated, or termination).
+    ///
+    /// A run that ends in `Err` yields no [`RunOutcome`] at all, so a failed
+    /// run records no exchanges and moves no lineage — deliberately: a
+    /// lineage assembled from a run that did not finish is exactly the
+    /// truncation `incomplete_completion` exists to keep out of history.
+    pub fn join(self) -> Result<RunOutcome, RunError> {
         self.thread.join().map_err(|_| RunError::ThreadPanicked)?
     }
 }

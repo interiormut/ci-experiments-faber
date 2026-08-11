@@ -11,6 +11,7 @@ use std::sync::Arc;
 use futures_util::Stream;
 use futures_util::future::BoxFuture;
 use llm::{Accumulator, ModelClient, RenderedRequest};
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::frame::{CoreEvent, FrameCounter, FrameId};
@@ -44,6 +45,12 @@ pub enum SentTurn {
 pub struct Sent {
     pub turns: Vec<SentTurn>,
     pub options: Baseline,
+    /// The frame this call was opened under. Carried to the terminal state so
+    /// `op_commit` can record *which* frame produced the canonical lineage —
+    /// a consumer of the frame log (`crates/api`, writing the spine) has to
+    /// put the matching exchange on it, and nothing else in the log says
+    /// which of several calls won.
+    pub frame: FrameId,
 }
 
 /// Every option field a request can carry, as the committed lineage was
@@ -52,7 +59,11 @@ pub struct Sent {
 /// optional at this level, because turn 1 with no prior lineage still has a
 /// concrete answer (the granted set, `Grant::tools`) — see
 /// [`HarnessState::new`].
-#[derive(Clone, Debug, Default)]
+///
+/// `Serialize`/`Deserialize` because a [`Seed`] carries one across runs, and
+/// a run's canonical lineage has to survive in storage between them
+/// (`history-abstract.md` H7).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Baseline {
     pub max_tokens: Option<u32>,
     pub tools: Vec<llm::ToolDef>,
@@ -78,9 +89,15 @@ pub struct ScaffoldPrint {
 
 /// What a prior run committed. Nothing in the isolate survives between runs
 /// (`runtime.rs`), so a fresh `execute()` for turn N+1 has to be handed this
-/// in full. Until `crates/api`'s spine exists (`history-abstract.md` H7),
-/// only tests construct a non-default one.
-#[derive(Clone, Debug, Default)]
+/// in full.
+///
+/// Also the *stored* form of a thread's canonical lineage: `crates/api`
+/// serializes the [`RunOutcome::committed`](crate::runtime::RunOutcome) of
+/// turn N into a blob and deserializes it back as turn N+1's seed. That is
+/// the whole of `history-abstract.md` H7, so the type has to round-trip
+/// losslessly — `provider` and `model` are here because a lineage is only
+/// meaningful against the scope it was built for.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Seed {
     pub provider: String,
     pub model: String,
@@ -99,7 +116,6 @@ pub enum StreamSlot {
     Pending {
         rendered: RenderedRequest,
         sent: Sent,
-        frame: FrameId,
     },
     /// Sent; `inner` yields the provider's raw events, `accumulator` folds
     /// them so the terminal step can produce a `Completion` (for the fold
@@ -108,7 +124,6 @@ pub enum StreamSlot {
         inner: Pin<Box<dyn Stream<Item = llm::Result<llm::Event>>>>,
         accumulator: Accumulator,
         sent: Sent,
-        frame: FrameId,
     },
     /// Finished cleanly. `commit` and `op_llm_stream_completion` both read
     /// from here.
@@ -187,6 +202,12 @@ pub struct HarnessState {
     /// The out-of-band head fingerprint of the committed lineage, recomputed
     /// on every commit ([`HarnessState::recompute_scaffold`]).
     pub scaffold: ScaffoldPrint,
+    /// The frame of the call whose commit produced the current lineage.
+    /// `None` until something commits — a harness that streams and never
+    /// commits leaves the lineage exactly as it was seeded, and there is no
+    /// exchange for the spine to point at. Last commit wins (§6.2), so this
+    /// tracks the *latest* one, matching `committed_messages`.
+    pub committed_frame: Option<FrameId>,
 
     pub frame_counter: FrameCounter,
 
@@ -239,6 +260,7 @@ impl HarnessState {
                 system: None,
                 model: 0,
             },
+            committed_frame: None,
             frame_counter: FrameCounter::default(),
             transcript_tx,
             frames_tx,

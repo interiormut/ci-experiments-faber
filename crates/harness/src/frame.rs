@@ -35,6 +35,20 @@ pub enum CoreEvent {
         parent: Option<FrameId>,
         detail: FrameDetail,
     },
+    /// The request bytes exactly as rendered, recorded at `open` — before
+    /// dispatch, and before the harness can have done anything with the call.
+    /// J1 (`history-abstract.md`): ground truth is recorded at the capability
+    /// boundary, never reported by the harness, precisely because a harness
+    /// that could describe what it sent could lie about it.
+    ///
+    /// Emitted for every model frame, including calls that are opened and
+    /// never polled — `exchange.request_blob_digest` is `NOT NULL`, and H7's
+    /// "garbage class" of unreferenced exchanges is the intended home for
+    /// the ones that went nowhere.
+    ModelRequest {
+        frame: FrameId,
+        body: Vec<u8>,
+    },
     ModelEvent {
         frame: FrameId,
         event: llm::Event,

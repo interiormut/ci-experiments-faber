@@ -215,6 +215,12 @@ pub fn op_llm_stream_open(
         parent: Some(crate::frame::FrameCounter::ROOT.to_string()),
         detail: FrameDetail::Model { model },
     });
+    // Immediately after the frame opens and before the slot exists, so the
+    // bytes are logged whether or not this call is ever polled (J1).
+    let _ = harness.frames_tx.send(CoreEvent::ModelRequest {
+        frame: frame.clone(),
+        body: rendered.body.clone(),
+    });
 
     let sent = Sent {
         turns: sent_turns,
@@ -228,9 +234,10 @@ pub fn op_llm_stream_open(
             stop_sequences,
             extra,
         },
+        frame,
     };
 
-    let rid = harness.insert_stream(StreamSlot::Pending { rendered, sent, frame });
+    let rid = harness.insert_stream(StreamSlot::Pending { rendered, sent });
     Ok(rid)
 }
 
@@ -255,7 +262,7 @@ async fn advance(
     harness: &Rc<RefCell<HarnessState>>,
     rid: u32,
 ) -> Result<Option<LLMEvent>, OpError> {
-    let (mut inner, mut accumulator, sent, frame) = {
+    let (mut inner, mut accumulator, sent) = {
         let mut state = harness.borrow_mut();
         let slot = state.streams.remove(&rid).ok_or(OpError::UnknownStream { rid })?;
         match slot {
@@ -267,19 +274,18 @@ async fn advance(
                 state.streams.insert(rid, StreamSlot::Polling);
                 return Err(OpError::StreamBusy { rid });
             }
-            StreamSlot::Pending { rendered, sent, frame } => {
+            StreamSlot::Pending { rendered, sent } => {
                 let client = state.grant.client.clone();
                 state.streams.insert(rid, StreamSlot::Polling);
-                (owned_stream(client, rendered), Accumulator::new(), sent, frame)
+                (owned_stream(client, rendered), Accumulator::new(), sent)
             }
             StreamSlot::Active {
                 inner,
                 accumulator,
                 sent,
-                frame,
             } => {
                 state.streams.insert(rid, StreamSlot::Polling);
-                (inner, accumulator, sent, frame)
+                (inner, accumulator, sent)
             }
             StreamSlot::Done { sent, completion } => {
                 state.streams.insert(rid, StreamSlot::Done { sent, completion });
@@ -295,6 +301,11 @@ async fn advance(
             }
         }
     };
+
+    // Cloned out of `sent` because `sent` moves into whichever slot this
+    // call lands in, while the frame is still needed to tag the log events
+    // emitted alongside it.
+    let frame = sent.frame.clone();
 
     let next = inner.next().await;
 
@@ -313,7 +324,6 @@ async fn advance(
                     inner,
                     accumulator,
                     sent,
-                    frame,
                 },
             );
             Ok(Some(mapped))
@@ -509,6 +519,9 @@ pub async fn op_commit(
 
     harness.adopt_lineage(lineage);
     harness.baseline = sent.options;
+    // Last commit wins (§6.2), so this always names the call the *current*
+    // lineage came from — which is the one the spine has to point at.
+    harness.committed_frame = Some(sent.frame);
     harness.recompute_scaffold();
 
     Ok(())

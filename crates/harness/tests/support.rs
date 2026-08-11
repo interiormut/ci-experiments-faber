@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use harness::state::Baseline;
-use harness::{Grant, HarnessRun, Seed};
+use harness::{Grant, HarnessRun, RunOutcome, Seed};
 use llm::{
     BlockStart, ContentBlock, Delta, Event, EventStream, Message, ModelClient, RenderedRequest,
     RenderedSpan, Request, Role, StopReason, Turn, UsageDelta,
@@ -313,7 +313,7 @@ pub fn drain_transcript(run: &mut HarnessRun) -> Vec<serde_json::Value> {
 pub fn drain_and_join_with_timeout(
     mut run: HarnessRun,
     timeout: std::time::Duration,
-) -> (Vec<serde_json::Value>, Vec<harness::frame::CoreEvent>) {
+) -> (Vec<serde_json::Value>, RunOutcome) {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let events = drain_transcript(&mut run);
@@ -321,7 +321,7 @@ pub fn drain_and_join_with_timeout(
         let _ = tx.send((events, outcome));
     });
     match rx.recv_timeout(timeout) {
-        Ok((events, Ok(frames))) => (events, frames),
+        Ok((events, Ok(outcome))) => (events, outcome),
         Ok((_, Err(error))) => panic!("run failed: {error}"),
         Err(_) => panic!(
             "run did not finish within {timeout:?} — this looks like a hang, not a slow test"

@@ -66,11 +66,16 @@ async fn main() {
     println!("\n--- end transcript ---");
 
     match tokio::task::spawn_blocking(move || run.join()).await {
-        Ok(Ok(frames)) => {
-            println!("--- frame log ({} events) ---", frames.len());
-            for frame in frames {
+        Ok(Ok(outcome)) => {
+            println!("--- frame log ({} events) ---", outcome.frames.len());
+            for frame in outcome.frames {
                 println!("{frame:?}");
             }
+            println!(
+                "--- committed lineage: {} messages (frame {:?}) ---",
+                outcome.committed.messages.len(),
+                outcome.committed_frame
+            );
         }
         Ok(Err(error)) => eprintln!("run failed: {error}"),
         Err(join_error) => eprintln!("harness thread panicked: {join_error}"),
