@@ -23,6 +23,8 @@ type AppShellContextValue = {
   creatingSession: boolean
   createError: string | null
   createSession: () => Promise<CreatedSession | null>
+  renameSession: (id: Uuid, title: string) => Promise<Session>
+  deleteSession: (id: Uuid) => Promise<void>
   addModel: (body: CreateModelRequest) => Promise<ModelConfig>
   editModel: (id: Uuid, patch: UpdateModelRequest) => Promise<ModelConfig>
   removeModel: (id: Uuid) => Promise<void>
@@ -108,6 +110,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
+  const renameSession = React.useCallback(async (id: Uuid, title: string): Promise<Session> => {
+    const updated = await faber.updateSession(id, { title: title.trim() || null })
+    setSessions((prev) => prev.map((session) => (session.id === id ? updated : session)))
+    return updated
+  }, [])
+
+  const deleteSession = React.useCallback(
+    async (id: Uuid): Promise<void> => {
+      await faber.deleteSession(id)
+      setSessions((prev) => prev.filter((session) => session.id !== id))
+      if (activeNavKey === sessionNavKey(id)) router.push("/")
+    },
+    [activeNavKey, router],
+  )
+
   const addModel = React.useCallback(async (body: CreateModelRequest): Promise<ModelConfig> => {
     const created = await faber.createModel(body)
     setModels((prev) => [...prev, created])
@@ -137,6 +154,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       creatingSession,
       createError,
       createSession,
+      renameSession,
+      deleteSession,
       addModel,
       editModel,
       removeModel,
@@ -149,6 +168,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       creatingSession,
       createError,
       createSession,
+      renameSession,
+      deleteSession,
       addModel,
       editModel,
       removeModel,
@@ -169,6 +190,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               if (created) router.push(`/session/${created.id}`)
             })
           }}
+          onRenameSession={renameSession}
+          onDeleteSession={deleteSession}
           loading={sessionsLoading}
           creating={creatingSession}
         />
