@@ -1,6 +1,7 @@
 pub mod blob;
 pub mod credential;
 pub mod exchange;
+pub mod host;
 pub mod model_config;
 pub mod run;
 pub mod session;

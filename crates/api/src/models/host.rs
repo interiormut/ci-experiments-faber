@@ -1,0 +1,198 @@
+//! Execution environments — see `internal-docs/host.md`.
+//!
+//! The host is the registration primitive: every execution mode bottoms out in
+//! *reach the machine, then exec*, and only the machine carries authentication
+//! and a network path. Containers hang off a host; probes observe one.
+//!
+//! Nothing here caches liveness. `disabled_at` is operator intent, and
+//! `host_probe` is an append-only observation log whose rows are advisory —
+//! the authoritative answer to "is it reachable" is the next connection
+//! attempt.
+
+use chrono::{DateTime, Utc};
+use diesel::prelude::*;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use uuid::Uuid;
+
+use crate::schema::{host, host_container, host_probe, image};
+
+/// How faber reaches the machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Transport {
+    Local,
+    Ssh,
+}
+
+impl Transport {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Transport::Local => "local",
+            Transport::Ssh => "ssh",
+        }
+    }
+}
+
+/// What faber execs into once it has reached the machine.
+///
+/// Deliberately not derived from `docker_endpoint is not null`: an SSH host that
+/// *could* run docker but is deliberately used direct is a real configuration,
+/// and collapsing the two loses it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExecMode {
+    Direct,
+    Docker,
+}
+
+impl ExecMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ExecMode::Direct => "direct",
+            ExecMode::Docker => "docker",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Queryable, Selectable)]
+#[diesel(table_name = host)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct Host {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub name: String,
+    pub transport: String,
+    pub exec_mode: String,
+    pub ssh_address: Option<String>,
+    pub ssh_key_ref: Option<String>,
+    pub docker_endpoint: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub disabled_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = host)]
+pub struct NewHost<'a> {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub name: &'a str,
+    pub transport: &'a str,
+    pub exec_mode: &'a str,
+    pub ssh_address: Option<&'a str>,
+    pub ssh_key_ref: Option<&'a str>,
+    pub docker_endpoint: Option<&'a str>,
+}
+
+#[derive(AsChangeset, Default)]
+#[diesel(table_name = host)]
+pub struct UpdateHost<'a> {
+    pub name: Option<&'a str>,
+    pub transport: Option<&'a str>,
+    pub exec_mode: Option<&'a str>,
+    pub ssh_address: Option<Option<&'a str>>,
+    pub ssh_key_ref: Option<Option<&'a str>>,
+    pub docker_endpoint: Option<Option<&'a str>>,
+    /// Operator intent. `Some(None)` re-enables; the column never reflects an
+    /// observation.
+    pub disabled_at: Option<Option<DateTime<Utc>>>,
+}
+
+#[derive(Debug, Clone, Queryable, Selectable)]
+#[diesel(table_name = host_container)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct HostContainer {
+    pub id: Uuid,
+    pub host_id: Uuid,
+    pub container_ref: String,
+    pub name: Option<String>,
+    pub root_path: String,
+    pub created_at: DateTime<Utc>,
+    pub unregistered_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = host_container)]
+pub struct NewHostContainer<'a> {
+    pub id: Uuid,
+    pub host_id: Uuid,
+    pub container_ref: &'a str,
+    pub name: Option<&'a str>,
+    pub root_path: &'a str,
+}
+
+#[derive(AsChangeset, Default)]
+#[diesel(table_name = host_container)]
+pub struct UpdateHostContainer<'a> {
+    pub container_ref: Option<&'a str>,
+    pub name: Option<Option<&'a str>>,
+    pub root_path: Option<&'a str>,
+    /// State of the *registration*, not of the container. A container the user
+    /// removed out of band stays registered until someone says otherwise.
+    pub unregistered_at: Option<Option<DateTime<Utc>>>,
+}
+
+#[derive(Debug, Clone, Queryable, Selectable)]
+#[diesel(table_name = host_probe)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct HostProbe {
+    pub id: Uuid,
+    pub host_id: Uuid,
+    pub container_id: Option<Uuid>,
+    pub probed_at: DateTime<Utc>,
+    pub ok: bool,
+    pub error: Option<String>,
+    pub os: Option<String>,
+    pub arch: Option<String>,
+    pub shell: Option<String>,
+    pub tools: Option<Value>,
+    pub root_path: Option<String>,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = host_probe)]
+pub struct NewHostProbe<'a> {
+    pub id: Uuid,
+    pub host_id: Uuid,
+    pub container_id: Option<Uuid>,
+    pub ok: bool,
+    pub error: Option<&'a str>,
+    pub os: Option<&'a str>,
+    pub arch: Option<&'a str>,
+    pub shell: Option<&'a str>,
+    pub tools: Option<Value>,
+    pub root_path: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Queryable, Selectable)]
+#[diesel(table_name = image)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct Image {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub name: String,
+    pub reference: String,
+    pub default_mounts: Option<Value>,
+    pub default_root_path: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = image)]
+pub struct NewImage<'a> {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub name: &'a str,
+    pub reference: &'a str,
+    pub default_mounts: Option<Value>,
+    pub default_root_path: &'a str,
+}
+
+#[derive(AsChangeset, Default)]
+#[diesel(table_name = image)]
+pub struct UpdateImage<'a> {
+    pub name: Option<&'a str>,
+    pub reference: Option<&'a str>,
+    pub default_mounts: Option<Option<Value>>,
+    pub default_root_path: Option<&'a str>,
+}

@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS image;
+DROP TABLE IF EXISTS host_probe;
+DROP TABLE IF EXISTS host_container;
+DROP TABLE IF EXISTS host;

@@ -1,4 +1,6 @@
 mod credentials;
+mod hosts;
+mod images;
 mod models;
 mod runs;
 mod sessions;
@@ -28,6 +30,8 @@ pub fn router() -> Router<AppState> {
         .route("/api/logout", post(logout))
         .merge(credentials::router())
         .merge(models::router())
+        .merge(hosts::router())
+        .merge(images::router())
         .merge(workspaces::router())
         .merge(sessions::router())
         .merge(threads::router())

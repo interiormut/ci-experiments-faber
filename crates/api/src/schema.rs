@@ -30,6 +30,61 @@ diesel::table! {
 }
 
 diesel::table! {
+    host (id) {
+        id -> Uuid,
+        user_id -> Uuid,
+        name -> Text,
+        transport -> Text,
+        exec_mode -> Text,
+        ssh_address -> Nullable<Text>,
+        ssh_key_ref -> Nullable<Text>,
+        docker_endpoint -> Nullable<Text>,
+        created_at -> Timestamptz,
+        disabled_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
+    host_container (id) {
+        id -> Uuid,
+        host_id -> Uuid,
+        container_ref -> Text,
+        name -> Nullable<Text>,
+        root_path -> Text,
+        created_at -> Timestamptz,
+        unregistered_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
+    host_probe (id) {
+        id -> Uuid,
+        host_id -> Uuid,
+        container_id -> Nullable<Uuid>,
+        probed_at -> Timestamptz,
+        ok -> Bool,
+        error -> Nullable<Text>,
+        os -> Nullable<Text>,
+        arch -> Nullable<Text>,
+        shell -> Nullable<Text>,
+        tools -> Nullable<Jsonb>,
+        root_path -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
+    image (id) {
+        id -> Uuid,
+        user_id -> Uuid,
+        name -> Text,
+        reference -> Text,
+        default_mounts -> Nullable<Jsonb>,
+        default_root_path -> Text,
+        created_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
     blob (digest) {
         digest -> Bytea,
         data -> Nullable<Bytea>,
@@ -155,6 +210,11 @@ diesel::table! {
 
 diesel::joinable!(credentials -> users (user_id));
 diesel::joinable!(exchange -> run (run_id));
+diesel::joinable!(host -> users (user_id));
+diesel::joinable!(host_container -> host (host_id));
+diesel::joinable!(host_probe -> host (host_id));
+diesel::joinable!(host_probe -> host_container (container_id));
+diesel::joinable!(image -> users (user_id));
 diesel::joinable!(models -> users (user_id));
 diesel::joinable!(models -> credentials (credential_id));
 diesel::joinable!(run -> thread (thread_id));
@@ -173,6 +233,10 @@ diesel::allow_tables_to_appear_in_same_query!(
     blob,
     credentials,
     exchange,
+    host,
+    host_container,
+    host_probe,
+    image,
     models,
     run,
     session,
