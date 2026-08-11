@@ -4,12 +4,14 @@ use uuid::Uuid;
 
 use crate::schema::transcript;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Queryable, Selectable)]
 #[diesel(table_name = transcript)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct Transcript {
     pub id: Uuid,
+    /// Selected as part of the row; routes reach transcript rows through the run they
+    /// already hold, so it is not echoed back.
+    #[allow(dead_code)]
     pub run_id: Uuid,
     pub seq: i64,
     pub kind: String,

@@ -1,5 +1,9 @@
 mod credentials;
 mod models;
+mod runs;
+mod sessions;
+mod threads;
+mod workspaces;
 
 use axum::{
     Json, Router,
@@ -28,6 +32,29 @@ pub fn router() -> Router<AppState> {
         .route("/api/logout", post(logout))
         .merge(credentials::router())
         .merge(models::router())
+        .merge(workspaces::router())
+        .merge(sessions::router())
+        .merge(threads::router())
+        .merge(runs::router())
+}
+
+/// Default and ceiling for `?limit=` on collection routes. Unbounded list endpoints are
+/// a denial-of-service surface the moment a session accumulates history.
+const DEFAULT_LIMIT: i64 = 100;
+const MAX_LIMIT: i64 = 500;
+
+pub(crate) fn clamp_limit(requested: Option<i64>) -> i64 {
+    requested.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
+}
+
+/// Distinguishes an absent key from an explicit `null`, so a `PATCH` can clear a nullable
+/// column without a sentinel value.
+pub(crate) fn deserialize_optional_field<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::deserialize(de)?))
 }
 
 /// Revokes the caller's Surge session (best-effort) and clears the `surge_session` cookie

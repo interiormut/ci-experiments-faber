@@ -15,6 +15,7 @@ use crate::{
     auth::AuthUser,
     error::{ApiResult, AppError},
     models::model_config::{ModelConfig, NewModelConfig, UpdateModelConfig, Wire},
+    routes::deserialize_optional_field,
     schema::{credentials, models},
     state::AppState,
 };
@@ -52,15 +53,6 @@ struct UpdateRequest {
     credential_id: Option<Option<Uuid>>,
     params: Option<Value>,
     capabilities: Option<Value>,
-}
-
-/// Distinguishes an absent key from an explicit `null`.
-fn deserialize_optional_field<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
-where
-    T: Deserialize<'de>,
-    D: serde::Deserializer<'de>,
-{
-    Ok(Some(Option::deserialize(de)?))
 }
 
 #[derive(Serialize)]

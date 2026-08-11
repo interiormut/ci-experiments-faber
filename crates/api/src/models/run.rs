@@ -3,7 +3,6 @@ use uuid::Uuid;
 
 use crate::schema::run;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Queryable, Selectable)]
 #[diesel(table_name = run)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
