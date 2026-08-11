@@ -3046,7 +3046,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "surge"
 version = "0.1.0"
-source = "git+https://github.com/panitdev/surge?rev=98097a38ff8f6a33aa5165d64703a205f66dcd7c#98097a38ff8f6a33aa5165d64703a205f66dcd7c"
+source = "git+https://github.com/panitdev/surge?rev=952687c2daab8cb8a6d5014c4102d0b176c82ce7#952687c2daab8cb8a6d5014c4102d0b176c82ce7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3074,7 +3074,7 @@ dependencies = [
 [[package]]
 name = "surge-engine"
 version = "0.1.0"
-source = "git+https://github.com/panitdev/surge?rev=98097a38ff8f6a33aa5165d64703a205f66dcd7c#98097a38ff8f6a33aa5165d64703a205f66dcd7c"
+source = "git+https://github.com/panitdev/surge?rev=952687c2daab8cb8a6d5014c4102d0b176c82ce7#952687c2daab8cb8a6d5014c4102d0b176c82ce7"
 dependencies = [
  "anyhow",
  "argon2",
