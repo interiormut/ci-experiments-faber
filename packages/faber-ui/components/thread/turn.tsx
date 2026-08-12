@@ -1,5 +1,6 @@
 import { FaberIndicator } from "@/components/thread/faber-indicator"
-import { AgentRun } from "@/components/ui/agent-run"
+import { Markdown } from "@/components/thread/markdown"
+import { AgentMessage, AgentRun, AgentStep } from "@/components/ui/agent-run"
 import type { ContentBlock, Turn } from "@/lib/thread/transcript"
 
 function userText(turn: Turn): string {
@@ -16,12 +17,30 @@ export function TurnView({ turn, isLast = false }: { turn: Turn; isLast?: boolea
   return (
     <div className="flex flex-col gap-6">
       {text ? (
-        <div className="ml-auto max-w-[85%] whitespace-pre-wrap rounded-2xl bg-muted px-4 py-2.5 text-[15px] leading-relaxed text-foreground">
-          {text}
+        <div className="ml-auto max-w-[85%] rounded-2xl bg-muted px-4 py-2.5 text-[15px] leading-relaxed text-foreground">
+          <Markdown text={text} softBreaks />
         </div>
       ) : null}
 
-      {turn.items.length > 0 ? <AgentRun items={turn.items} /> : null}
+      {/* Rows are composed by hand rather than passed as `items`, because the
+          data-driven path renders a message's text as a plain string — the only
+          way to hand it to Markdown is to build the row ourselves. `isLast` is
+          still AgentRun's to inject. */}
+      {turn.items.length > 0 ? (
+        <AgentRun>
+          {turn.items.map((item) =>
+            item.kind === "message" ? (
+              <AgentMessage key={item.id}>
+                <Markdown text={item.text} />
+              </AgentMessage>
+            ) : (
+              <AgentStep key={item.id} state={item.state} title={item.name}>
+                {item.result}
+              </AgentStep>
+            ),
+          )}
+        </AgentRun>
+      ) : null}
 
       {/* The indicator is the tail of the timeline, so only the last turn — the
           one that can still be running — carries it. */}
