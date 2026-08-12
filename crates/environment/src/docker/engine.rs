@@ -1,4 +1,4 @@
-//! The five Engine API calls this crate needs, and nothing else.
+//! The Engine API calls this crate needs, and nothing else.
 //!
 //! Pinned to `v1.41` — old enough that any daemon a user is plausibly running
 //! speaks it, new enough to carry everything here. An unversioned path would
@@ -6,6 +6,14 @@
 //! function of someone else's upgrade schedule.
 //!
 //! Every call opens its own connection. See [`Daemon`] for why.
+//!
+//! The exec and archive calls are what a bound [`Target`](crate::Target) runs
+//! on. [`container_create`], [`container_start`], [`container_remove`], and
+//! [`image_pull`] are not: nothing on the `Target` surface reaches them, and
+//! nothing may be added that does. They exist for the consumer that *creates*
+//! a container on a user's instruction — the same asymmetry the whole crate
+//! carries, where the user decides what exists and the agent only works
+//! inside it.
 
 use std::sync::Arc;
 
@@ -217,6 +225,196 @@ pub async fn archive_stat(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Creation
+// ---------------------------------------------------------------------------
+
+/// One bind mount, as the consumer described it.
+///
+/// Only bind mounts. A named volume is a thing with a lifetime of its own that
+/// outlives the container and that nobody here would ever delete, and offering
+/// one would quietly make Faber the owner of storage it cannot account for.
+pub struct Mount {
+    /// The path on the machine the daemon runs on — not on the Faber host.
+    pub source: String,
+    /// Where it appears inside the container.
+    pub target: String,
+    pub read_only: bool,
+}
+
+/// Everything the daemon needs to create a container.
+pub struct Create<'a> {
+    /// The daemon assigns a random name when this is `None`. Passing one makes
+    /// the container findable by a human on the machine it lives on, which is
+    /// the difference between a container a user can reason about and one they
+    /// find later and dare not delete.
+    pub name: Option<&'a str>,
+    pub image: &'a str,
+    /// The process the container runs. It has to be one that stays up: a
+    /// container exists here to be exec'd into, and one whose entrypoint
+    /// returned is a stopped container with a confusing history.
+    pub cmd: &'a [String],
+    pub env: &'a [(String, String)],
+    pub working_dir: &'a str,
+    pub mounts: &'a [Mount],
+    /// Written onto the container so the machine's owner can tell what created
+    /// it without consulting Faber's database.
+    pub labels: &'a [(String, String)],
+}
+
+/// Creates a container and returns its id. Does not start it.
+///
+/// A missing image is reported as [`Denial::NotFound`] naming the reference,
+/// so a caller that wants to pull and retry can tell that case apart from a
+/// daemon that refused for some other reason.
+pub async fn container_create(
+    daemon: &Arc<dyn Daemon>,
+    create: &Create<'_>,
+) -> Result<String, Fault> {
+    let body = json!({
+        "Image": create.image,
+        "Cmd": create.cmd,
+        "Env": create.env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>(),
+        "WorkingDir": create.working_dir,
+        "Labels": create.labels.iter()
+            .map(|(key, value)| (key.clone(), Value::String(value.clone())))
+            .collect::<serde_json::Map<_, _>>(),
+        "HostConfig": {
+            "Mounts": create.mounts.iter().map(|mount| json!({
+                "Type": "bind",
+                "Source": mount.source,
+                "Target": mount.target,
+                "ReadOnly": mount.read_only,
+            })).collect::<Vec<_>>(),
+        },
+    });
+
+    let target = match create.name {
+        Some(name) => format!("{API}/containers/create?name={}", encode(name)),
+        None => format!("{API}/containers/create"),
+    };
+
+    let mut wire = Wire::new(daemon.connect().await?);
+    let head = wire
+        .request("POST", &target, Some(body.to_string().as_bytes()), false)
+        .await?;
+    let payload = wire.body(&head).await?;
+
+    if head.status == 404 {
+        return Err(Fault::Denied(Denial::NotFound {
+            path: create.image.to_owned(),
+        }));
+    }
+    if !head.ok() {
+        return Err(refused(head.status, &payload, create.image));
+    }
+
+    serde_json::from_slice::<Value>(&payload)
+        .ok()
+        .and_then(|value| value.get("Id")?.as_str().map(str::to_owned))
+        .ok_or_else(|| Fault::Unreachable("the daemon created a container with no id".to_owned()))
+}
+
+/// Starts a created container. Starting one already running is not an error —
+/// the daemon answers 304, and the caller asked for a running container, which
+/// is what it has.
+pub async fn container_start(daemon: &Arc<dyn Daemon>, container: &str) -> Result<(), Fault> {
+    let mut wire = Wire::new(daemon.connect().await?);
+    let head = wire
+        .request(
+            "POST",
+            &format!("{API}/containers/{}/start", encode(container)),
+            None,
+            false,
+        )
+        .await?;
+    let payload = wire.body(&head).await?;
+
+    match head.status {
+        200 | 204 | 304 => Ok(()),
+        status => Err(refused(status, &payload, container)),
+    }
+}
+
+/// Removes a container, killing it first if it is running.
+///
+/// Reachable only from the consumer side, and only for a container Faber
+/// created: destroying one a user made themselves is destroying something
+/// Faber was merely told about.
+pub async fn container_remove(daemon: &Arc<dyn Daemon>, container: &str) -> Result<(), Fault> {
+    let mut wire = Wire::new(daemon.connect().await?);
+    let head = wire
+        .request(
+            "DELETE",
+            &format!("{API}/containers/{}?force=true", encode(container)),
+            None,
+            false,
+        )
+        .await?;
+    let payload = wire.body(&head).await?;
+
+    match head.status {
+        // Already gone is the state the caller asked for.
+        200 | 204 | 404 => Ok(()),
+        status => Err(refused(status, &payload, container)),
+    }
+}
+
+/// Pulls an image, waiting for the pull to finish.
+///
+/// The daemon answers 200 immediately and then streams progress as JSON lines,
+/// reporting a failure *inside* that stream rather than in the status — so a
+/// pull that could not authenticate looks exactly like a successful one until
+/// the body is read to the end and inspected.
+pub async fn image_pull(daemon: &Arc<dyn Daemon>, reference: &str) -> Result<(), Fault> {
+    let (image, tag) = split_tag(reference);
+    let target = format!(
+        "{API}/images/create?fromImage={}&tag={}",
+        encode(image),
+        encode(tag)
+    );
+
+    let mut wire = Wire::new(daemon.connect().await?);
+    let head = wire.request("POST", &target, None, false).await?;
+    let payload = wire.body(&head).await?;
+
+    if !head.ok() {
+        return Err(refused(head.status, &payload, reference));
+    }
+
+    for line in payload.split(|byte| *byte == b'\n') {
+        if let Ok(value) = serde_json::from_slice::<Value>(line)
+            && let Some(error) = value.get("error").and_then(Value::as_str)
+        {
+            return Err(Fault::Denied(Denial::Malformed {
+                what: "image reference".into(),
+                reason: format!("could not pull `{reference}`: {error}"),
+            }));
+        }
+    }
+    Ok(())
+}
+
+/// Splits `repo/name:tag` into its two halves, defaulting to `latest`.
+///
+/// Two things this has to get right. The colon is searched for after the last
+/// `/`, or a registry carrying a port — `registry.local:5000/app` — loses its
+/// port to the tag. And a digest reference is split on its `@`, since the
+/// daemon takes `sha256:…` whole as the tag.
+fn split_tag(reference: &str) -> (&str, &str) {
+    if let Some(at) = reference.rfind('@') {
+        return (&reference[..at], &reference[at + 1..]);
+    }
+    let start = reference.rfind('/').map_or(0, |at| at + 1);
+    match reference[start..].rfind(':') {
+        Some(offset) => {
+            let at = start + offset;
+            (&reference[..at], &reference[at + 1..])
+        }
+        None => (reference, "latest"),
+    }
+}
+
 /// A daemon's refusal, carried across as the class the agent should act on.
 ///
 /// A 4xx is about the request and a 5xx is about the daemon, which is the same
@@ -271,6 +469,21 @@ mod tests {
     fn a_stopped_container_is_unreachable_rather_than_a_denial() {
         let fault = refused(409, br#"{"message":"is not running"}"#, "build");
         assert!(matches!(fault, Fault::Unreachable(_)));
+    }
+
+    #[test]
+    fn a_registry_port_is_not_mistaken_for_a_tag() {
+        assert_eq!(split_tag("alpine"), ("alpine", "latest"));
+        assert_eq!(split_tag("alpine:3.20"), ("alpine", "3.20"));
+        assert_eq!(
+            split_tag("registry.local:5000/app"),
+            ("registry.local:5000/app", "latest")
+        );
+        assert_eq!(
+            split_tag("registry.local:5000/app:v1"),
+            ("registry.local:5000/app", "v1")
+        );
+        assert_eq!(split_tag("alpine@sha256:abc"), ("alpine", "sha256:abc"));
     }
 
     #[test]

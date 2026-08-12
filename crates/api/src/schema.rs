@@ -54,6 +54,8 @@ diesel::table! {
         root_path -> Text,
         created_at -> Timestamptz,
         unregistered_at -> Nullable<Timestamptz>,
+        managed_at -> Nullable<Timestamptz>,
+        image_id -> Nullable<Uuid>,
     }
 }
 
@@ -213,6 +215,7 @@ diesel::joinable!(credentials -> users (user_id));
 diesel::joinable!(exchange -> run (run_id));
 diesel::joinable!(host -> users (user_id));
 diesel::joinable!(host_container -> host (host_id));
+diesel::joinable!(host_container -> image (image_id));
 diesel::joinable!(host_probe -> host (host_id));
 diesel::joinable!(host_probe -> host_container (container_id));
 diesel::joinable!(image -> users (user_id));

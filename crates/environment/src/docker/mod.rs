@@ -18,13 +18,19 @@
 //!   stdout and stderr arrive merged — and quietly folding stderr into stdout
 //!   is a worse failure than not offering the capability.
 //!
-//! Container lifecycle stays absent, exactly as elsewhere. There is no start,
-//! stop, restart, or remove here, and a stopped container is reported rather
-//! than started: it may be stopped deliberately, and an agent that can restart
-//! its own container can destroy what a user is mid-way through inspecting.
-//! File verbs still work against a stopped container, because the archive
-//! endpoints do not need it running — so a stopped container degrades to a
-//! readable one rather than to nothing.
+//! Container lifecycle stays absent **from the bound target**, exactly as
+//! elsewhere. [`DockerTarget`] exposes no start, stop, restart, or remove, and
+//! a stopped container is reported rather than started: it may be stopped
+//! deliberately, and an agent that can restart its own container can destroy
+//! what a user is mid-way through inspecting. File verbs still work against a
+//! stopped container, because the archive endpoints do not need it running —
+//! so a stopped container degrades to a readable one rather than to nothing.
+//!
+//! [`engine::container_create`] and its siblings do exist, one level below,
+//! and nothing on the target surface can reach them. They are there for the
+//! consumer that creates a container because a *user* asked it to. The rule
+//! was never "no container is ever created"; it is that the agent does not get
+//! to decide what exists, only what happens inside what does.
 
 pub mod daemon;
 pub mod engine;

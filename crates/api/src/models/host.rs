@@ -117,6 +117,20 @@ pub struct HostContainer {
     pub root_path: String,
     pub created_at: DateTime<Utc>,
     pub unregistered_at: Option<DateTime<Utc>>,
+    /// When faber created this container. `None` means the user did and faber
+    /// was only told about it — which is the difference between a container
+    /// faber may destroy and one it must leave alone.
+    pub managed_at: Option<DateTime<Utc>>,
+    /// The template it was created from, kept as provenance. Nothing resolves
+    /// through it, and it goes null if the template is deleted.
+    pub image_id: Option<Uuid>,
+}
+
+impl HostContainer {
+    /// Faber created it, so faber may destroy it.
+    pub fn managed(&self) -> bool {
+        self.managed_at.is_some()
+    }
 }
 
 #[derive(Insertable)]
@@ -127,6 +141,8 @@ pub struct NewHostContainer<'a> {
     pub container_ref: &'a str,
     pub name: Option<&'a str>,
     pub root_path: &'a str,
+    pub managed_at: Option<DateTime<Utc>>,
+    pub image_id: Option<Uuid>,
 }
 
 #[derive(AsChangeset, Default)]

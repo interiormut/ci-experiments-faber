@@ -12,6 +12,7 @@ mod compact;
 mod config;
 mod crypto;
 mod db;
+mod environments;
 mod error;
 mod models;
 mod resolve;

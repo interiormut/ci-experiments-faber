@@ -17,6 +17,7 @@ test-provider = ["surge/test-provider"]
 # binary, which is what an in-process harness run costs.
 llm = { path = "../llm" }
 harness = { path = "../harness" }
+environment = { path = "../environment" }
 axum = { version = "0.8", features = ["macros"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures = "0.3"

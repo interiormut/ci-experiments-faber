@@ -1,14 +1,19 @@
 //! Spawn templates — see `internal-docs/host.md`.
 //!
 //! An image is not a host, not a container, and not owned by either. It exists
-//! purely so "start me a fresh one" is a one-shot convenience rather than a
-//! lifecycle commitment, which is why nothing points at it: a spawned
-//! container's origin is provenance nobody branches on, and recording it would
-//! imply faber tracks what it created.
+//! so "start me a fresh one" is a one-shot convenience rather than a lifecycle
+//! commitment.
 //!
-//! Only the registration half is implemented here. The spawn itself needs a
-//! reach-the-machine layer that does not exist in this crate yet, so there is
-//! no `POST /api/images/{id}/spawn`.
+//! Faber does now track what it creates — `host_container.managed_at` — and a
+//! spawned container records the template it came from. That is provenance and
+//! only provenance: nothing resolves through `image_id`, deleting a template
+//! nulls it rather than touching the container, and the container's own ref
+//! stays the thing execution uses.
+//!
+//! Only the registration half lives here. Spawning is
+//! `POST /api/hosts/{id}/containers/spawn`, on the host — because a container
+//! is created on a machine, and the machine is the half that carries a daemon,
+//! authentication, and a network path.
 
 use axum::{
     Json, Router,

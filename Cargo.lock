@@ -93,6 +93,7 @@ dependencies = [
  "diesel-async",
  "diesel_migrations",
  "dotenvy",
+ "environment",
  "futures",
  "harness",
  "llm",
