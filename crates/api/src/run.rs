@@ -30,6 +30,7 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::{
+    compact::{Compactor, KIND_MESSAGE},
     db::DbPool,
     error::{ApiResult, AppError},
     models::{
@@ -372,7 +373,14 @@ async fn execute(
     );
 
     // Harness output starts after the user's own turn.
+    //
+    // Every event is published live and given a `seq`, so the SSE resume
+    // cursor stays gap-free; only what [`Compactor`] calls durable is
+    // written. The persisted rows therefore have holes in `seq`, which the
+    // `seq > after_seq` reads and the client's dedupe-by-seq both already
+    // tolerate.
     let mut seq = INPUT_SEQ + 1;
+    let mut compactor = Compactor::new();
     while let Some(event) = run.transcript.recv().await {
         let kind = event
             .get("type")
@@ -380,30 +388,21 @@ async fn execute(
             .unwrap_or("unknown")
             .to_owned();
 
-        // Persisted before it is published, so a subscriber can never see an
-        // event that a reconnect would then fail to replay.
-        let mut conn = state.db.get().await?;
-        diesel::insert_into(crate::schema::transcript::table)
-            .values(&NewTranscript {
-                id: Uuid::now_v7(),
-                run_id,
-                seq,
-                kind: &kind,
-                payload: event.clone(),
-                created_at: now_epoch(),
-            })
-            .execute(&mut conn)
-            .await
-            .map_err(|err| AppError::db(err, "run.insert_transcript"))?;
-        drop(conn);
+        let folded = compactor.push(&kind, &event);
 
-        let _ = sender.send(StreamEvent {
-            run_id,
-            seq,
-            kind,
-            payload: event,
-        });
-        seq += 1;
+        if let Some(message) = folded.flushed {
+            publish(state, sender, run_id, &mut seq, KIND_MESSAGE.to_owned(), message, true).await?;
+        }
+        publish(state, sender, run_id, &mut seq, kind, event, folded.persist_raw).await?;
+        if let Some(message) = folded.completed {
+            publish(state, sender, run_id, &mut seq, KIND_MESSAGE.to_owned(), message, true).await?;
+        }
+    }
+
+    // Before the join, not after: a harness that ends in error never reaches
+    // `record_history`, and the text it did stream is still what the user saw.
+    if let Some(message) = compactor.finish() {
+        publish(state, sender, run_id, &mut seq, KIND_MESSAGE.to_owned(), message, true).await?;
     }
 
     // `join` blocks on an OS thread handle, which must not happen on the async
@@ -420,6 +419,54 @@ async fn execute(
         })?;
 
     record_history(&state.db, run_id, thread_id, started_at, outcome).await
+}
+
+/// Publishes one event at the next `seq`, writing it first when it is durable.
+///
+/// Persist-then-publish is what keeps a subscriber from seeing an event a
+/// reconnect would fail to replay. For a *folded* event that guarantee is
+/// weaker by construction: a delta is published and never written, and the
+/// message it belongs to only becomes durable when it closes. So a client
+/// that reloads mid-message sees nothing of that message until `message_stop`
+/// — the compacted event then arrives live and renders it whole. That window
+/// is the price of not storing the deltas.
+async fn publish(
+    state: &AppState,
+    sender: &broadcast::Sender<StreamEvent>,
+    run_id: Uuid,
+    seq: &mut i64,
+    kind: String,
+    payload: Value,
+    persist: bool,
+) -> ApiResult<()> {
+    let at = *seq;
+    *seq += 1;
+
+    if persist {
+        // Checked out per durable event rather than per streamed one: a
+        // pool checkout for every delta was its own cost, next to the row.
+        let mut conn = state.db.get().await?;
+        diesel::insert_into(crate::schema::transcript::table)
+            .values(&NewTranscript {
+                id: Uuid::now_v7(),
+                run_id,
+                seq: at,
+                kind: &kind,
+                payload: payload.clone(),
+                created_at: now_epoch(),
+            })
+            .execute(&mut conn)
+            .await
+            .map_err(|err| AppError::db(err, "run.insert_transcript"))?;
+    }
+
+    let _ = sender.send(StreamEvent {
+        run_id,
+        seq: at,
+        kind,
+        payload,
+    });
+    Ok(())
 }
 
 async fn mark_run_complete(db: &DbPool, run_id: Uuid) -> ApiResult<()> {

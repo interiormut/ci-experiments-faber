@@ -8,6 +8,7 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 
 mod access;
 mod auth;
+mod compact;
 mod config;
 mod crypto;
 mod db;

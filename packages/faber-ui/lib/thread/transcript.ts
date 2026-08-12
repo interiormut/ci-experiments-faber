@@ -18,6 +18,12 @@ import type { JsonValue, StreamEvent, TranscriptEvent, Uuid } from "@/lib/api"
 // require a type change to keep compiling.
 // ---------------------------------------------------------------------------
 
+/**
+ * One whole LLM message. The durable form of everything between a
+ * `message_start` and its `message_stop` — see `crates/api/src/compact.rs`.
+ */
+const KIND_MESSAGE = "message"
+
 export type ContentBlock =
   | { type: "text"; text: string }
   | { type: "thinking"; thinking: string; signature?: string }
@@ -79,17 +85,30 @@ type BlockEntry =
   | { kind: "message"; itemId: string }
   | { kind: "tool"; itemId: string; partialJson: string }
 
+/** The LLM message a run is streaming right now, and the items it has produced. */
+type OpenMessage = { index: number; itemIds: string[] }
+
 export type TranscriptStore = {
   order: Uuid[]
   byRun: Record<Uuid, Turn>
   /** Open content blocks for the run's *current* LLM message, by block index. */
   blocks: Record<Uuid, Record<number, BlockEntry>>
+  /**
+   * What a `message` event replaces. The API persists whole messages and
+   * streams the deltas that build them (`crates/api/src/compact.rs`), so a
+   * live client renders a message twice over: once from its deltas, then once
+   * from the compacted event that closes it. The second must land *on* the
+   * first rather than beside it.
+   */
+  open: Record<Uuid, OpenMessage | undefined>
+  /** Messages seen per run, which is what gives their items a stable id. */
+  messageCount: Record<Uuid, number>
   /** Seqs already applied per run — replay and live overlap at the resume cursor. */
   seen: Record<Uuid, Record<number, true>>
 }
 
 export function createStore(): TranscriptStore {
-  return { order: [], byRun: {}, blocks: {}, seen: {} }
+  return { order: [], byRun: {}, blocks: {}, open: {}, messageCount: {}, seen: {} }
 }
 
 export function turnsOf(store: TranscriptStore): Turn[] {
@@ -99,13 +118,46 @@ export function turnsOf(store: TranscriptStore): Turn[] {
 function ensureRun(store: TranscriptStore, runId: Uuid): TranscriptStore {
   if (store.byRun[runId]) return store
   return {
+    ...store,
     order: [...store.order, runId],
     byRun: {
       ...store.byRun,
       [runId]: { runId, userContent: [], items: [], status: "running" },
     },
     blocks: { ...store.blocks, [runId]: {} },
+    messageCount: { ...store.messageCount, [runId]: 0 },
     seen: { ...store.seen, [runId]: {} },
+  }
+}
+
+/**
+ * Opens a message for a run that has none, and returns the store alongside it.
+ *
+ * A run resumed mid-message never saw its `message_start`, and a harness may
+ * yield blocks without one at all — either way the content is real and belongs
+ * to a message, so one is opened rather than the blocks dropped.
+ */
+function openMessage(store: TranscriptStore, runId: Uuid): [TranscriptStore, OpenMessage] {
+  const existing = store.open[runId]
+  if (existing) return [store, existing]
+  const index = (store.messageCount[runId] ?? 0) + 1
+  const opened: OpenMessage = { index, itemIds: [] }
+  return [
+    {
+      ...store,
+      open: { ...store.open, [runId]: opened },
+      messageCount: { ...store.messageCount, [runId]: index },
+    },
+    opened,
+  ]
+}
+
+function trackItem(store: TranscriptStore, runId: Uuid, itemId: string): TranscriptStore {
+  const open = store.open[runId]
+  if (!open) return store
+  return {
+    ...store,
+    open: { ...store.open, [runId]: { ...open, itemIds: [...open.itemIds, itemId] } },
   }
 }
 
@@ -154,16 +206,56 @@ export function applyEvent(store: TranscriptStore, event: NormalizedEvent): Tran
 
     case "message_start": {
       // A fresh LLM message starts a fresh set of block indices.
-      return { ...next, blocks: { ...next.blocks, [runId]: {} } }
+      const count = (next.messageCount[runId] ?? 0) + 1
+      return {
+        ...next,
+        blocks: { ...next.blocks, [runId]: {} },
+        open: { ...next.open, [runId]: { index: count, itemIds: [] } },
+        messageCount: { ...next.messageCount, [runId]: count },
+      }
+    }
+
+    /**
+     * One whole LLM message, as the API persists it. On replay this is the
+     * only thing a run's model output arrives as; live it lands after the
+     * deltas that already drew it, and replaces them.
+     */
+    case KIND_MESSAGE: {
+      const message = payload as unknown as TranscriptMessage
+      let open: OpenMessage
+      ;[next, open] = openMessage(next, runId)
+      const run = next.byRun[runId]
+
+      const replaced = new Set(open.itemIds)
+      const at = run.items.findIndex((item) => replaced.has(item.id))
+      const kept = run.items.filter((item) => !replaced.has(item.id))
+      const previous = new Map(run.items.map((item) => [item.id, item]))
+      const rebuilt = itemsFromContent(open.index, message.content ?? [], previous)
+
+      const insertAt = at === -1 ? kept.length : at
+      const items = [...kept.slice(0, insertAt), ...rebuilt, ...kept.slice(insertAt)]
+
+      next = updateRun(next, runId, { items })
+      return {
+        ...next,
+        blocks: { ...next.blocks, [runId]: {} },
+        open: { ...next.open, [runId]: undefined },
+      }
     }
 
     case "block_start": {
       const { index, block } = payload as unknown as { index: number; block: BlockStartPayload }
+      let open: OpenMessage
+      ;[next, open] = openMessage(next, runId)
       if (block.type === "text") {
-        const itemId = `${runId}:${seq}`
+        // Derived from the message and block it renders, not from `seq`, so
+        // the compacted `message` event rebuilds the same id and React keeps
+        // the row rather than remounting it mid-reveal.
+        const itemId = textItemId(open.index, index)
         const run = next.byRun[runId]
         const items: AgentRunItem[] = [...run.items, { kind: "message", id: itemId, text: "" }]
         next = updateRun(next, runId, { items })
+        next = trackItem(next, runId, itemId)
         return setBlock(next, runId, index, { kind: "message", itemId })
       }
       if (block.type === "tool_use") {
@@ -173,6 +265,7 @@ export function applyEvent(store: TranscriptStore, event: NormalizedEvent): Tran
           { kind: "tool", id: block.id, name: block.name, state: "pending" },
         ]
         next = updateRun(next, runId, { items })
+        next = trackItem(next, runId, block.id)
         return setBlock(next, runId, index, { kind: "tool", itemId: block.id, partialJson: "" })
       }
       // Thinking and unknown blocks are deliberately not surfaced on the
@@ -236,6 +329,48 @@ export function applyEvent(store: TranscriptStore, event: NormalizedEvent): Tran
 
 export function applyEvents(store: TranscriptStore, events: NormalizedEvent[]): TranscriptStore {
   return events.reduce(applyEvent, store)
+}
+
+/**
+ * Items for one whole message's content blocks.
+ *
+ * `previous` carries whatever the deltas (or an earlier apply) already built,
+ * so a tool call that has since resolved keeps its state and result instead of
+ * being reset to `running` by the message it belongs to.
+ */
+function itemsFromContent(
+  messageIndex: number,
+  content: ContentBlock[],
+  previous: Map<string, AgentRunItem>,
+): AgentRunItem[] {
+  const items: AgentRunItem[] = []
+  content.forEach((block, index) => {
+    if (block.type === "text") {
+      items.push({ kind: "message", id: textItemId(messageIndex, index), text: block.text })
+      return
+    }
+    if (block.type === "tool_use") {
+      const existing = previous.get(block.id)
+      items.push({
+        kind: "tool",
+        id: block.id,
+        name: block.name,
+        // `running`, not `pending`: the arguments are complete, which is
+        // exactly what the live path's `block_stop` says by setting the same.
+        state: existing?.kind === "tool" ? existing.state : "running",
+        input: block.input,
+        result: existing?.kind === "tool" ? existing.result : undefined,
+      })
+    }
+    // Thinking, unknown, and tool results are not timeline items — the same
+    // omission the delta path makes.
+  })
+  return items
+}
+
+/** Stable across the delta-built item and its compacted replacement. */
+function textItemId(messageIndex: number, blockIndex: number): string {
+  return `m${messageIndex}:${blockIndex}`
 }
 
 function parseJsonLoosely(raw: string): JsonValue {
