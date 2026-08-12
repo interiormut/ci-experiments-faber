@@ -159,7 +159,10 @@ impl Spawn for SshSpawn {
                             code: exit_status as i32,
                         });
                     }
-                    ChannelMsg::Close | ChannelMsg::Eof => break,
+                    // Not Eof: the server sends it *before* the exit status,
+                    // and breaking there loses the code the command exited
+                    // with. Only Close ends the conversation.
+                    ChannelMsg::Close => break,
                     _ => {}
                 }
             }

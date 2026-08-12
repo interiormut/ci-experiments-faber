@@ -28,7 +28,7 @@ use crate::local::LocalTarget;
 use crate::local::tests::scratch;
 use crate::machine::Machine;
 use crate::path::Root;
-use crate::ssh::{HostKey, SshCredential, SshTarget};
+use crate::ssh::{HostKey, SshCredential, SshForwarded, SshSession, SshTarget};
 use crate::store::{Blobs, MemoryBlobs, Span};
 use crate::target::Target;
 
@@ -132,12 +132,54 @@ async fn modes() -> Vec<Mode> {
                 target,
                 blobs,
             });
+
+            // The fourth cell: the same container, reached by forwarding to
+            // the daemon's socket over the session just opened. Loopback here,
+            // but every piece is the real one — direct-streamlocal, then the
+            // Engine API over an SSH channel.
+            if let (Ok(socket), Ok(container)) = (
+                std::env::var("FABER_TEST_SSH_DOCKER"),
+                std::env::var("FABER_TEST_CONTAINER"),
+            ) {
+                let (session, _) = SshSession::connect(address, &credential, HostKey::AcceptNew)
+                    .await
+                    .expect("could not open a session for the forward");
+                let daemon =
+                    Arc::new(SshForwarded::new(Arc::new(session), socket)) as Arc<dyn Daemon>;
+
+                let blobs = Arc::new(MemoryBlobs::new());
+                modes.push(Mode {
+                    name: "ssh+docker",
+                    target: DockerTarget::bind(
+                        "conformance",
+                        daemon,
+                        container,
+                        Root::new("/work").unwrap(),
+                        blobs.clone() as Arc<dyn Blobs>,
+                    )
+                    .await
+                    .expect("could not bind the container through the forward"),
+                    blobs,
+                });
+            }
         }
         _ => eprintln!(
             "conformance: ssh modes skipped — set FABER_TEST_SSH (user@host:port), \
              FABER_TEST_SSH_KEY and FABER_TEST_SSH_ROOT to include them"
         ),
     }
+
+    // What ran is part of the result. A suite that checked one mode and a
+    // suite that checked four both print "ok".
+    eprintln!(
+        "conformance: {} mode(s) bound — {}",
+        modes.len(),
+        modes
+            .iter()
+            .map(|mode| mode.name)
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 
     modes
 }

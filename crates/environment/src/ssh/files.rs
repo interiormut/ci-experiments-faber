@@ -17,6 +17,7 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::FileType;
+use tokio::io::AsyncWriteExt;
 
 use crate::fault::{Denial, Fault};
 use crate::file::{EntryKind, Stat};
@@ -136,8 +137,19 @@ impl Files for SftpFiles {
             }
         }
 
-        self.sftp
-            .write(real.clone(), body)
+        // `SftpSession::write` opens with WRITE alone, which fails outright on
+        // a file that does not exist yet and leaves a tail behind when the new
+        // contents are shorter than the old. `create` is CREATE|TRUNCATE|WRITE,
+        // which is what writing a file whole means everywhere else in the crate.
+        let mut file = self
+            .sftp
+            .create(real.clone())
+            .await
+            .map_err(|error| missing(path, &error))?;
+        file.write_all(body)
+            .await
+            .map_err(|error| Fault::Unreachable(error.to_string()))?;
+        file.flush()
             .await
             .map_err(|error| Fault::Unreachable(error.to_string()))?;
 
