@@ -28,6 +28,7 @@ use crate::local::LocalTarget;
 use crate::local::tests::scratch;
 use crate::machine::Machine;
 use crate::path::Root;
+use crate::ssh::{HostKey, SshCredential, SshTarget};
 use crate::store::{Blobs, MemoryBlobs, Span};
 use crate::target::Target;
 
@@ -88,6 +89,53 @@ async fn modes() -> Vec<Mode> {
         _ => eprintln!(
             "conformance: docker modes skipped — set FABER_TEST_DOCKER and \
              FABER_TEST_CONTAINER to include them"
+        ),
+    }
+
+    match (
+        std::env::var("FABER_TEST_SSH"),
+        std::env::var("FABER_TEST_SSH_KEY"),
+        std::env::var("FABER_TEST_SSH_ROOT"),
+    ) {
+        (Ok(address), Ok(key_path), Ok(root)) => {
+            let (user, address) = address
+                .split_once('@')
+                .expect("FABER_TEST_SSH is user@host:port");
+            let credential = SshCredential {
+                user: user.to_owned(),
+                private_key: std::fs::read_to_string(key_path)
+                    .expect("could not read the test key"),
+                passphrase: None,
+            };
+
+            let blobs = Arc::new(MemoryBlobs::new());
+            let (target, fingerprint) = SshTarget::bind(
+                "conformance",
+                address,
+                &credential,
+                // First contact against a host under test. A caller storing
+                // the fingerprint would pass Verify from here on, which is the
+                // shape this returns it for.
+                HostKey::AcceptNew,
+                Root::new(root).unwrap(),
+                blobs.clone() as Arc<dyn Blobs>,
+            )
+            .await
+            .expect("could not bind the configured test host");
+            assert!(
+                fingerprint.starts_with("SHA256:"),
+                "a bind reports the host key it saw, so the caller can store it"
+            );
+
+            modes.push(Mode {
+                name: "ssh+direct",
+                target,
+                blobs,
+            });
+        }
+        _ => eprintln!(
+            "conformance: ssh modes skipped — set FABER_TEST_SSH (user@host:port), \
+             FABER_TEST_SSH_KEY and FABER_TEST_SSH_ROOT to include them"
         ),
     }
 

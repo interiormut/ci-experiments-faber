@@ -39,6 +39,7 @@ pub mod path;
 pub mod probe;
 pub mod registry;
 pub mod spawn;
+pub mod ssh;
 pub mod store;
 pub mod target;
 
@@ -53,5 +54,6 @@ pub use manifest::{Capability, Manifest, Posture, Reachability, Scope};
 pub use path::{Root, RootedPath};
 pub use registry::{Binding, Label, Registry};
 pub use spawn::{Proc, Run, Spawn};
+pub use ssh::{HostKey, SshCredential, SshTarget};
 pub use store::{Blob, BlobRef, Blobs, MemoryBlobs, Span};
 pub use target::Target;
