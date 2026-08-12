@@ -1,0 +1,30 @@
+[package]
+name = "environment"
+version = "0.1.0"
+edition = "2024"
+
+# No `llm`, no `harness`. Nothing here may reference a run, a session, or
+# an exchange; binding is the consumer's concern and its foreign keys point
+# this direction.
+[dependencies]
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+thiserror = "1"
+tokio = { version = "1", features = [
+  "process",
+  "fs",
+  "io-util",
+  "time",
+  "rt",
+  "sync",
+  "macros",
+] }
+tracing = "0.1"
+
+# Only for `kill(2)` in the local target: `tokio::process::Child` can send
+# SIGKILL and nothing else, and process signals are in scope.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

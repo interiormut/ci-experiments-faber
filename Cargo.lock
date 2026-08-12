@@ -1044,6 +1044,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "environment"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "libc",
+ "serde",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
