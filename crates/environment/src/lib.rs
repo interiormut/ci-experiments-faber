@@ -27,6 +27,7 @@
 #[cfg(test)]
 mod conformance;
 
+pub mod docker;
 pub mod exec;
 pub mod fault;
 pub mod file;
@@ -41,6 +42,7 @@ pub mod spawn;
 pub mod store;
 pub mod target;
 
+pub use docker::DockerTarget;
 pub use exec::{Chunk, Cursor, Exec, Exit, Outcome, ProcId, Signal, Stream};
 pub use fault::{Denial, Fault};
 pub use file::{Edit, Entry, EntryKind, Listing, Patch, PatchOp, Replace, Stat, Window};

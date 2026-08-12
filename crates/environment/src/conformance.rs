@@ -20,9 +20,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::exec::{Exec, Outcome};
+use crate::docker::{Daemon, DockerTarget, LocalSocket};
+use crate::exec::{Cursor, Exec, Outcome, Signal};
 use crate::fault::{Denial, Fault};
-use crate::file::{Edit, Replace, Window};
+use crate::file::{Edit, Patch, PatchOp, Replace, Window};
 use crate::local::LocalTarget;
 use crate::local::tests::scratch;
 use crate::machine::Machine;
@@ -44,6 +45,12 @@ impl Mode {
 }
 
 /// Every mode bindable here. Adding a transport is one push.
+///
+/// A mode needing something this machine may not have is bound only when it is
+/// configured, and says so on the way past when it is not. Reading these two
+/// variables is not the ambient resolution the crate refuses — nothing under
+/// `src/` reads them, and a test fixture choosing what to test against is not
+/// a user's connection being routed somewhere they did not ask for.
 async fn modes() -> Vec<Mode> {
     let mut modes = Vec::new();
 
@@ -56,6 +63,33 @@ async fn modes() -> Vec<Mode> {
             .unwrap(),
         blobs,
     });
+
+    match (
+        std::env::var("FABER_TEST_DOCKER"),
+        std::env::var("FABER_TEST_CONTAINER"),
+    ) {
+        (Ok(endpoint), Ok(container)) => {
+            let blobs = Arc::new(MemoryBlobs::new());
+            let daemon = Arc::new(LocalSocket::new(endpoint).unwrap()) as Arc<dyn Daemon>;
+            modes.push(Mode {
+                name: "local+docker",
+                target: DockerTarget::bind(
+                    "conformance",
+                    daemon,
+                    container,
+                    Root::new("/work").unwrap(),
+                    blobs.clone() as Arc<dyn Blobs>,
+                )
+                .await
+                .expect("could not bind the configured test container"),
+                blobs,
+            });
+        }
+        _ => eprintln!(
+            "conformance: docker modes skipped — set FABER_TEST_DOCKER and \
+             FABER_TEST_CONTAINER to include them"
+        ),
+    }
 
     modes
 }
@@ -246,6 +280,158 @@ async fn an_ambiguous_edit_is_refused_in_every_mode() {
         assert!(
             matches!(fault, Fault::Denied(Denial::EditRefused { .. })),
             "{}: two matches without `all` is refused rather than guessed at, got {fault:?}",
+            mode.name
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_patch_set_adds_edits_moves_and_deletes_in_every_mode() {
+    for mode in modes().await {
+        let first = mode.target.path("/patch/a.txt").unwrap();
+        let second = mode.target.path("/patch/b.txt").unwrap();
+        let moved = mode.target.path("/patch/nested/c.txt").unwrap();
+
+        mode.target.write(&second, &"old\n".into()).await.unwrap();
+        let patch = Patch::new(vec![
+            PatchOp::Add {
+                path: first.clone(),
+                body: b"one\n".to_vec(),
+            },
+            PatchOp::Update(Replace::new(second.clone(), "old", "new")),
+            PatchOp::Move {
+                from: second.clone(),
+                to: moved.clone(),
+            },
+        ]);
+
+        let stats = mode.target.edit(&Edit::Patch(patch)).await.unwrap();
+        assert_eq!(
+            stats.len(),
+            3,
+            "{}: every op that wrote reports a stat",
+            mode.name
+        );
+        assert_eq!(
+            mode.text(&mode.target.read(&moved, None).await.unwrap()),
+            "new\n",
+            "{}: the edit landed and then moved with the file",
+            mode.name
+        );
+        assert!(
+            matches!(
+                mode.target.read(&second, None).await.unwrap_err(),
+                Fault::Denied(Denial::NotFound { .. })
+            ),
+            "{}: what moved is gone from where it was",
+            mode.name
+        );
+
+        mode.target
+            .edit(&Edit::Patch(Patch::new(vec![PatchOp::Delete {
+                path: first.clone(),
+            }])))
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                mode.target.read(&first, None).await.unwrap_err(),
+                Fault::Denied(Denial::NotFound { .. })
+            ),
+            "{}: a deleted file is gone",
+            mode.name
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_listing_stays_in_one_directory_in_every_mode() {
+    for mode in modes().await {
+        for name in ["/list/keep.rs", "/list/skip.md", "/list/deep/also.rs"] {
+            mode.target
+                .write(&mode.target.path(name).unwrap(), &"".into())
+                .await
+                .unwrap();
+        }
+
+        let listing = mode
+            .target
+            .list(&mode.target.path("/list").unwrap(), Some("*.rs"))
+            .await
+            .unwrap();
+        let names: Vec<&str> = listing.entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["/list/keep.rs"],
+            "{}: a glob matches one directory's names and does not recurse",
+            mode.name
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_background_process_reads_forward_from_a_cursor_in_every_mode() {
+    for mode in modes().await {
+        let id = mode
+            .target
+            .start(Exec::new("while read line; do echo \"got $line\"; done"))
+            .await
+            .unwrap();
+
+        mode.target.stdin(id, &"one\n".into()).await.unwrap();
+
+        let mut cursor = Cursor::START;
+        let mut waited = 0;
+        let first = loop {
+            let chunk = mode.target.output(id, cursor).await.unwrap();
+            cursor = chunk.next;
+            if chunk.stdout.len > 0 {
+                break mode.text(&chunk.stdout);
+            }
+            waited += 1;
+            assert!(
+                waited < 200,
+                "{}: the process never answered stdin",
+                mode.name
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(
+            first.trim(),
+            "got one",
+            "{}: stdin reached a running process and its output came back",
+            mode.name
+        );
+
+        mode.target
+            .signal(id, Signal::Term)
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{}: a running process can be signalled, got {error}",
+                    mode.name
+                )
+            });
+    }
+}
+
+#[tokio::test]
+async fn large_output_spills_to_a_path_inside_the_target_in_every_mode() {
+    for mode in modes().await {
+        let exit = mode
+            .target
+            .exec(Exec::new("head -c 200000 /dev/zero | tr '\\0' 'a'"))
+            .await
+            .unwrap();
+
+        let spill = exit
+            .stdout
+            .spill
+            .unwrap_or_else(|| panic!("{}: large output spills to a path", mode.name));
+        let span = mode.target.read(&spill, None).await.unwrap();
+        assert_eq!(
+            span.len, 200_000,
+            "{}: the spill file holds everything the span could not",
             mode.name
         );
     }
