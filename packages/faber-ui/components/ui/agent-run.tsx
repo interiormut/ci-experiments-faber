@@ -10,7 +10,7 @@ import {
   useTransform,
   type MotionValue,
 } from "framer-motion"
-import { Check, X } from "lucide-react"
+import { Check, ChevronRight, X } from "lucide-react"
 
 import { PANIT_DEFAULT_EASE } from "@/lib/motion"
 import { cn } from "@/lib/utils"
@@ -29,6 +29,12 @@ import { cn } from "@/lib/utils"
  * so the circle does not have its own motion: it is the line's stroke
  * continuing around the ring. Because the driver is per-row and not a global
  * height map, streaming content of any length works.
+ *
+ * {@link AgentThinking} is prose too, but behind a header the user can click:
+ * its body shows fully, not at all, or as a peeking window onto the newest few
+ * lines while reasoning is still streaming. The height is animated, and the
+ * line beside it tracks that animation frame by frame, so the fold and the
+ * timeline move together.
  *
  * Rows do not animate themselves. {@link AgentRun} owns a coordinator
  * that batches every row mounted in the same commit into ONE animation: each
@@ -386,6 +392,7 @@ function TrailLine({
   from,
   range,
   isLast,
+  pinned = false,
 }: {
   progress: MotionValue<number>
   /** Distance from the top of the row where the line starts, in px. */
@@ -394,6 +401,8 @@ function TrailLine({
   range: [number, number]
   /** Final row — nothing connects below, so its length may lag the content. */
   isLast: boolean
+  /** The row is mid height-animation of its own — track it exactly, never ease. */
+  pinned?: boolean
 }) {
   const { nodeSize, lineWidth, reduce } = useRun()
   const scaleY = useTransform(progress, range, [0, 1])
@@ -416,7 +425,14 @@ function TrailLine({
   //     EASE toward the new height. The text still snaps (you can't render half a
   //     line) but the line glides after it — and because only the last row eases,
   //     the lag can never open a gap above a node.
-  const smooth = isLast && !reduce
+  //
+  // `pinned` is the third case: the row is deliberately animating its own height
+  // (a thinking block collapsing). The content is already gliding, so the
+  // ResizeObserver fires every frame — easing on top of that would restart a
+  // fresh tween per frame and leave the line rubber-banding behind the box, and
+  // still easing after the collapse has landed. Exact tracking is what a row
+  // that animates itself wants.
+  const smooth = isLast && !reduce && !pinned
   const ref = React.useRef<HTMLDivElement>(null)
   // Height is a MotionValue, never React state, and is written straight to the
   // DOM. That is deliberate: the reveal coordinator batches every row mounted in
@@ -494,7 +510,28 @@ export type AgentRunToolItem = {
   result?: React.ReactNode
 }
 
-export type AgentRunItem = AgentRunMessageItem | AgentRunToolItem
+export type AgentRunThinkingItem = {
+  kind: "thinking"
+  /** Stable identity — React key; keeps the reveal from replaying as text grows. */
+  id: string
+  /** The reasoning so far. Append as it streams; an open block grows in place. */
+  text: string
+  /** Header label. Defaults to "Thinking". */
+  title?: React.ReactNode
+  /**
+   * Controlled mode. Set it to drive the block from app state (and pair it with
+   * {@link AgentRunProps.onThinkingModeChange}) — that is how an app shows
+   * reasoning as a peeking window while it streams and folds it away when the
+   * turn moves on. Leave it undefined to let the block own its own mode,
+   * starting collapsed.
+   */
+  mode?: AgentThinkingMode
+}
+
+export type AgentRunItem =
+  | AgentRunMessageItem
+  | AgentRunToolItem
+  | AgentRunThinkingItem
 
 /** Presentation for one tool item; anything omitted falls back to a default. */
 export type AgentToolRender = {
@@ -511,6 +548,15 @@ type AgentRunProps = {
   items?: AgentRunItem[]
   /** Maps a tool item to its presentation. Defaults to the tool name as title. */
   renderTool?: (item: AgentRunToolItem) => AgentToolRender
+  /**
+   * Fires when the user clicks a thinking item's header, with the mode the
+   * component would pick on its own. Required only to *control* the mode from
+   * app state (write a value back onto the item's `mode`) — which is what lets
+   * the app override the default, e.g. sending a click back to `"peek"` instead
+   * of `"collapsed"` while the model is still streaming. An item without `mode`
+   * manages itself and still reports here.
+   */
+  onThinkingModeChange?: (id: string, mode: AgentThinkingMode) => void
   /** Outer node diameter in pixels. Defaults to 64 (4rem) — a deliberately spacious node. */
   nodeSize?: number
   /** Stroke width of the line and the node ring, in pixels. */
@@ -522,6 +568,7 @@ export function AgentRun({
   children,
   items,
   renderTool,
+  onThinkingModeChange,
   nodeSize = 64,
   lineWidth = 2,
   className,
@@ -537,6 +584,18 @@ export function AgentRun({
     ? items.map((item) => {
         if (item.kind === "message") {
           return <AgentMessage key={item.id}>{item.text}</AgentMessage>
+        }
+        if (item.kind === "thinking") {
+          return (
+            <AgentThinking
+              key={item.id}
+              title={item.title}
+              mode={item.mode}
+              onModeChange={(next) => onThinkingModeChange?.(item.id, next)}
+            >
+              {item.text}
+            </AgentThinking>
+          )
         }
         const r = renderTool?.(item) ?? {}
         return (
@@ -682,6 +741,344 @@ export function AgentMessage({ children, className, isLast = false }: AgentMessa
         style={{ opacity, y }}
       >
         {children}
+      </motion.div>
+    </div>
+  )
+}
+
+// How long a thinking block takes to move between modes.
+const COLLAPSE_DURATION = 0.3
+
+// Height of the fade at the top of a peeking block, in px.
+const PEEK_FADE_PX = 40
+
+/**
+ * How much of a thinking block is showing.
+ *
+ * - `collapsed` — header only.
+ * - `peek` — a fixed window onto the LAST few lines, pinned to the newest one
+ *   and faded out at the top. This is the shape reasoning wants *while it is
+ *   still arriving*: the text keeps moving, but the row's height does not.
+ * - `expanded` — the whole thing.
+ */
+export type AgentThinkingMode = "collapsed" | "peek" | "expanded"
+
+/**
+ * Viewport driver for a thinking body: how tall the clip box is, how strong the
+ * top fade is, and where it is scrolled.
+ *
+ * The steady-state height is NOT an animation target — it is `set()` straight
+ * from the measurement whenever the content changes. That matters because
+ * thinking text streams: if the open state merely aimed a tween at the current
+ * height, every appended token would restart it and the box would ease along
+ * behind the text, clipping the newest line the whole time it was arriving.
+ *
+ * A tween runs only for a MODE CHANGE. Content that changes mid-tween — a line
+ * wrapping while an expand is still playing, which is likely at streaming
+ * speed — retargets the tween into the time it has LEFT rather than restarting
+ * it. That keeps the whole transition inside one 0.3s budget, so it can never
+ * chase the stream, while still ruling out a visible jump mid-expand.
+ *
+ * `peek` sidesteps that entirely: its height is capped, so streaming does not
+ * move it at all — only `scrollTop` advances, which is why the mode exists.
+ *
+ * Both values are MotionValues written straight to the DOM (never React state),
+ * for the same reason {@link TrailLine} does it: a measurement must not schedule
+ * a render, or a row mounting mid-batch would desync from the reveal stroke.
+ *
+ * @returns `toggling` — true only while a mode tween is in flight. The row hands
+ * it to {@link TrailLine} as `pinned` so the line tracks the change exactly
+ * instead of easing after it.
+ */
+function useThinkingViewport(
+  mode: AgentThinkingMode,
+  reduce: boolean,
+  peekLines: number
+) {
+  const clipRef = React.useRef<HTMLDivElement>(null)
+  const contentRef = React.useRef<HTMLDivElement>(null)
+  const height = useMotionValue(0)
+  const fade = useMotionValue(0)
+  const [toggling, setToggling] = React.useState(false)
+  const controls = React.useRef<ReturnType<typeof animate>[]>([])
+  // Read inside the ResizeObserver — refs, not deps, so it never re-subscribes.
+  const modeRef = React.useRef(mode)
+  const linesRef = React.useRef(peekLines)
+  linesRef.current = peekLines
+  const target = React.useRef({ h: 0, f: 0 })
+  const firstRun = React.useRef(true)
+
+  /**
+   * Keep the newest line in view. Programmatic scroll works on an
+   * overflow-hidden box, so the window follows the stream without ever becoming
+   * a scrollbar.
+   *
+   * Only scroll when the content is genuinely taller than the window we are
+   * aiming at, and judge that against the TARGET height rather than the
+   * rendered one. `height.set()` does not reach the DOM synchronously — motion
+   * writes MotionValues in its own frame step — so a block that is still
+   * shorter than the peek window would otherwise be scrolled to the bottom of
+   * its previous, one-line-shorter self on the frame a line wraps: the text
+   * jumps up, and the next frame (once the new height lands) puts it back.
+   */
+  const pin = React.useCallback(() => {
+    const clip = clipRef.current
+    const el = contentRef.current
+    if (!clip || !el || modeRef.current === "expanded") return
+    if (el.getBoundingClientRect().height <= target.current.h + 1) return
+    clip.scrollTop = clip.scrollHeight
+  }, [])
+
+  /** The clip box's height and fade for the current mode and content. */
+  const compute = React.useCallback(() => {
+    const el = contentRef.current
+    if (!el) return { h: 0, f: 0 }
+    if (modeRef.current === "collapsed") return { h: 0, f: 0 }
+    const full = el.getBoundingClientRect().height
+    if (modeRef.current === "expanded") return { h: full, f: 0 }
+    const cs = getComputedStyle(el)
+    const line = parseFloat(cs.lineHeight) || 22
+    const window = line * linesRef.current + (parseFloat(cs.paddingTop) || 0)
+    // Fade only once there is something above the window to fade out.
+    return { h: Math.min(full, window), f: full > window + 1 ? 1 : 0 }
+  }, [])
+
+  const stop = React.useCallback(() => {
+    controls.current.forEach((c) => c.stop())
+    controls.current = []
+  }, [])
+
+  const settle = React.useCallback(
+    (next: { h: number; f: number }) => {
+      stop()
+      setToggling(false)
+      height.set(next.h)
+      fade.set(next.f)
+      pin()
+    },
+    [fade, height, pin, stop]
+  )
+
+  /** When the in-flight mode transition started, so a retarget can use what is
+   *  left of its budget instead of granting itself a fresh one. */
+  const startedAt = React.useRef(0)
+
+  const play = React.useCallback(
+    (next: { h: number; f: number }, duration: number) => {
+      stop()
+      setToggling(true)
+      const opts = { duration, ease: PANIT_DEFAULT_EASE }
+      const h = animate(height, next.h, opts)
+      const f = animate(fade, next.f, opts)
+      controls.current = [h, f]
+      h.then(() => {
+        // A newer tween may have superseded this one; only the live one settles.
+        if (!controls.current.includes(h)) return
+        controls.current = []
+        setToggling(false)
+        pin()
+      })
+    },
+    [fade, height, pin, stop]
+  )
+
+  useIsoLayoutEffect(() => {
+    const el = contentRef.current
+    if (!el) return
+    const measure = () => {
+      const next = compute()
+      const changed = next.h !== target.current.h || next.f !== target.current.f
+      target.current = next
+      if (controls.current.length > 0) {
+        // Mid-tween. Let it finish when it is still heading somewhere valid;
+        // when the content moved the goalposts, aim at the new target within
+        // the time this transition had left.
+        if (!changed) return
+        const left = COLLAPSE_DURATION - (performance.now() - startedAt.current) / 1000
+        play(next, Math.max(0.05, left))
+      } else {
+        height.set(next.h)
+        fade.set(next.f)
+      }
+      pin()
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    // Height changes every frame of a mode tween; re-pin so the window keeps
+    // showing the tail as it grows or shrinks.
+    const unsub = height.on("change", pin)
+    ro.observe(el)
+    return () => {
+      ro.disconnect()
+      unsub()
+    }
+  }, [compute, fade, height, pin, play])
+
+  React.useEffect(() => {
+    modeRef.current = mode
+    const next = compute()
+    target.current = next
+    // The initial state is a rendering, not a transition: however the row first
+    // appears, it is already in that state on the first paint.
+    if (firstRun.current || reduce) {
+      firstRun.current = false
+      settle(next)
+      return
+    }
+    startedAt.current = performance.now()
+    play(next, COLLAPSE_DURATION)
+  }, [mode, reduce, compute, settle, play])
+
+  React.useEffect(() => () => controls.current.forEach((c) => c.stop()), [])
+
+  // Fades the top edge of the window out, so a cut-off block reads as cut off
+  // rather than as text that happens to start mid-sentence. A mask rather than a
+  // gradient overlay: it fades the text against whatever surface is behind the
+  // row, with no assumption about the background colour.
+  const mask = useTransform(fade, (f) =>
+    f <= 0.001
+      ? "none"
+      : `linear-gradient(to bottom, rgba(0,0,0,${(1 - f).toFixed(3)}) 0px, rgb(0,0,0) ${(
+          f * PEEK_FADE_PX
+        ).toFixed(1)}px)`
+  )
+
+  return { clipRef, contentRef, height, mask, toggling }
+}
+
+type AgentThinkingProps = {
+  /** The reasoning text. Append as it streams; the block keeps up in every mode. */
+  children: React.ReactNode
+  /** Header label, always visible. Defaults to "Thinking". */
+  title?: React.ReactNode
+  /**
+   * Controlled mode. Pass it (with `onModeChange`) to own how much shows —
+   * which is what lets the app do things the component cannot know to do, like
+   * dropping back to `peek` when a click lands while the model is still
+   * streaming. Omit it and the block manages its own, starting at
+   * `defaultMode`.
+   */
+  mode?: AgentThinkingMode
+  /** Initial mode when uncontrolled. Defaults to `"collapsed"`. */
+  defaultMode?: AgentThinkingMode
+  /**
+   * Fires on every header click, controlled or not, with the mode the component
+   * would move to on its own: a click opens a `collapsed` or `peek` block fully,
+   * and closes an `expanded` one. Ignore it and set whatever mode you want.
+   */
+  onModeChange?: (mode: AgentThinkingMode) => void
+  /** Lines of reasoning kept visible in `peek`. Defaults to 6. */
+  peekLines?: number
+  className?: string
+  /** @internal Set by {@link AgentRun}; true for the final row. */
+  isLast?: boolean
+}
+
+/** What a header click does when the component is left to decide for itself. */
+function nextMode(mode: AgentThinkingMode): AgentThinkingMode {
+  return mode === "expanded" ? "collapsed" : "expanded"
+}
+
+/**
+ * A block of agent reasoning on the timeline: a header the user can click, and
+ * no node — like {@link AgentMessage}, the line simply passes through. The body
+ * shows fully, as a peeking window onto the newest lines, or not at all; see
+ * {@link AgentThinkingMode}. The header sits OUTSIDE the clipped body, so its
+ * focus ring is never shaved by the height animation.
+ */
+export function AgentThinking({
+  children,
+  title = "Thinking",
+  mode,
+  defaultMode = "collapsed",
+  onModeChange,
+  peekLines = 6,
+  className,
+  isLast = false,
+}: AgentThinkingProps) {
+  const { nodeSize, reduce } = useRun()
+  // Same slice as prose — a thinking row is part of the same stroke chain, and
+  // its reveal is mount-only, so changing mode never re-enrolls with the
+  // coordinator.
+  const progress = useRowProgress(reduce, { duration: 0.55 })
+  const opacity = useTransform(progress, [0.1, 0.8], [0, 1])
+  const y = useTransform(progress, [0.1, 0.8], [6, 0])
+
+  const [uncontrolled, setUncontrolled] = React.useState(defaultMode)
+  const current = mode ?? uncontrolled
+  const bodyId = React.useId()
+
+  const toggle = () => {
+    const next = nextMode(current)
+    if (mode === undefined) setUncontrolled(next)
+    onModeChange?.(next)
+  }
+
+  const { clipRef, contentRef, height, mask, toggling } = useThinkingViewport(
+    current,
+    reduce,
+    peekLines
+  )
+
+  return (
+    <div className={cn("relative flex gap-4", className)}>
+      <div className="relative shrink-0" style={{ width: nodeSize }}>
+        <TrailLine
+          progress={progress}
+          from={0}
+          range={[0, 1]}
+          isLast={isLast}
+          pinned={toggling}
+        />
+      </div>
+      <motion.div
+        className={cn(
+          "min-w-0 flex-1 transition-[padding] duration-300",
+          isLast ? "pb-0" : "pb-6"
+        )}
+        style={{ opacity, y }}
+      >
+        <button
+          type="button"
+          onClick={toggle}
+          aria-expanded={current !== "collapsed"}
+          aria-controls={bodyId}
+          className="-mx-1 flex items-center gap-1.5 rounded-md px-1 py-0.5 text-sm text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        >
+          <ChevronRight
+            className={cn(
+              "h-3.5 w-3.5 shrink-0",
+              !reduce && "transition-transform duration-300",
+              current !== "collapsed" && "rotate-90"
+            )}
+          />
+          <span className="truncate">{title}</span>
+        </button>
+        {/* The clip box. `overflow: hidden` belongs on the animated element
+            itself — it is what hides the excess mid-transition — and the mask
+            has to ride the same box it clips. Hidden from assistive tech when
+            collapsed: the text is still in the DOM at height 0. */}
+        <motion.div
+          ref={clipRef}
+          aria-hidden={current === "collapsed"}
+          style={{
+            height,
+            overflow: "hidden",
+            maskImage: mask,
+            WebkitMaskImage: mask,
+          }}
+        >
+          <div
+            id={bodyId}
+            ref={contentRef}
+            // `flow-root` keeps the padding inside the measured height rather
+            // than letting a child's margin collapse out of it.
+            className="pt-1 pl-[1.375rem] text-sm leading-relaxed text-muted-foreground"
+            style={{ display: "flow-root" }}
+          >
+            {children}
+          </div>
+        </motion.div>
       </motion.div>
     </div>
   )
