@@ -83,6 +83,17 @@ export type RunStatus = "running" | "done" | "error"
  * appending to this block, which is what lets the view peek at reasoning while
  * it arrives and fold it away once it stops. The mode itself is the view's —
  * nothing here sets {@link AgentRunThinkingItem.mode}.
+ *
+ * It ends on whichever comes first of the block's own `block_stop`, the next
+ * block opening, or the run ending. The middle one is what makes reasoning
+ * fold away when *that reasoning* stops rather than when the run does: a
+ * provider whose stream carries no block boundaries has them synthesized from
+ * flat deltas, and that synthesis can only close every open block together at
+ * the end of the message (`crates/llm/src/openai/wire.rs`'s `close_blocks`).
+ * Its `block_stop` is therefore too late to be the only signal. A block
+ * starting is not: whatever follows reasoning — text, a tool call — opens one,
+ * and reasoning never resumes into the block it left, so a row settled this
+ * way can never need to un-settle.
  */
 export type ThinkingItem = AgentRunThinkingItem & { streaming: boolean }
 
@@ -265,6 +276,10 @@ export function applyEvent(store: TranscriptStore, event: NormalizedEvent): Tran
       const { index, block } = payload as unknown as { index: number; block: BlockStartPayload }
       let open: OpenMessage
       ;[next, open] = openMessage(next, runId)
+      // Anything opening a block means the model has moved on from whatever
+      // reasoning was still open — including an unknown block, which this
+      // timeline drops but which is content all the same.
+      next = updateRun(next, runId, { items: settleThinking(next, runId) })
       if (block.type === "text" || block.type === "thinking") {
         // Derived from the message and block it renders, not from `seq`, so
         // the compacted `message` event rebuilds the same id and React keeps
@@ -357,7 +372,8 @@ export function applyEvent(store: TranscriptStore, event: NormalizedEvent): Tran
         status: "error",
         errorMessage: message,
         // A run that died mid-block never sent the `block_stop` that ends its
-        // reasoning; the run being over ends it just as well.
+        // reasoning, and nothing followed it either; the run being over ends
+        // it just as well.
         items: settleThinking(next, runId),
       })
     }
@@ -369,7 +385,12 @@ export function applyEvent(store: TranscriptStore, event: NormalizedEvent): Tran
   }
 }
 
-/** Every thinking row of a run, with none of them still streaming. */
+/**
+ * Every row of a run, with no thinking block left open.
+ *
+ * Used both when a run ends and when a new block opens — see
+ * {@link ThinkingItem} for why the latter has to count.
+ */
 function settleThinking(store: TranscriptStore, runId: Uuid): TimelineItem[] {
   return store.byRun[runId].items.map((item) =>
     item.kind === "thinking" && item.streaming ? { ...item, streaming: false } : item,
