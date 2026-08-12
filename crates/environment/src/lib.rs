@@ -24,6 +24,9 @@
 //!   implementation; a mode is a `Machine` over a different [`Spawn`] and
 //!   [`Files`], so adding one is mechanism and never behavior.
 
+#[cfg(test)]
+mod conformance;
+
 pub mod exec;
 pub mod fault;
 pub mod file;
@@ -32,6 +35,7 @@ pub mod local;
 pub mod machine;
 pub mod manifest;
 pub mod path;
+pub mod probe;
 pub mod registry;
 pub mod spawn;
 pub mod store;

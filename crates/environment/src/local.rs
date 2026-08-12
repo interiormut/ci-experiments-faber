@@ -32,14 +32,10 @@ use crate::files::{Confined, DirEntry, Files};
 use crate::machine::Machine;
 use crate::manifest::{Capability, Manifest, Posture, Reachability, Scope};
 use crate::path::{Root, RootedPath};
+use crate::probe::{SHELL, probe};
 use crate::registry::Label;
 use crate::spawn::{Proc, Run, Sink, Source, Spawn};
 use crate::store::Blobs;
-
-/// Binaries probed at bind. Per-binary capability is manifest data, never tool
-/// presence — there is no `git` verb on [`Target`](crate::Target), only a
-/// `git` line in the manifest.
-const PROBED_TOOLS: &[&str] = &["git", "rg", "cargo", "node", "python3"];
 
 /// Direct execution on this machine.
 ///
@@ -62,14 +58,9 @@ impl LocalTarget {
             })
         })?;
 
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
-
-        let mut tools = BTreeMap::new();
-        for tool in PROBED_TOOLS {
-            if let Some(version) = probe_tool(tool).await {
-                tools.insert((*tool).to_owned(), version);
-            }
-        }
+        // Through the same transport that will run everything else, so this
+        // target describes itself the way every other mode does.
+        let probed = probe(&LocalSpawn, real_root.to_string_lossy().into_owned()).await?;
 
         // No `Capability::Pty`: background stdin here is a pipe, so a program
         // that opens `/dev/tty` or checks `isatty` will not prompt into it.
@@ -94,11 +85,11 @@ impl LocalTarget {
 
         let manifest = Manifest {
             label,
-            os: std::env::consts::OS.to_owned(),
-            arch: std::env::consts::ARCH.to_owned(),
-            shell,
+            os: probed.os,
+            arch: probed.arch,
+            shell: SHELL.to_owned(),
             root,
-            tools,
+            tools: probed.tools,
             capabilities,
             scope: Scope::Workspace,
             // Nothing probed the network, and asserting either way gets
@@ -448,15 +439,6 @@ fn outcome_of(status: std::process::ExitStatus) -> Outcome {
     }
 }
 
-async fn probe_tool(tool: &str) -> Option<String> {
-    let output = Command::new(tool).arg("--version").output().await.ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    Some(text.lines().next()?.trim().to_owned())
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use std::sync::Arc;
@@ -486,9 +468,9 @@ pub(crate) mod tests {
         Machine::new(
             Manifest {
                 label: label.into(),
-                os: std::env::consts::OS.to_owned(),
-                arch: std::env::consts::ARCH.to_owned(),
-                shell: "/bin/sh".to_owned(),
+                os: "linux".to_owned(),
+                arch: "x86_64".to_owned(),
+                shell: SHELL.to_owned(),
                 root,
                 tools: BTreeMap::new(),
                 capabilities: BTreeSet::from([
