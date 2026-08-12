@@ -100,7 +100,7 @@ function SessionThread({ sessionId }: { sessionId: Uuid }) {
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div ref={scrollRef} onScroll={handleScroll} className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-2xl flex-col gap-8 px-4 pt-8 pb-40">
+        <div className="mx-auto flex w-full max-w-4xl flex-col gap-8 px-4 pt-8 pb-40">
           {threadError ? <p className="text-sm text-destructive">{threadError}</p> : null}
           {loading && !threadError ? (
             <p className="text-sm text-muted-foreground">Loading…</p>
@@ -114,12 +114,12 @@ function SessionThread({ sessionId }: { sessionId: Uuid }) {
 
       <div className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col items-center gap-2 px-4 pb-6">
         {sendError ? (
-          <p className="pointer-events-none max-w-2xl text-center text-xs text-destructive">
+          <p className="pointer-events-none max-w-4xl text-center text-xs text-destructive">
             {sendError}
           </p>
         ) : null}
         <PromptBox
-          className="pointer-events-auto w-full max-w-2xl"
+          className="pointer-events-auto w-full max-w-4xl"
           placeholder={noModels ? "Add a model to start chatting…" : "Message…"}
           sendDisabled={noModels || !threadId}
           isExecuting={isRunning}

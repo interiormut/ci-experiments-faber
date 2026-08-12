@@ -47,7 +47,7 @@ export default function Home() {
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-4">
       <PromptBox
-        className="w-full max-w-2xl"
+        className="w-full max-w-4xl"
         placeholder={noModels ? "Add a model to start chatting…" : "Start a thread…"}
         sendDisabled={noModels || sending}
         onSend={handleSend}
@@ -61,7 +61,7 @@ export default function Home() {
         }
       />
       {sendError ? (
-        <p className="w-full max-w-2xl text-sm text-destructive">{sendError}</p>
+        <p className="w-full max-w-4xl text-sm text-destructive">{sendError}</p>
       ) : null}
     </div>
   )
