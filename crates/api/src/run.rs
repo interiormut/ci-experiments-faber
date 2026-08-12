@@ -111,10 +111,22 @@ pub const KIND_RUN_ERROR: &str = "run_error";
 /// not one.
 pub const KIND_INPUT: &str = "input";
 
-/// The turn told the session something rather than the model: an environment
-/// was added. Carried as its own kind so a client can render it as what it is
-/// — neither the user's words nor the assistant's.
+/// The session said something, rather than the user or the model: an
+/// environment was added, or one it has could not be reached this run. Its own
+/// kind so a client renders it as what it is — neither side's words.
 pub const KIND_ENVIRONMENTS: &str = "environments";
+
+/// One of a turn's input messages, and what the transcript calls it.
+///
+/// The kind is carried rather than derived from the role. It used to be read
+/// off `Role::System`, which stopped distinguishing anything the moment the
+/// environment announcement had to become a user turn to survive the Anthropic
+/// wire — and a note that silently rendered as a second user bubble is worse
+/// than no note.
+pub struct TurnMessage {
+    pub kind: &'static str,
+    pub message: llm::Message,
+}
 
 /// The `transcript.seq` the turn's first input message occupies. Harness
 /// output starts after the last of them.
@@ -255,7 +267,7 @@ pub struct RunRequest {
     /// The turn's messages, in order. Usually just the user's; more when the
     /// session had something to say alongside it, such as an environment
     /// having been added.
-    pub input: Vec<llm::Message>,
+    pub input: Vec<TurnMessage>,
 }
 
 /// Claims the session's channel for a run that is about to start.
@@ -381,10 +393,11 @@ async fn execute(
     let bound =
         crate::environments::bind_session(&state, user_id, session_id, Arc::clone(&blobs)).await?;
 
-    // Said out loud rather than swallowed. A target the session has and this
-    // run could not reach is missing from the registry, so a call against it
-    // answers "not bound" — which is true of the run and misleading about the
-    // session, and the user is the one who can tell the difference.
+    // Said out loud rather than swallowed, and to the user rather than only to
+    // the log. A target the session has and this run could not reach is
+    // missing from the registry, so a call against it answers "not bound" —
+    // which is true of the run and misleading about the session. The user is
+    // the one who can tell those apart and the only one who can fix it.
     for (label, reason) in &bound.unreachable {
         tracing::warn!(%run_id, %label, %reason, "an environment could not be bound for this run");
     }
@@ -404,11 +417,26 @@ async fn execute(
         commit_granted: true,
     };
 
-    let first_harness_seq = INPUT_SEQ + input.len() as i64;
+    let mut first_harness_seq = INPUT_SEQ + input.len() as i64;
+    for (label, reason) in &bound.unreachable {
+        publish(
+            state,
+            sender,
+            run_id,
+            &mut first_harness_seq,
+            KIND_ENVIRONMENTS.to_owned(),
+            notice(&format!(
+                "'{label}' could not be reached for this run: {reason}"
+            )),
+            true,
+        )
+        .await?;
+    }
+
     let started_at = now_epoch();
     let mut run = HarnessRun::start(
         harness::harness_for(config.family.as_deref()).to_owned(),
-        input,
+        input.into_iter().map(|turn| turn.message).collect(),
         grant,
         seed,
     );
@@ -496,6 +524,16 @@ async fn execute(
         })?;
 
     record_history(&state.db, run_id, thread_id, started_at, outcome).await
+}
+
+/// A transcript-only message from the session, in the shape a client already
+/// reads. Never sent to the model: it describes this run's reach, and the
+/// model's own answer to that question is the call it makes.
+fn notice(text: &str) -> Value {
+    json!({
+        "role": "user",
+        "content": [{ "type": "text", "text": text }],
+    })
 }
 
 /// Publishes one event at the next `seq`, writing it first when it is durable.
@@ -780,29 +818,25 @@ async fn put_blob(conn: &mut AsyncPgConnection, bytes: &[u8], now: i64) -> ApiRe
 /// Writes the turn's input messages from [`INPUT_SEQ`] and returns them for
 /// publication.
 ///
-/// A system-role message here is one the *session* had to say — that an
-/// environment was added — and it lands in the transcript alongside the user's
-/// own words rather than being folded into them or hidden. H2 makes the
-/// transcript the user-facing conversation, and a note the model can see and
-/// the user cannot is not part of one.
+/// A message the *session* had to say — that an environment was added — lands
+/// here alongside the user's own words rather than being folded into them or
+/// hidden. H2 makes the transcript the user-facing conversation, and a note the
+/// model can see and the user cannot is not part of one.
 pub async fn record_input(
     conn: &mut AsyncPgConnection,
     run_id: Uuid,
-    input: &[llm::Message],
+    input: &[TurnMessage],
 ) -> ApiResult<Vec<StreamEvent>> {
     let mut events = Vec::with_capacity(input.len());
 
-    for (offset, message) in input.iter().enumerate() {
+    for (offset, turn) in input.iter().enumerate() {
         let seq = INPUT_SEQ + offset as i64;
-        let payload =
-            serde_json::to_value(harness::mapping::Message::from(message)).map_err(|error| {
+        let payload = serde_json::to_value(harness::mapping::Message::from(&turn.message))
+            .map_err(|error| {
                 tracing::error!(error = %error, "input message failed to encode");
                 AppError::Internal
             })?;
-        let kind = match message.role {
-            llm::Role::System => KIND_ENVIRONMENTS,
-            _ => KIND_INPUT,
-        };
+        let kind = turn.kind;
 
         diesel::insert_into(crate::schema::transcript::table)
             .values(&NewTranscript {

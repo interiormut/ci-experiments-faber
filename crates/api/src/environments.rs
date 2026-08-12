@@ -372,6 +372,15 @@ pub async fn tag_environments(
 /// happened at turn nine would invalidate the whole prefix and rewrite history
 /// to claim the environment had been there all along. A turn appended at the
 /// end costs nothing cached and says what actually happened, in order.
+///
+/// **A user turn, though it is not the user speaking.** A system role is what
+/// this is, and the lineage would carry one — but Anthropic takes a system
+/// prompt only as a top-level field, so a system turn that is not the leading
+/// run stays inline in `messages`, where the API accepts `user` and
+/// `assistant` and refuses everything else. The turn would be rejected on
+/// exactly the request it exists to inform. The `<environments>` tags are what
+/// mark it as not the user's prose, and they are what the model reads; the
+/// role is what the wire can carry.
 pub fn announcement(added: &[String]) -> Option<llm::Message> {
     if added.is_empty() {
         return None;
@@ -389,7 +398,7 @@ pub fn announcement(added: &[String]) -> Option<llm::Message> {
     };
 
     Some(llm::Message {
-        role: llm::Role::System,
+        role: llm::Role::User,
         content: vec![llm::ContentBlock::Text {
             text: format!("<environments>User added {names} {noun}</environments>"),
         }],
@@ -416,6 +425,14 @@ pub struct Bound {
 /// adds one. Each is probed here rather than at the moment it was tagged: a
 /// probe is a network round trip, the `POST` that tags an environment has to
 /// stay fast, and a machine that was reachable when tagged may not be now.
+///
+/// The cost of that is paid per turn, and it is worth stating rather than
+/// discovering: an ssh environment that has gone away spends the SSH connect
+/// timeout — twenty seconds — before every message in that session, and one
+/// that has gone away permanently spends it forever. The run reports the
+/// failure to the user, which is what makes it fixable, but nothing here backs
+/// off. That is the next thing to want, and it needs a place to remember a
+/// failure across runs, which is state this layer does not have yet.
 pub async fn bind_session(
     state: &AppState,
     user_id: Uuid,
@@ -582,15 +599,19 @@ mod tests {
         assert!(announcement(&[]).is_none());
 
         let one = announcement(&["build".to_owned()]).expect("one environment");
-        assert!(matches!(one.role, llm::Role::System));
+        // Not a system turn, however much it reads like one: Anthropic hoists
+        // only a *leading* system run into its top-level field, so this one
+        // would go inline in `messages` and be refused. The tags carry what
+        // the role cannot.
+        assert!(matches!(one.role, llm::Role::User));
         assert_eq!(
             one.text(),
             "<environments>User added 'build' environment</environments>"
         );
 
-        // Several in one turn become one message, not several. Consecutive
-        // system turns after the head are refused by validation, and two
-        // separate notes would say the same thing twice anyway.
+        // Several in one turn become one message, not several: two separate
+        // notes would say the same thing twice, and one is what a reader and a
+        // model both want.
         let two =
             announcement(&["build".to_owned(), "staging".to_owned()]).expect("two environments");
         assert_eq!(

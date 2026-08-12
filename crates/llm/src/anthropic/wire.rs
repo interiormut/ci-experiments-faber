@@ -73,7 +73,11 @@ pub fn render(request: &Request) -> Result<RenderedRequest, Error> {
     Ok(RenderedRequest { body, prefix })
 }
 
-fn build_body(request: &Request, messages_bytes: &[u8], system_bytes: &[u8]) -> Result<Vec<u8>, Error> {
+fn build_body(
+    request: &Request,
+    messages_bytes: &[u8],
+    system_bytes: &[u8],
+) -> Result<Vec<u8>, Error> {
     let mut head = request_head(request);
     // `messages`/`system` are spliced separately below; a colliding `extra`
     // key must lose to that, same as every other modelled field.
@@ -435,6 +439,26 @@ mod tests {
         request.messages.insert(0, Turn::Value(message));
     }
 
+    /// The constraint that decides how a consumer may carry a
+    /// mid-conversation note: it cannot be a system turn.
+    ///
+    /// Only a *leading* run of system turns becomes the top-level `system`
+    /// field. One appended later stays inline in `messages`, where this API
+    /// accepts `user` and `assistant` and refuses anything else — so a note
+    /// added at turn nine has to travel as a user turn, marked by its content
+    /// rather than by its role.
+    #[test]
+    fn a_system_turn_after_the_head_stays_inline_where_the_api_will_refuse_it() {
+        let mut request = request();
+        push(&mut request, Message::system("added later"));
+        let body = request_body(&request);
+
+        assert!(body.get("system").is_none());
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1]["role"], "system");
+    }
+
     #[test]
     fn bare_request_sends_nothing_it_was_not_given() {
         let body = request_body(&request());
@@ -499,7 +523,10 @@ mod tests {
         let mut request = request();
         insert_leading(&mut request, Message::system("be brief"));
         let body = request_body(&request);
-        assert_eq!(body["system"], json!([{"type": "text", "text": "be brief"}]));
+        assert_eq!(
+            body["system"],
+            json!([{"type": "text", "text": "be brief"}])
+        );
         assert_eq!(body["messages"][0]["role"], json!("user"));
         assert_eq!(body["messages"].as_array().unwrap().len(), 1);
     }
@@ -528,7 +555,10 @@ mod tests {
         resumed.messages = vec![Turn::Span(empty_prefix), Turn::Value(Message::user("hi"))];
         let rendered = render(&resumed).unwrap();
         let body: Value = serde_json::from_slice(&rendered.body).unwrap();
-        assert_eq!(body["messages"], json!([{"role": "user", "content": [{"type": "text", "text": "hi"}]}]));
+        assert_eq!(
+            body["messages"],
+            json!([{"role": "user", "content": [{"type": "text", "text": "hi"}]}])
+        );
     }
 
     #[test]

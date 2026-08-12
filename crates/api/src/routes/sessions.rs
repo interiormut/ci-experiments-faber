@@ -466,19 +466,26 @@ async fn send_message(
     // the model asked for.
     let added = crate::environments::tag_environments(&mut conn, user.id, id, content).await?;
 
-    let mut input = vec![llm::Message {
-        role: llm::Role::User,
-        content: vec![llm::ContentBlock::Text {
-            text: content.to_owned(),
-        }],
+    let mut input = vec![runner::TurnMessage {
+        kind: runner::KIND_INPUT,
+        message: llm::Message {
+            role: llm::Role::User,
+            content: vec![llm::ContentBlock::Text {
+                text: content.to_owned(),
+            }],
+        },
     }];
 
     // After the user's turn, never before it, and never in the system prompt.
-    // A leading system message is hoisted into the prompt by at least one
-    // provider's wire format, which would turn a note about turn nine into
-    // part of the prefix every earlier turn was cached against.
+    // The prompt sits ahead of every cached byte, and a leading system message
+    // is hoisted into it by at least one provider's wire format — which would
+    // turn a note about turn nine into part of the prefix every earlier turn
+    // was cached against.
     if let Some(announcement) = crate::environments::announcement(&added) {
-        input.push(announcement);
+        input.push(runner::TurnMessage {
+            kind: runner::KIND_ENVIRONMENTS,
+            message: announcement,
+        });
     }
 
     // Published on the same channel a subscriber is already holding, so the
