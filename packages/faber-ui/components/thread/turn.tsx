@@ -1,3 +1,5 @@
+import { Boxes } from "lucide-react"
+
 import { FaberIndicator } from "@/components/thread/faber-indicator"
 import { Markdown } from "@/components/thread/markdown"
 import { AgentMessage, AgentRun, AgentStep, AgentThinking } from "@/components/ui/agent-run"
@@ -23,6 +25,19 @@ export function TurnView({ turn, isLast = false }: { turn: Turn; isLast?: boolea
           <Markdown text={text} softBreaks />
         </div>
       ) : null}
+
+      {/* Neither side's words: the session saying an environment was added.
+          Centered and quiet, so it reads as a change to the conversation
+          rather than as something someone said in it. */}
+      {turn.notices.map((notice, index) => (
+        <p
+          key={`${turn.runId}:notice:${index}`}
+          className="mx-auto flex items-center gap-1.5 text-xs text-muted-foreground"
+        >
+          <Boxes className="size-3.5" />
+          {notice}
+        </p>
+      ))}
 
       {/* Rows are composed by hand rather than passed as `items`, because the
           data-driven path renders a message's text as a plain string — the only

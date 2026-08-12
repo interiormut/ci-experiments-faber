@@ -6,6 +6,10 @@ import { Paperclip, SendHorizontal, Square } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import {
+  MentionTextarea,
+  type MentionOption,
+} from "@/components/thread/mention-textarea"
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -29,6 +33,11 @@ export type PromptBoxProps = {
   className?: string
   /** Extra controls for the footer, shown beside the attach button. */
   footerActions?: React.ReactNode
+  /**
+   * Environments the caller can tag with `@`. Empty means the picker never
+   * opens, which is the right behaviour for a user who has registered none.
+   */
+  mentions?: MentionOption[]
 }
 
 export function PromptBox({
@@ -41,10 +50,13 @@ export function PromptBox({
   placeholder = "Type a message...",
   className,
   footerActions,
+  mentions = [],
 }: PromptBoxProps) {
-  const textareaRef = React.useRef<HTMLTextAreaElement>(null)
   const [message, setMessage] = React.useState("")
   const [confirmOpen, setConfirmOpen] = React.useState(false)
+  // Enter belongs to whichever is in front. While the picker is open it takes
+  // the name; otherwise it sends the message.
+  const [picking, setPicking] = React.useState(false)
 
   const handleSubmit = async () => {
     if (!message.trim() || disabled || sendDisabled) return
@@ -55,9 +67,6 @@ export function PromptBox({
     }
 
     setMessage("")
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto"
-    }
   }
 
   const handleInterrupt = () => {
@@ -78,27 +87,20 @@ export function PromptBox({
     <>
       <div className={cn("w-full", className)}>
         <div className="rounded-[1rem] border border-input bg-background/90 backdrop-blur-sm shadow-[0_14px_40px_rgba(0,0,0,0.06)] focus-within:ring-2 focus-within:ring-primary/40 transition-all">
-          <textarea
-            ref={textareaRef}
+          <MentionTextarea
             value={message}
-            onChange={(e) => setMessage(e.target.value)}
+            onValueChange={setMessage}
+            options={mentions}
+            onOpenChange={setPicking}
             placeholder={placeholder}
-            autoComplete="off"
             disabled={disabled}
-            rows={1}
-            className="min-h-[56px] max-h-[220px] w-full resize-none overflow-y-auto bg-transparent px-3 py-3 text-[15px] leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none disabled:opacity-50"
-            onInput={(e) => {
-              const textarea = e.currentTarget
-              textarea.style.height = "auto"
-              textarea.style.height = `${Math.min(textarea.scrollHeight, 220)}px`
-            }}
             onKeyDown={(e) => {
               if (e.key === "Escape" && isExecuting) {
                 e.preventDefault()
                 handleInterrupt()
                 return
               }
-              if (e.key === "Enter" && !e.shiftKey && !isExecuting) {
+              if (e.key === "Enter" && !e.shiftKey && !isExecuting && !picking) {
                 e.preventDefault()
                 void handleSubmit()
               }

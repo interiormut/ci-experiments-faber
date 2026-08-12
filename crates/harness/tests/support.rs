@@ -284,11 +284,13 @@ pub fn seed(provider: &str, model: &str, messages: Vec<Message>) -> Seed {
     }
 }
 
-pub fn input(text: &str) -> Message {
-    Message {
+/// One turn's input. A `Vec` because that is what a run takes — a turn is
+/// usually one message and does not have to be.
+pub fn input(text: &str) -> Vec<Message> {
+    vec![Message {
         role: Role::User,
         content: vec![ContentBlock::Text { text: text.into() }],
-    }
+    }]
 }
 
 /// Drains a run's transcript into a `Vec`, blocking the current (sync test)

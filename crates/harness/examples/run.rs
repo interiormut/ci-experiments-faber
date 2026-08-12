@@ -15,20 +15,16 @@ use secrecy::SecretString;
 #[tokio::main]
 async fn main() {
     let mut args = std::env::args().skip(1);
-    let harness_path = args
-        .next()
-        .expect("usage: run <harness.js> <prompt>");
+    let harness_path = args.next().expect("usage: run <harness.js> <prompt>");
     let prompt = args.next().unwrap_or_else(|| "hello".to_string());
 
     let harness_source =
         std::fs::read_to_string(&harness_path).expect("failed to read harness file");
 
-    let api_key = std::env::var("ANTHROPIC_API_KEY")
-        .expect("ANTHROPIC_API_KEY must be set");
-    let client = llm::anthropic::Anthropic::new(llm::anthropic::Config::new(
-        SecretString::from(api_key),
-    ))
-    .expect("failed to build the Anthropic client");
+    let api_key = std::env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY must be set");
+    let client =
+        llm::anthropic::Anthropic::new(llm::anthropic::Config::new(SecretString::from(api_key)))
+            .expect("failed to build the Anthropic client");
 
     let grant = Grant {
         client: Arc::new(client),
@@ -38,10 +34,10 @@ async fn main() {
         commit_granted: true,
     };
 
-    let input = Message {
+    let input = vec![Message {
         role: Role::User,
         content: vec![ContentBlock::Text { text: prompt }],
-    };
+    }];
 
     // No prior conversation to seed from — this is a one-shot CLI, not a
     // multi-turn session.

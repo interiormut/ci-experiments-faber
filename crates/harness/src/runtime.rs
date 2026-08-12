@@ -59,16 +59,22 @@ impl HarnessRun {
     /// default export against `input`, under `grant`. `seed` is what a prior
     /// run committed — `Seed::default()` for a fresh conversation's first
     /// turn, since nothing in the isolate survives between runs.
+    ///
+    /// `input` is the turn's messages, plural. A turn is usually one message
+    /// and often will be, but not always: a consumer that has something to
+    /// tell the model alongside the user's own words — that an environment was
+    /// added, say — has to put it *in* the conversation, and the alternative
+    /// is editing the system prompt, which is prefix mutation and invalidates
+    /// everything cached behind it.
     pub fn start(
         harness_source: String,
-        input: llm::Message,
+        input: Vec<llm::Message>,
         grant: Grant,
         seed: Seed,
     ) -> HarnessRun {
         let (transcript_tx, transcript_rx) = tokio::sync::mpsc::unbounded_channel();
         let (frames_tx, mut frames_rx) = tokio::sync::mpsc::unbounded_channel::<CoreEvent>();
-        let (handle_tx, handle_rx) =
-            std::sync::mpsc::channel::<deno_core::v8::IsolateHandle>();
+        let (handle_tx, handle_rx) = std::sync::mpsc::channel::<deno_core::v8::IsolateHandle>();
 
         let thread = std::thread::Builder::new()
             .name("harness".into())
@@ -187,8 +193,8 @@ impl HarnessRun {
     }
 }
 
-fn build_bootstrap(input: &llm::Message) -> Result<String, RunError> {
-    let wire_input = mapping::Message::from(input);
+fn build_bootstrap(input: &[llm::Message]) -> Result<String, RunError> {
+    let wire_input: Vec<mapping::Message> = input.iter().map(mapping::Message::from).collect();
     let json = serde_json::to_string(&wire_input)?;
     Ok(format!(
         r#"import {{ buildContext }} from "{CONTEXT_SPECIFIER}";

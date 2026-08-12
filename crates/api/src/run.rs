@@ -20,7 +20,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use diesel::{ExpressionMethods, JoinOnDsl, QueryDsl};
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl, scoped_futures::ScopedFutureExt};
+use diesel_async::{
+    AsyncConnection, AsyncPgConnection, RunQueryDsl, scoped_futures::ScopedFutureExt,
+};
 use harness::frame::{CoreEvent, FrameDetail, FrameId, Outcome};
 use harness::{Grant, HarnessRun, RunOutcome, Seed};
 use serde::Serialize;
@@ -109,8 +111,13 @@ pub const KIND_RUN_ERROR: &str = "run_error";
 /// not one.
 pub const KIND_INPUT: &str = "input";
 
-/// The `transcript.seq` the user's message occupies. Harness output starts
-/// at 1.
+/// The turn told the session something rather than the model: an environment
+/// was added. Carried as its own kind so a client can render it as what it is
+/// — neither the user's words nor the assistant's.
+pub const KIND_ENVIRONMENTS: &str = "environments";
+
+/// The `transcript.seq` the turn's first input message occupies. Harness
+/// output starts after the last of them.
 pub const INPUT_SEQ: i64 = 0;
 
 // ---------------------------------------------------------------------------
@@ -125,8 +132,9 @@ pub const INPUT_SEQ: i64 = 0;
 /// and a read timeout instead, which bounds a stalled connection without
 /// bounding the generation.
 pub fn build_client(config: &ModelConfig, api_key: String) -> ApiResult<Arc<dyn llm::ModelClient>> {
-    let base_url = url::Url::parse(&config.base_url)
-        .map_err(|_| AppError::BadRequest(format!("model {} has an invalid base_url", config.alias)))?;
+    let base_url = url::Url::parse(&config.base_url).map_err(|_| {
+        AppError::BadRequest(format!("model {} has an invalid base_url", config.alias))
+    })?;
     let key = secrecy::SecretString::from(api_key);
 
     let wire = Wire::from_db(&config.wire).ok_or_else(|| {
@@ -238,9 +246,16 @@ pub struct RunRequest {
     pub run_id: Uuid,
     pub session_id: Uuid,
     pub thread_id: Uuid,
+    /// Whose environments this run may reach. Bindings are per user, and a
+    /// session's are resolved against them at run time rather than trusted
+    /// from the row.
+    pub user_id: Uuid,
     pub config: ModelConfig,
     pub api_key: String,
-    pub input: llm::Message,
+    /// The turn's messages, in order. Usually just the user's; more when the
+    /// session had something to say alongside it, such as an environment
+    /// having been added.
+    pub input: Vec<llm::Message>,
 }
 
 /// Claims the session's channel for a run that is about to start.
@@ -339,11 +354,12 @@ async fn execute(
 ) -> ApiResult<()> {
     let RunRequest {
         run_id,
+        session_id,
         thread_id,
+        user_id,
         config,
         api_key,
         input,
-        ..
     } = request;
 
     let client = build_client(&config, api_key)?;
@@ -353,17 +369,42 @@ async fn execute(
         load_seed(&mut conn, thread_id).await?
     };
 
+    // Probed here rather than when the environment was tagged: a probe is a
+    // network round trip, the POST that tags one has to stay fast, and a
+    // machine that answered when it was tagged may not answer now.
+    //
+    // The blob store is this run's own. Captured output is a span the tool
+    // surface redeems while rendering, and nothing outside the run reads one
+    // yet — the day the exchange carries spans too, this becomes the store
+    // behind `blob`, and nothing above it changes.
+    let blobs: Arc<dyn environment::Blobs> = Arc::new(environment::MemoryBlobs::new());
+    let bound =
+        crate::environments::bind_session(&state, user_id, session_id, Arc::clone(&blobs)).await?;
+
+    // Said out loud rather than swallowed. A target the session has and this
+    // run could not reach is missing from the registry, so a call against it
+    // answers "not bound" — which is true of the run and misleading about the
+    // session, and the user is the one who can tell the difference.
+    for (label, reason) in &bound.unreachable {
+        tracing::warn!(%run_id, %label, %reason, "an environment could not be bound for this run");
+    }
+
+    let surface = Arc::new(harness::Surface::new(Arc::new(bound.registry), blobs));
+
     let grant = Grant {
         client,
         model: config.wire_id.clone(),
-        // No tool surface in the API yet. `abstract.md` §4's control by
-        // subtraction means this is a loop with fewer moves, not an error
-        // condition: an ungranted tool is simply absent from `ctx`.
-        tools: Vec::new(),
-        tool_invoker: None,
+        // Granted, not implemented: the surface is the standard projection of
+        // the environment contract, and a harness gets a working environment
+        // by being handed it. An ungranted tool is simply absent from `ctx` —
+        // control by subtraction — so a session with no environments still
+        // runs, with a loop that has fewer moves.
+        tools: harness::Surface::definitions(),
+        tool_invoker: Some(Arc::clone(&surface).invoker()),
         commit_granted: true,
     };
 
+    let first_harness_seq = INPUT_SEQ + input.len() as i64;
     let started_at = now_epoch();
     let mut run = HarnessRun::start(
         harness::harness_for(config.family.as_deref()).to_owned(),
@@ -372,14 +413,14 @@ async fn execute(
         seed,
     );
 
-    // Harness output starts after the user's own turn.
+    // Harness output starts after this turn's own input messages.
     //
     // Every event is published live and given a `seq`, so the SSE resume
     // cursor stays gap-free; only what [`Compactor`] calls durable is
     // written. The persisted rows therefore have holes in `seq`, which the
     // `seq > after_seq` reads and the client's dedupe-by-seq both already
     // tolerate.
-    let mut seq = INPUT_SEQ + 1;
+    let mut seq = first_harness_seq;
     let mut compactor = Compactor::new();
     while let Some(event) = run.transcript.recv().await {
         let kind = event
@@ -391,18 +432,54 @@ async fn execute(
         let folded = compactor.push(&kind, &event);
 
         if let Some(message) = folded.flushed {
-            publish(state, sender, run_id, &mut seq, KIND_MESSAGE.to_owned(), message, true).await?;
+            publish(
+                state,
+                sender,
+                run_id,
+                &mut seq,
+                KIND_MESSAGE.to_owned(),
+                message,
+                true,
+            )
+            .await?;
         }
-        publish(state, sender, run_id, &mut seq, kind, event, folded.persist_raw).await?;
+        publish(
+            state,
+            sender,
+            run_id,
+            &mut seq,
+            kind,
+            event,
+            folded.persist_raw,
+        )
+        .await?;
         if let Some(message) = folded.completed {
-            publish(state, sender, run_id, &mut seq, KIND_MESSAGE.to_owned(), message, true).await?;
+            publish(
+                state,
+                sender,
+                run_id,
+                &mut seq,
+                KIND_MESSAGE.to_owned(),
+                message,
+                true,
+            )
+            .await?;
         }
     }
 
     // Before the join, not after: a harness that ends in error never reaches
     // `record_history`, and the text it did stream is still what the user saw.
     if let Some(message) = compactor.finish() {
-        publish(state, sender, run_id, &mut seq, KIND_MESSAGE.to_owned(), message, true).await?;
+        publish(
+            state,
+            sender,
+            run_id,
+            &mut seq,
+            KIND_MESSAGE.to_owned(),
+            message,
+            true,
+        )
+        .await?;
     }
 
     // `join` blocks on an OS thread handle, which must not happen on the async
@@ -617,11 +694,7 @@ fn fold_model_frames(events: &[CoreEvent]) -> Vec<(FrameId, ModelFrame)> {
     let mut order: Vec<FrameId> = Vec::new();
     let mut frames: HashMap<FrameId, ModelFrame> = HashMap::new();
 
-    fn entry(
-        frames: &mut HashMap<FrameId, ModelFrame>,
-        order: &mut Vec<FrameId>,
-        frame: &FrameId,
-    ) {
+    fn entry(frames: &mut HashMap<FrameId, ModelFrame>, order: &mut Vec<FrameId>, frame: &FrameId) {
         if !frames.contains_key(frame) {
             frames.insert(frame.clone(), ModelFrame::default());
             order.push(frame.clone());
@@ -704,34 +777,53 @@ async fn put_blob(conn: &mut AsyncPgConnection, bytes: &[u8], now: i64) -> ApiRe
     Ok(digest)
 }
 
-/// Writes the user's turn at [`INPUT_SEQ`] and returns it for publication.
+/// Writes the turn's input messages from [`INPUT_SEQ`] and returns them for
+/// publication.
+///
+/// A system-role message here is one the *session* had to say — that an
+/// environment was added — and it lands in the transcript alongside the user's
+/// own words rather than being folded into them or hidden. H2 makes the
+/// transcript the user-facing conversation, and a note the model can see and
+/// the user cannot is not part of one.
 pub async fn record_input(
     conn: &mut AsyncPgConnection,
     run_id: Uuid,
-    input: &llm::Message,
-) -> ApiResult<StreamEvent> {
-    let payload = serde_json::to_value(harness::mapping::Message::from(input)).map_err(|error| {
-        tracing::error!(error = %error, "input message failed to encode");
-        AppError::Internal
-    })?;
+    input: &[llm::Message],
+) -> ApiResult<Vec<StreamEvent>> {
+    let mut events = Vec::with_capacity(input.len());
 
-    diesel::insert_into(crate::schema::transcript::table)
-        .values(&NewTranscript {
-            id: Uuid::now_v7(),
+    for (offset, message) in input.iter().enumerate() {
+        let seq = INPUT_SEQ + offset as i64;
+        let payload =
+            serde_json::to_value(harness::mapping::Message::from(message)).map_err(|error| {
+                tracing::error!(error = %error, "input message failed to encode");
+                AppError::Internal
+            })?;
+        let kind = match message.role {
+            llm::Role::System => KIND_ENVIRONMENTS,
+            _ => KIND_INPUT,
+        };
+
+        diesel::insert_into(crate::schema::transcript::table)
+            .values(&NewTranscript {
+                id: Uuid::now_v7(),
+                run_id,
+                seq,
+                kind,
+                payload: payload.clone(),
+                created_at: now_epoch(),
+            })
+            .execute(conn)
+            .await
+            .map_err(|err| AppError::db(err, "run.record_input"))?;
+
+        events.push(StreamEvent {
             run_id,
-            seq: INPUT_SEQ,
-            kind: KIND_INPUT,
-            payload: payload.clone(),
-            created_at: now_epoch(),
-        })
-        .execute(conn)
-        .await
-        .map_err(|err| AppError::db(err, "run.record_input"))?;
+            seq,
+            kind: kind.to_owned(),
+            payload,
+        });
+    }
 
-    Ok(StreamEvent {
-        run_id,
-        seq: INPUT_SEQ,
-        kind: KIND_INPUT.to_owned(),
-        payload,
-    })
+    Ok(events)
 }

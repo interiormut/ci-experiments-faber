@@ -1,4 +1,5 @@
 mod credentials;
+mod environments;
 mod hosts;
 mod images;
 mod models;
@@ -31,6 +32,7 @@ pub fn router() -> Router<AppState> {
         .merge(credentials::router())
         .merge(models::router())
         .merge(hosts::router())
+        .merge(environments::router())
         .merge(images::router())
         .merge(workspaces::router())
         .merge(sessions::router())

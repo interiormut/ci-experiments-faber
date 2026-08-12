@@ -11,7 +11,7 @@ use support::{Recording, Scripted, drain_transcript, grant, input, text_reply};
 
 const IDENTITY: &str = r#"
 export default {
-  execute: (ctx, input) => ctx.llm.stream({ messages: [...ctx.history.read(), input] })
+  execute: (ctx, input) => ctx.llm.stream({ messages: [...ctx.history.read(), ...input] })
 };
 "#;
 
@@ -28,7 +28,10 @@ fn identity_harness_end_to_end_matches_the_script() {
     let events = drain_transcript(&mut run);
     let frames = run.join().expect("run must finish cleanly").frames;
 
-    assert!(!events.is_empty(), "the identity harness must forward events");
+    assert!(
+        !events.is_empty(),
+        "the identity harness must forward events"
+    );
     assert_eq!(events[0]["type"], "message_start");
     assert_eq!(events[0]["model"], "test-model");
 
@@ -63,7 +66,12 @@ fn a_recording_client_renders_real_provider_bytes_not_a_fixture() {
     // on. Proven here, against the identity harness, independent of the
     // history/id machinery.
     let client = Arc::new(Recording::new(text_reply("hello back")));
-    let mut run = HarnessRun::start(IDENTITY.to_string(), input("hi"), grant(client.clone()), Seed::default());
+    let mut run = HarnessRun::start(
+        IDENTITY.to_string(),
+        input("hi"),
+        grant(client.clone()),
+        Seed::default(),
+    );
     let _ = drain_transcript(&mut run);
     run.join().expect("run must finish cleanly");
 
@@ -90,7 +98,12 @@ fn the_fold_invariant_holds_for_a_completed_model_frame() {
     use harness::frame::{CoreEvent, Outcome};
 
     let client = Arc::new(Scripted::new(text_reply("fold me")));
-    let mut run = HarnessRun::start(IDENTITY.to_string(), input("hi"), grant(client), Seed::default());
+    let mut run = HarnessRun::start(
+        IDENTITY.to_string(),
+        input("hi"),
+        grant(client),
+        Seed::default(),
+    );
     let transcript = drain_transcript(&mut run);
     let frames = run.join().expect("run must finish cleanly").frames;
 
@@ -114,7 +127,9 @@ fn the_fold_invariant_holds_for_a_completed_model_frame() {
             accumulator.push(event);
         }
     }
-    let completion = accumulator.finish().expect("the folded frame must complete");
+    let completion = accumulator
+        .finish()
+        .expect("the folded frame must complete");
 
     let transcript_text: String = transcript
         .iter()
@@ -131,7 +146,12 @@ fn turn_one_has_no_committed_history_and_still_produces_valid_messages() {
     // §4's default path: nothing was ever committed, so `ctx.history.read()`
     // must still be usable — it returns `[]`.
     let client = Arc::new(Scripted::new(text_reply("first turn")));
-    let mut run = HarnessRun::start(IDENTITY.to_string(), input("hi"), grant(client.clone()), Seed::default());
+    let mut run = HarnessRun::start(
+        IDENTITY.to_string(),
+        input("hi"),
+        grant(client.clone()),
+        Seed::default(),
+    );
     let _ = drain_transcript(&mut run);
     run.join().expect("turn 1 must not require a prior commit");
 
@@ -150,7 +170,7 @@ fn commit_is_callable_and_advances_history_within_one_run() {
     const COMMIT_THEN_READ: &str = r#"
 export default {
   execute: async function* (ctx, input) {
-    const call = ctx.llm.stream({ messages: [...ctx.history.read(), input] });
+    const call = ctx.llm.stream({ messages: [...ctx.history.read(), ...input] });
     for await (const event of call) { /* drain */ }
     await ctx.commit(call);
     const history = ctx.history.read();
@@ -159,7 +179,12 @@ export default {
 };
 "#;
     let client = Arc::new(Scripted::new(text_reply("ok")));
-    let mut run = HarnessRun::start(COMMIT_THEN_READ.to_string(), input("hi"), grant(client), Seed::default());
+    let mut run = HarnessRun::start(
+        COMMIT_THEN_READ.to_string(),
+        input("hi"),
+        grant(client),
+        Seed::default(),
+    );
     let events = drain_transcript(&mut run);
     run.join().expect("commit must be callable when granted");
 
@@ -181,9 +206,15 @@ export default {
     let mut grant = grant(client);
     grant.commit_granted = false;
 
-    let mut run = HarnessRun::start(CHECKS_COMMIT.to_string(), input("hi"), grant, Seed::default());
+    let mut run = HarnessRun::start(
+        CHECKS_COMMIT.to_string(),
+        input("hi"),
+        grant,
+        Seed::default(),
+    );
     let events = drain_transcript(&mut run);
-    run.join().expect("a harness that never calls commit must still finish cleanly");
+    run.join()
+        .expect("a harness that never calls commit must still finish cleanly");
 
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["raw"]["commitIsFunction"], false);
@@ -249,7 +280,7 @@ fn concurrent_polling_of_one_call_is_a_clear_error_not_a_lost_stream() {
     const RACES_ITS_OWN_CALL: &str = r#"
 export default {
   execute: async function* (ctx, input) {
-    const call = ctx.llm.stream({ messages: [...ctx.history.read(), input] });
+    const call = ctx.llm.stream({ messages: [...ctx.history.read(), ...input] });
     const iterate = (async () => { for await (const _ of call) { /* drain */ } })();
     const completionRace = call.completion.catch((error) => ({ raced: true, name: error.name }));
     const [, completionResult] = await Promise.all([iterate, completionRace]);
@@ -258,9 +289,15 @@ export default {
 };
 "#;
     let client = Arc::new(Scripted::new(text_reply("racing")));
-    let mut run = HarnessRun::start(RACES_ITS_OWN_CALL.to_string(), input("hi"), grant(client), Seed::default());
+    let mut run = HarnessRun::start(
+        RACES_ITS_OWN_CALL.to_string(),
+        input("hi"),
+        grant(client),
+        Seed::default(),
+    );
     let events = drain_transcript(&mut run);
-    run.join().expect("racing a call's own completion must not crash the run");
+    run.join()
+        .expect("racing a call's own completion must not crash the run");
 
     assert_eq!(events.len(), 1);
     // Whichever side loses the race gets a real rejection (not `undefined`,
@@ -285,7 +322,12 @@ export default {
 };
 "#;
     let client = Arc::new(Scripted::new(text_reply("unused")));
-    let run = HarnessRun::start(INFINITE_LOOP.to_string(), input("hi"), grant(client), Seed::default());
+    let run = HarnessRun::start(
+        INFINITE_LOOP.to_string(),
+        input("hi"),
+        grant(client),
+        Seed::default(),
+    );
 
     std::thread::sleep(Duration::from_millis(200));
     run.terminate();

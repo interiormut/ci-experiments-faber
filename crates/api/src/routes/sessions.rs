@@ -24,7 +24,10 @@ use crate::{
         transcript::Transcript,
     },
     resolve::resolve_model,
-    routes::{clamp_limit, deserialize_optional_field, threads::{ThreadResponse, thread_response}},
+    routes::{
+        clamp_limit, deserialize_optional_field,
+        threads::{ThreadResponse, thread_response},
+    },
     run::{RunRequest, StreamEvent},
     schema::{run, session, thread, transcript, workspace_member},
     state::AppState,
@@ -254,9 +257,7 @@ async fn update(
 
     let patch = UpdateSession {
         title,
-        closed_at: input
-            .closed
-            .map(|closed| closed.then(now_epoch)),
+        closed_at: input.closed.map(|closed| closed.then(now_epoch)),
     };
 
     let updated: Session = diesel::update(session::table.filter(session::id.eq(id)))
@@ -323,10 +324,12 @@ async fn create_thread(
     Path(id): Path<Uuid>,
     body: Option<Json<CreateThreadRequest>>,
 ) -> ApiResult<(StatusCode, Json<ThreadResponse>)> {
-    let input = body.map(|Json(input)| input).unwrap_or(CreateThreadRequest {
-        parent_id: None,
-        forked_at_seq: None,
-    });
+    let input = body
+        .map(|Json(input)| input)
+        .unwrap_or(CreateThreadRequest {
+            parent_id: None,
+            forked_at_seq: None,
+        });
 
     // Rejected here rather than at the database `CHECK` so the caller gets a 400 naming
     // the problem instead of a 500 naming a constraint.
@@ -403,6 +406,9 @@ struct SendMessageRequest {
 struct SendMessageResponse {
     run_id: Uuid,
     thread_id: Uuid,
+    /// Environments this message added to the session, in the order they were
+    /// tagged. Empty when it tagged none, or only ones already bound.
+    added_environments: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -455,22 +461,37 @@ async fn send_message(
         .await
         .map_err(|err| AppError::db(err, "sessions.send_message.insert_run"))?;
 
-    let message = llm::Message {
+    // Environments the message tagged. Adding is the user's — this is the
+    // only path that binds one, and it binds what they named rather than what
+    // the model asked for.
+    let added = crate::environments::tag_environments(&mut conn, user.id, id, content).await?;
+
+    let mut input = vec![llm::Message {
         role: llm::Role::User,
         content: vec![llm::ContentBlock::Text {
             text: content.to_owned(),
         }],
-    };
+    }];
+
+    // After the user's turn, never before it, and never in the system prompt.
+    // A leading system message is hoisted into the prompt by at least one
+    // provider's wire format, which would turn a note about turn nine into
+    // part of the prefix every earlier turn was cached against.
+    if let Some(announcement) = crate::environments::announcement(&added) {
+        input.push(announcement);
+    }
 
     // Published on the same channel a subscriber is already holding, so the
     // user's own turn arrives in band rather than only on the next refetch.
-    let input_event = runner::record_input(&mut conn, run_id, &message).await?;
+    let input_events = runner::record_input(&mut conn, run_id, &input).await?;
     drop(conn);
 
     // Claimed before the response goes out, so a client that opens the stream
     // on seeing the run id cannot arrive before the channel exists.
     let sender = runner::open_run(&state.runs, id);
-    let _ = sender.send(input_event);
+    for event in input_events {
+        let _ = sender.send(event);
+    }
 
     runner::spawn_run(
         state,
@@ -479,15 +500,20 @@ async fn send_message(
             run_id,
             session_id: id,
             thread_id,
+            user_id: user.id,
             config: resolved.config,
             api_key: resolved.api_key,
-            input: message,
+            input,
         },
     );
 
     Ok((
         StatusCode::ACCEPTED,
-        Json(SendMessageResponse { run_id, thread_id }),
+        Json(SendMessageResponse {
+            run_id,
+            thread_id,
+            added_environments: added,
+        }),
     ))
 }
 
@@ -616,19 +642,20 @@ async fn stream(
             // The subscriber fell behind far enough that events were dropped.
             // Reported rather than swallowed, and the stream stays open: the
             // client re-syncs through the durable transcript endpoint.
-            Err(BroadcastStreamRecvError::Lagged(count)) => Some(Ok(Event::default()
-                .event("lagged")
-                .data(count.to_string()))),
+            Err(BroadcastStreamRecvError::Lagged(count)) => {
+                Some(Ok(Event::default().event("lagged").data(count.to_string())))
+            }
         })
     });
 
-    let stream = futures::stream::iter(replay.iter().map(sse_event).collect::<Vec<_>>()).chain(live);
+    let stream =
+        futures::stream::iter(replay.iter().map(sse_event).collect::<Vec<_>>()).chain(live);
 
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 fn sse_event(event: &StreamEvent) -> Result<Event, std::convert::Infallible> {
-    Ok(Event::default().event("transcript").data(
-        serde_json::to_string(event).unwrap_or_else(|_| "{}".to_owned()),
-    ))
+    Ok(Event::default()
+        .event("transcript")
+        .data(serde_json::to_string(event).unwrap_or_else(|_| "{}".to_owned())))
 }

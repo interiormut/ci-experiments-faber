@@ -27,7 +27,7 @@ const MAX_STEPS = 64;
 
 export default {
   async *execute(ctx, input) {
-    const messages = [...ctx.history.read(), input];
+    const messages = [...ctx.history.read(), ...input];
     let call = null;
 
     for (let step = 0; step < MAX_STEPS; step += 1) {

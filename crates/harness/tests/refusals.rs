@@ -15,16 +15,28 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use harness::{HarnessRun, Seed};
-use support::{Failing, Scripted, drain_and_join_with_timeout, drain_transcript, grant, input, text_reply};
+use support::{
+    Failing, Scripted, drain_and_join_with_timeout, drain_transcript, grant, input, text_reply,
+};
 
 /// Runs `harness_source` and returns the single `{type:"unknown", raw:{...}}`
 /// event every test in this file yields, after catching (or not) the
 /// refusal it's built to provoke.
 fn run(harness_source: &str, client: Arc<dyn llm::ModelClient>) -> serde_json::Value {
-    let mut run = HarnessRun::start(harness_source.to_string(), input("hi"), grant(client), Seed::default());
+    let mut run = HarnessRun::start(
+        harness_source.to_string(),
+        input("hi"),
+        grant(client),
+        Seed::default(),
+    );
     let mut events = drain_transcript(&mut run);
-    run.join().expect("the harness itself must not error — every refusal here is caught in JS");
-    assert_eq!(events.len(), 1, "each test yields exactly one summary event");
+    run.join()
+        .expect("the harness itself must not error — every refusal here is caught in JS");
+    assert_eq!(
+        events.len(),
+        1,
+        "each test yields exactly one summary event"
+    );
     events.remove(0)["raw"].clone()
 }
 
@@ -50,10 +62,13 @@ export default {{
 
 #[test]
 fn ref_not_prefix_on_reordered_ids() {
-    let client = Arc::new(Scripted::sequence(vec![text_reply("a"), text_reply("unused")]));
+    let client = Arc::new(Scripted::sequence(vec![
+        text_reply("a"),
+        text_reply("unused"),
+    ]));
     let source = catches(
         r#"
-      const call1 = ctx.llm.stream({ messages: [input] });
+      const call1 = ctx.llm.stream({ messages: [...input] });
       for await (const e of call1) {}
       await ctx.commit(call1);
       const h = ctx.history.read();
@@ -68,17 +83,20 @@ fn ref_not_prefix_on_reordered_ids() {
 #[test]
 fn ref_not_prefix_on_an_unknown_id() {
     let client = Arc::new(Scripted::new(text_reply("unused")));
-    let source = catches(r#"ctx.llm.stream({ messages: [{ id: "m99" }, input] });"#);
+    let source = catches(r#"ctx.llm.stream({ messages: [{ id: "m99" }, ...input] });"#);
     let raw = run(&source, client);
     assert_eq!(raw["kind"], "ref_not_prefix");
 }
 
 #[test]
 fn ref_content_mismatch_on_an_id_retaining_edit() {
-    let client = Arc::new(Scripted::sequence(vec![text_reply("a"), text_reply("unused")]));
+    let client = Arc::new(Scripted::sequence(vec![
+        text_reply("a"),
+        text_reply("unused"),
+    ]));
     let source = catches(
         r#"
-      const call1 = ctx.llm.stream({ messages: [input] });
+      const call1 = ctx.llm.stream({ messages: [...input] });
       for await (const e of call1) {}
       await ctx.commit(call1);
       const h = ctx.history.read();
@@ -129,7 +147,10 @@ fn malformed_turns_on_consecutive_system_messages_after_the_head() {
 
 #[test]
 fn scaffold_mismatch_on_reordered_tools() {
-    let client = Arc::new(Scripted::sequence(vec![text_reply("a"), text_reply("unused")]));
+    let client = Arc::new(Scripted::sequence(vec![
+        text_reply("a"),
+        text_reply("unused"),
+    ]));
     let mut g = grant(client.clone());
     g.tools = vec![
         llm::ToolDef {
@@ -145,12 +166,12 @@ fn scaffold_mismatch_on_reordered_tools() {
     ];
     let source = catches(
         r#"
-      const call1 = ctx.llm.stream({ messages: [input] });
+      const call1 = ctx.llm.stream({ messages: [...input] });
       for await (const e of call1) {}
       await ctx.commit(call1);
       const h = ctx.history.read();
       const call2 = ctx.llm.stream({
-        messages: [h[0], h[1], input],
+        messages: [h[0], h[1], ...input],
         tools: [
           { name: "b", description: "", inputSchema: {} },
           { name: "a", description: "", inputSchema: {} },
@@ -168,14 +189,17 @@ fn scaffold_mismatch_on_reordered_tools() {
 
 #[test]
 fn scaffold_mismatch_on_a_partially_referenced_system_head() {
-    let client = Arc::new(Scripted::sequence(vec![text_reply("a"), text_reply("unused")]));
+    let client = Arc::new(Scripted::sequence(vec![
+        text_reply("a"),
+        text_reply("unused"),
+    ]));
     let source = catches(
         r#"
       const call1 = ctx.llm.stream({
         messages: [
           { role: "system", content: [{ type: "text", text: "sys1" }] },
           { role: "system", content: [{ type: "text", text: "sys2" }] },
-          input,
+          ...input,
         ],
       });
       for await (const e of call1) {}
@@ -184,7 +208,7 @@ fn scaffold_mismatch_on_a_partially_referenced_system_head() {
       // References only the first of the two-message system head, then goes
       // straight to by-value content — the committed lineage's head no
       // longer matches what this request's own head resolves to.
-      const call2 = ctx.llm.stream({ messages: [{ id: h[0].id }, input] });
+      const call2 = ctx.llm.stream({ messages: [{ id: h[0].id }, ...input] });
       for await (const e of call2) {}
     "#,
     );
@@ -198,7 +222,7 @@ fn incomplete_completion_is_refused_by_default_and_accepted_as_partial() {
     let source = r#"
 export default {
   execute: async function* (ctx, input) {
-    const call = ctx.llm.stream({ messages: [input] });
+    const call = ctx.llm.stream({ messages: [...input] });
     try {
       for await (const event of call) { /* drain */ }
     } catch (e) { /* the stream itself is expected to fail */ }
@@ -233,7 +257,7 @@ fn committing_the_same_call_twice_is_a_clear_error_not_a_hang() {
     const DOUBLE_COMMIT: &str = r#"
 export default {
   execute: async function* (ctx, input) {
-    const call = ctx.llm.stream({ messages: [input] });
+    const call = ctx.llm.stream({ messages: [...input] });
     for await (const event of call) { /* drain */ }
     await ctx.commit(call);
 
@@ -248,7 +272,12 @@ export default {
 };
 "#;
     let client = Arc::new(Scripted::new(text_reply("ok")));
-    let run = HarnessRun::start(DOUBLE_COMMIT.to_string(), input("hi"), grant(client), Seed::default());
+    let run = HarnessRun::start(
+        DOUBLE_COMMIT.to_string(),
+        input("hi"),
+        grant(client),
+        Seed::default(),
+    );
     let (mut events, _) = drain_and_join_with_timeout(run, Duration::from_secs(5));
 
     assert_eq!(events.len(), 1);

@@ -20,8 +20,10 @@ import type {
   ModelConfig,
   RecordProbeRequest,
   Run,
+  EnvironmentCandidate,
   SendMessageRequest,
   SendMessageResponse,
+  SessionEnvironment,
   Session,
   SpawnContainerRequest,
   SpineEntry,
@@ -368,6 +370,40 @@ export class FaberClient {
    * subscriber disconnecting, so a dropped stream loses the live view, not the
    * work.
    */
+  // -------------------------------------------------------------------------
+  // Environments a session can reach
+  // -------------------------------------------------------------------------
+
+  /**
+   * Every environment the caller could tag with `@`, with the name to tag it
+   * by. The picker's source of truth: a name here is a name that resolves.
+   */
+  async listEnvironments(): Promise<EnvironmentCandidate[]> {
+    return this.request("GET", "/api/environments")
+  }
+
+  /**
+   * What this session has been given, tombstones included — that is the log,
+   * and the log is what replays.
+   */
+  async listSessionEnvironments(sessionId: Uuid): Promise<SessionEnvironment[]> {
+    return this.request(
+      "GET",
+      `/api/sessions/${encodeURIComponent(sessionId)}/environments`,
+    )
+  }
+
+  /**
+   * Tombstones a binding. The label stays claimed and cannot later mean a
+   * different machine; calls against it answer "not bound".
+   */
+  async unbindSessionEnvironment(sessionId: Uuid, label: string): Promise<void> {
+    await this.request(
+      "DELETE",
+      `/api/sessions/${encodeURIComponent(sessionId)}/environments/${encodeURIComponent(label)}`,
+    )
+  }
+
   async sendMessage(
     sessionId: Uuid,
     body: SendMessageRequest,

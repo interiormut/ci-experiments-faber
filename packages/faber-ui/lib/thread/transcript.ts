@@ -28,6 +28,12 @@ import type { JsonValue, StreamEvent, TranscriptEvent, Uuid } from "@/lib/api"
  */
 const KIND_MESSAGE = "message"
 
+/**
+ * The session's own note that an environment was added (`crates/api`'s
+ * `KIND_ENVIRONMENTS`).
+ */
+const KIND_ENVIRONMENTS = "environments"
+
 export type ContentBlock =
   | { type: "text"; text: string }
   | { type: "thinking"; thinking: string; signature?: string }
@@ -104,6 +110,13 @@ export type Turn = {
   runId: Uuid
   /** The user's own turn (`kind: "input"`, seq 0) — not an `AgentRun` row. */
   userContent: ContentBlock[]
+  /**
+   * What the *session* said this turn, rather than the user or the model —
+   * today, that an environment was added. Rendered rather than hidden: the
+   * model can see these, and a note one side of the conversation cannot read
+   * is not part of a conversation.
+   */
+  notices: string[]
   items: TimelineItem[]
   status: RunStatus
   errorMessage?: string
@@ -151,7 +164,7 @@ function ensureRun(store: TranscriptStore, runId: Uuid): TranscriptStore {
     order: [...store.order, runId],
     byRun: {
       ...store.byRun,
-      [runId]: { runId, userContent: [], items: [], status: "running" },
+      [runId]: { runId, userContent: [], notices: [], items: [], status: "running" },
     },
     blocks: { ...store.blocks, [runId]: {} },
     messageCount: { ...store.messageCount, [runId]: 0 },
@@ -231,6 +244,21 @@ export function applyEvent(store: TranscriptStore, event: NormalizedEvent): Tran
     case "input": {
       const message = payload as unknown as TranscriptMessage
       return updateRun(next, runId, { userContent: message.content ?? [] })
+    }
+
+    /**
+     * A system-role message the API wrote alongside the user's, saying an
+     * environment was added. The tags around it are for the model; what a
+     * reader wants is the sentence inside them.
+     */
+    case KIND_ENVIRONMENTS: {
+      const message = payload as unknown as TranscriptMessage
+      const text = (message.content ?? [])
+        .filter((block): block is Extract<ContentBlock, { type: "text" }> => block.type === "text")
+        .map((block) => block.text.replace(/<\/?environments>/g, "").trim())
+        .filter(Boolean)
+      const run = next.byRun[runId]
+      return updateRun(next, runId, { notices: [...run.notices, ...text] })
     }
 
     case "message_start": {

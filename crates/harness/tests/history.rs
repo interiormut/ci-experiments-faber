@@ -66,7 +66,7 @@ fn a_referenced_prefix_renders_byte_identical_across_runs() {
     const STREAM_AND_COMMIT: &str = r#"
 export default {
   execute: async function* (ctx, input) {
-    const call = ctx.llm.stream({ messages: [...ctx.history.read(), input] });
+    const call = ctx.llm.stream({ messages: [...ctx.history.read(), ...input] });
     for await (const event of call) { /* drain */ }
     await ctx.commit(call);
   }
@@ -110,7 +110,7 @@ export default {
       messages: [
         { id: h[0].id },
         { role: "assistant", content: [{ type: "text", text: "replaced" }] },
-        input,
+        ...input,
       ],
     });
   }
@@ -166,7 +166,7 @@ fn round_trip_preserves_what_v8_cannot() {
     const RESEND_HISTORY_BY_VALUE: &str = r#"
 export default {
   execute: async function* (ctx, input) {
-    const call1 = ctx.llm.stream({ messages: [input] });
+    const call1 = ctx.llm.stream({ messages: [...input] });
     for await (const event of call1) { /* drain */ }
     await ctx.commit(call1);
 
@@ -174,7 +174,7 @@ export default {
     // Sent back *by value*, id attached — the round trip under test. If V8
     // had mangled anything `content_matches` doesn't normalize away, this
     // throws `ref_content_mismatch` and the test fails below.
-    const call2 = ctx.llm.stream({ messages: [history[0], history[1], input] });
+    const call2 = ctx.llm.stream({ messages: [history[0], history[1], ...input] });
     for await (const event of call2) { /* drain */ }
     yield { type: "unknown", raw: { ok: true } };
   }
@@ -192,7 +192,8 @@ export default {
         Seed::default(),
     );
     let events = drain_transcript(&mut run);
-    run.join().expect("a faithful round trip must not be refused");
+    run.join()
+        .expect("a faithful round trip must not be refused");
 
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["raw"]["ok"], true);
@@ -225,24 +226,24 @@ export default {
       maxTokens: 500,
       sampling: { temperature: 0.5 },
       extra: { vendorFlag: true },
-      messages: [...ctx.history.read(), input],
+      messages: [...ctx.history.read(), ...input],
     });
     for await (const e of a) {}
     await ctx.commit(a);
 
-    const b = ctx.llm.stream({ messages: [...ctx.history.read(), input] });
+    const b = ctx.llm.stream({ messages: [...ctx.history.read(), ...input] });
     for await (const e of b) {}
     await ctx.commit(b);
 
-    const c = ctx.llm.stream({ effort: "low", messages: [...ctx.history.read(), input] });
+    const c = ctx.llm.stream({ effort: "low", messages: [...ctx.history.read(), ...input] });
     for await (const e of c) {}
     await ctx.commit(c);
 
     // Off-lineage: streamed but never committed.
-    const d = ctx.llm.stream({ effort: "medium", messages: [...ctx.history.read(), input] });
+    const d = ctx.llm.stream({ effort: "medium", messages: [...ctx.history.read(), ...input] });
     for await (const e of d) {}
 
-    const e2 = ctx.llm.stream({ messages: [...ctx.history.read(), input] });
+    const e2 = ctx.llm.stream({ messages: [...ctx.history.read(), ...input] });
     for await (const e of e2) {}
 
     yield { type: "unknown", raw: { ok: true } };
@@ -257,7 +258,12 @@ export default {
         text_reply("d"),
         text_reply("e"),
     ]));
-    let mut run = HarnessRun::start(FIVE_CALLS.to_string(), input("hi"), grant(client.clone()), Seed::default());
+    let mut run = HarnessRun::start(
+        FIVE_CALLS.to_string(),
+        input("hi"),
+        grant(client.clone()),
+        Seed::default(),
+    );
     let _ = drain_transcript(&mut run);
     run.join().expect("run must finish");
 
@@ -319,7 +325,12 @@ export default {
         input_schema: serde_json::json!({}),
     }];
 
-    let mut run = HarnessRun::start(YIELD_COMMITTED_REQUEST.to_string(), input("hi"), g, Seed::default());
+    let mut run = HarnessRun::start(
+        YIELD_COMMITTED_REQUEST.to_string(),
+        input("hi"),
+        g,
+        Seed::default(),
+    );
     let events = drain_transcript(&mut run);
     run.join().expect("run must finish");
 
@@ -348,7 +359,7 @@ export default {
     // Turn one: commit something, so `read()` returns non-empty messages —
     // an empty array is trivially frozen; a message's own nested `content`
     // array is the case `deepFreeze`'s recursion exists for.
-    const call = ctx.llm.stream({ messages: [input] });
+    const call = ctx.llm.stream({ messages: [...input] });
     for await (const event of call) { /* drain */ }
     await ctx.commit(call);
 
@@ -369,7 +380,12 @@ export default {
 };
 "#;
     let client = Arc::new(Scripted::new(text_reply("reply")));
-    let mut run = HarnessRun::start(MUTATE_BOTH.to_string(), input("hi"), grant(client), Seed::default());
+    let mut run = HarnessRun::start(
+        MUTATE_BOTH.to_string(),
+        input("hi"),
+        grant(client),
+        Seed::default(),
+    );
     let events = drain_transcript(&mut run);
     run.join().expect("run must finish");
 
@@ -389,7 +405,7 @@ fn model_usage_is_recorded_on_both_the_clean_and_failed_path() {
 export default {
   execute: async function* (ctx, input) {
     try {
-      for await (const event of ctx.llm.stream({ messages: [input] })) { /* drain */ }
+      for await (const event of ctx.llm.stream({ messages: [...input] })) { /* drain */ }
     } catch (e) { /* the failed-path test expects this */ }
   }
 };
@@ -398,7 +414,12 @@ export default {
     // Clean path.
     {
         let client = Arc::new(Scripted::new(text_reply("usage check")));
-        let mut run = HarnessRun::start(STREAM_ONLY.to_string(), input("hi"), grant(client), Seed::default());
+        let mut run = HarnessRun::start(
+            STREAM_ONLY.to_string(),
+            input("hi"),
+            grant(client),
+            Seed::default(),
+        );
         let _ = drain_transcript(&mut run);
         let frames = run.join().expect("run must finish cleanly").frames;
         assert_usage_matches_the_fold(&frames);
@@ -407,9 +428,17 @@ export default {
     // Failed path: the stream itself errors mid-message.
     {
         let client: Arc<dyn llm::ModelClient> = Arc::new(support::Failing);
-        let mut run = HarnessRun::start(STREAM_ONLY.to_string(), input("hi"), grant(client), Seed::default());
+        let mut run = HarnessRun::start(
+            STREAM_ONLY.to_string(),
+            input("hi"),
+            grant(client),
+            Seed::default(),
+        );
         let _ = drain_transcript(&mut run);
-        let frames = run.join().expect("run must finish even though the call failed").frames;
+        let frames = run
+            .join()
+            .expect("run must finish even though the call failed")
+            .frames;
         assert_usage_matches_the_fold(&frames);
     }
 }

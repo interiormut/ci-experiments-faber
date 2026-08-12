@@ -166,6 +166,11 @@ export interface Host {
   ssh_key_ref: string | null
   /** `unix://` or `tcp://`; `null` means the host's local socket. */
   docker_endpoint: string | null
+  /**
+   * The agent-visible root for direct execution. `null` means this host cannot
+   * be bound to a session on its own — only containers on it can.
+   */
+  root_path: string | null
   created_at: Timestamp
   /** Operator intent, not observed state — an unreachable host is still enabled. */
   disabled_at: Timestamp | null
@@ -391,6 +396,11 @@ export interface SendMessageRequest {
 export interface SendMessageResponse {
   run_id: Uuid
   thread_id: Uuid
+  /**
+   * Environments this message added to the session, in the order they were
+   * tagged. Empty when it tagged none, or only ones the session already had.
+   */
+  added_environments: string[]
 }
 
 /**
@@ -436,4 +446,42 @@ export type TranscriptQuery = {
   /** Only events strictly after this `seq` — poll the tail without refetching. */
   after_seq?: number
   limit?: number
+}
+
+// ---------------------------------------------------------------------------
+// Environments
+// ---------------------------------------------------------------------------
+
+/**
+ * One name a session could be told to reach, and what is behind it.
+ *
+ * This is what the `@` picker reads, so a name it offers is a name that
+ * resolves. Labels are short where they can be and qualified as `host/name`
+ * where two would otherwise collide.
+ */
+export interface EnvironmentCandidate {
+  /** What the user types after `@`. */
+  label: string
+  kind: "host" | "container"
+  host_id: Uuid
+  host_name: string
+  container_id: Uuid | null
+  root_path: string
+  /** Operator intent on the host. Shown rather than hidden — a name missing
+   *  from the picker looks like a name that does not exist. */
+  disabled: boolean
+}
+
+/** One binding a session has, or had. */
+export interface SessionEnvironment {
+  label: string
+  host_id: Uuid
+  container_id: Uuid | null
+  added_at: EpochSeconds
+  /**
+   * Set once unbound. The row stays and so does the claim on the name: a label
+   * that meant two machines would make the earlier half of the transcript
+   * wrong.
+   */
+  removed_at: EpochSeconds | null
 }

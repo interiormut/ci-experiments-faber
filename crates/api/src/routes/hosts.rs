@@ -81,6 +81,9 @@ struct CreateHostRequest {
     /// after verifies against it.
     ssh_host_key: Option<String>,
     docker_endpoint: Option<String>,
+    /// The agent-visible root for direct execution. Absent means this host
+    /// cannot be bound to a session directly — only containers on it can.
+    root_path: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -99,6 +102,8 @@ struct UpdateHostRequest {
     ssh_host_key: Option<Option<String>>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     docker_endpoint: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    root_path: Option<Option<String>>,
     /// Operator intent: `true` stamps `disabled_at`, `false` clears it. Never
     /// an observation — a host nobody can reach is still enabled.
     disabled: Option<bool>,
@@ -116,6 +121,8 @@ struct HostResponse {
     /// what a user checks against what their machine reports.
     ssh_host_key: Option<String>,
     docker_endpoint: Option<String>,
+    /// Null when this host can only be reached through its containers.
+    root_path: Option<String>,
     created_at: DateTime<Utc>,
     disabled_at: Option<DateTime<Utc>>,
     /// Registrations that have not been unregistered, oldest first.
@@ -204,6 +211,7 @@ fn host_response(
         ssh_key_ref: h.ssh_key_ref.clone(),
         ssh_host_key: h.ssh_host_key.clone(),
         docker_endpoint: h.docker_endpoint.clone(),
+        root_path: h.root_path.clone(),
         created_at: h.created_at,
         disabled_at: h.disabled_at,
         containers,
@@ -246,6 +254,17 @@ fn validate_transport_config(
         ),
         _ => Ok(()),
     }
+}
+
+/// The same absolute-path rule a container's root carries, and for the same
+/// reason: the whole of the path contract rests on one rooted namespace per
+/// target, and a relative root would teach the agent host-specific path habits
+/// that silently fail to transfer.
+fn validate_host_root(root_path: &str) -> Result<(), AppError> {
+    if !root_path.starts_with('/') {
+        return Err(AppError::BadRequest("root_path must be absolute".into()));
+    }
+    Ok(())
 }
 
 /// `Some("")` means the caller sent whitespace, which is not a value — it
@@ -338,6 +357,11 @@ async fn create(
     let ssh_host_key = trimmed(input.ssh_host_key.as_deref());
     validate_transport_config(input.transport, ssh_address, ssh_host_key)?;
 
+    let host_root = trimmed(input.root_path.as_deref());
+    if let Some(root) = host_root {
+        validate_host_root(root)?;
+    }
+
     let new_host = NewHost {
         id: Uuid::now_v7(),
         user_id: user.id,
@@ -348,6 +372,7 @@ async fn create(
         ssh_key_ref: trimmed(input.ssh_key_ref.as_deref()),
         ssh_host_key,
         docker_endpoint: trimmed(input.docker_endpoint.as_deref()),
+        root_path: host_root,
     };
 
     let mut conn = state.db.get().await?;
@@ -441,6 +466,9 @@ async fn update(
     if let Some(name) = input.name.as_deref() {
         validate_name(name.trim())?;
     }
+    if let Some(Some(root)) = input.root_path.as_ref().map(|v| trimmed(v.as_deref())) {
+        validate_host_root(root)?;
+    }
 
     // The sparse-column rule spans two fields, so it has to be checked against
     // the row the patch will produce, not against the patch alone: clearing
@@ -502,6 +530,7 @@ async fn update(
             .docker_endpoint
             .as_ref()
             .map(|v| trimmed(v.as_deref())),
+        root_path: input.root_path.as_ref().map(|v| trimmed(v.as_deref())),
         disabled_at: input.disabled.map(|d| d.then(Utc::now)),
     };
 

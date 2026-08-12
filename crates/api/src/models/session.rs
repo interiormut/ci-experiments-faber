@@ -1,7 +1,7 @@
 use diesel::prelude::*;
 use uuid::Uuid;
 
-use crate::schema::{session, session_ref};
+use crate::schema::{session, session_environment, session_ref};
 
 #[derive(Debug, Clone, Queryable, Selectable)]
 #[diesel(table_name = session)]
@@ -49,4 +49,34 @@ pub struct NewSessionRef<'a> {
     pub token: &'a str,
     pub session_id: Uuid,
     pub issued_at: i64,
+}
+
+/// One environment a session may address, by the label the user tagged it
+/// with.
+///
+/// Append-only: `removed_at` tombstones a binding and nothing deletes the row,
+/// because the label stays claimed. A transcript records calls as
+/// `label:path`, so letting a label mean a second machine later would make the
+/// earlier half of that transcript quietly wrong.
+#[derive(Debug, Clone, Queryable, Selectable)]
+#[diesel(table_name = session_environment)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct SessionEnvironment {
+    pub session_id: Uuid,
+    pub label: String,
+    pub host_id: Uuid,
+    /// `None` means the host itself, in direct exec mode.
+    pub container_id: Option<Uuid>,
+    pub added_at: i64,
+    pub removed_at: Option<i64>,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = session_environment)]
+pub struct NewSessionEnvironment<'a> {
+    pub session_id: Uuid,
+    pub label: &'a str,
+    pub host_id: Uuid,
+    pub container_id: Option<Uuid>,
+    pub added_at: i64,
 }

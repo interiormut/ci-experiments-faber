@@ -3,11 +3,17 @@
 import * as React from "react"
 import { useParams } from "next/navigation"
 
-import { faber, FaberError, type Uuid } from "@/lib/api"
+import {
+  faber,
+  FaberError,
+  type EnvironmentCandidate,
+  type Uuid,
+} from "@/lib/api"
 import { useAppShell } from "@/components/shell/app-shell"
 import { PromptBox } from "@/components/thread/prompt-box"
 import { ModelPicker } from "@/components/thread/model-picker"
 import { TurnView } from "@/components/thread/turn"
+import type { MentionOption } from "@/components/thread/mention-textarea"
 import { useSessionTranscript } from "@/lib/thread/use-session-transcript"
 import { useStickToBottom } from "@/lib/thread/use-stick-to-bottom"
 
@@ -52,6 +58,42 @@ function SessionThread({ sessionId }: { sessionId: Uuid }) {
       cancelled = true
     }
   }, [sessionId])
+
+  // What `@` can name. Loaded once per session: the list changes when the user
+  // registers a host or a container, which is a different page, and a picker
+  // that refetched on every keystroke would be answering a question nobody
+  // asked between two of them.
+  const [environments, setEnvironments] = React.useState<EnvironmentCandidate[]>([])
+
+  React.useEffect(() => {
+    let cancelled = false
+
+    void faber
+      .listEnvironments()
+      .then((found) => {
+        if (!cancelled) setEnvironments(found)
+      })
+      // Deliberately silent. Tagging is an addition to writing a message, and
+      // failing to load the picker must not look like failing to send.
+      .catch(() => undefined)
+
+    return () => {
+      cancelled = true
+    }
+  }, [sessionId])
+
+  const mentions = React.useMemo<MentionOption[]>(
+    () =>
+      environments.map((environment) => ({
+        label: environment.label,
+        hint:
+          environment.kind === "container"
+            ? `container on ${environment.host_name} · ${environment.root_path}`
+            : `${environment.host_name} · ${environment.root_path}`,
+        disabled: environment.disabled,
+      })),
+    [environments],
+  )
 
   const { turns, loading, error, isRunning } = useSessionTranscript(sessionId, threadId)
 
@@ -119,6 +161,7 @@ function SessionThread({ sessionId }: { sessionId: Uuid }) {
           sendDisabled={noModels || !threadId}
           isExecuting={isRunning}
           onSend={handleSend}
+          mentions={mentions}
           footerActions={
             <ModelPicker
               models={models}

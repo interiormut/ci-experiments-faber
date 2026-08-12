@@ -42,6 +42,7 @@ diesel::table! {
         docker_endpoint -> Nullable<Text>,
         created_at -> Timestamptz,
         disabled_at -> Nullable<Timestamptz>,
+        root_path -> Nullable<Text>,
     }
 }
 
@@ -130,6 +131,17 @@ diesel::table! {
         title -> Nullable<Text>,
         created_at -> Int8,
         closed_at -> Nullable<Int8>,
+    }
+}
+
+diesel::table! {
+    session_environment (session_id, label) {
+        session_id -> Uuid,
+        label -> Text,
+        host_id -> Uuid,
+        container_id -> Nullable<Uuid>,
+        added_at -> Int8,
+        removed_at -> Nullable<Int8>,
     }
 }
 
@@ -223,6 +235,9 @@ diesel::joinable!(models -> users (user_id));
 diesel::joinable!(models -> credentials (credential_id));
 diesel::joinable!(run -> thread (thread_id));
 diesel::joinable!(session -> workspace (workspace_id));
+diesel::joinable!(session_environment -> session (session_id));
+diesel::joinable!(session_environment -> host (host_id));
+diesel::joinable!(session_environment -> host_container (container_id));
 diesel::joinable!(session_ref -> session (session_id));
 diesel::joinable!(span -> exchange (exchange_id));
 diesel::joinable!(spine -> exchange (exchange_id));
@@ -244,6 +259,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     models,
     run,
     session,
+    session_environment,
     session_ref,
     span,
     spine,

@@ -73,6 +73,10 @@ pub struct Host {
     pub docker_endpoint: Option<String>,
     pub created_at: DateTime<Utc>,
     pub disabled_at: Option<DateTime<Utc>>,
+    /// The agent-visible root when this host is used in direct mode. `None`
+    /// means the host cannot be bound directly — `/` by default would hand an
+    /// agent the whole machine because nobody filled in a field.
+    pub root_path: Option<String>,
 }
 
 #[derive(Insertable)]
@@ -87,6 +91,7 @@ pub struct NewHost<'a> {
     pub ssh_key_ref: Option<&'a str>,
     pub ssh_host_key: Option<&'a str>,
     pub docker_endpoint: Option<&'a str>,
+    pub root_path: Option<&'a str>,
 }
 
 #[derive(AsChangeset, Default)]
@@ -104,6 +109,7 @@ pub struct UpdateHost<'a> {
     /// Operator intent. `Some(None)` re-enables; the column never reflects an
     /// observation.
     pub disabled_at: Option<Option<DateTime<Utc>>>,
+    pub root_path: Option<Option<&'a str>>,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
