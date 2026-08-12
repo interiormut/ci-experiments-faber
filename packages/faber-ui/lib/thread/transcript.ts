@@ -8,7 +8,11 @@
  * — through the same `applyEvent`, so replay and live share one code path.
  */
 
-import type { AgentRunItem, AgentStepState } from "@/components/ui/agent-run"
+import type {
+  AgentRunItem,
+  AgentRunThinkingItem,
+  AgentStepState,
+} from "@/components/ui/agent-run"
 import type { JsonValue, StreamEvent, TranscriptEvent, Uuid } from "@/lib/api"
 
 // ---------------------------------------------------------------------------
@@ -72,17 +76,31 @@ export function fromStreamEvent(event: StreamEvent): NormalizedEvent {
 
 export type RunStatus = "running" | "done" | "error"
 
+/**
+ * A thinking row plus whether its block is still being written.
+ *
+ * `streaming` is transcript state, not view state: it says the model is still
+ * appending to this block, which is what lets the view peek at reasoning while
+ * it arrives and fold it away once it stops. The mode itself is the view's —
+ * nothing here sets {@link AgentRunThinkingItem.mode}.
+ */
+export type ThinkingItem = AgentRunThinkingItem & { streaming: boolean }
+
+/** An `AgentRun` row, with the extra bookkeeping a thinking row carries. */
+export type TimelineItem = Exclude<AgentRunItem, AgentRunThinkingItem> | ThinkingItem
+
 export type Turn = {
   runId: Uuid
   /** The user's own turn (`kind: "input"`, seq 0) — not an `AgentRun` row. */
   userContent: ContentBlock[]
-  items: AgentRunItem[]
+  items: TimelineItem[]
   status: RunStatus
   errorMessage?: string
 }
 
 type BlockEntry =
   | { kind: "message"; itemId: string }
+  | { kind: "thinking"; itemId: string }
   | { kind: "tool"; itemId: string; partialJson: string }
 
 /** The LLM message a run is streaming right now, and the items it has produced. */
@@ -170,7 +188,7 @@ function updateItem(
   store: TranscriptStore,
   runId: Uuid,
   itemId: string,
-  update: (item: AgentRunItem) => AgentRunItem,
+  update: (item: TimelineItem) => TimelineItem,
 ): TranscriptStore {
   const run = store.byRun[runId]
   const items = run.items.map((item) => (item.id === itemId ? update(item) : item))
@@ -247,20 +265,24 @@ export function applyEvent(store: TranscriptStore, event: NormalizedEvent): Tran
       const { index, block } = payload as unknown as { index: number; block: BlockStartPayload }
       let open: OpenMessage
       ;[next, open] = openMessage(next, runId)
-      if (block.type === "text") {
+      if (block.type === "text" || block.type === "thinking") {
         // Derived from the message and block it renders, not from `seq`, so
         // the compacted `message` event rebuilds the same id and React keeps
         // the row rather than remounting it mid-reveal.
-        const itemId = textItemId(open.index, index)
+        const itemId = blockItemId(open.index, index)
         const run = next.byRun[runId]
-        const items: AgentRunItem[] = [...run.items, { kind: "message", id: itemId, text: "" }]
+        const item: TimelineItem =
+          block.type === "text"
+            ? { kind: "message", id: itemId, text: "" }
+            : { kind: "thinking", id: itemId, text: "", streaming: true }
+        const items: TimelineItem[] = [...run.items, item]
         next = updateRun(next, runId, { items })
         next = trackItem(next, runId, itemId)
-        return setBlock(next, runId, index, { kind: "message", itemId })
+        return setBlock(next, runId, index, { kind: item.kind, itemId })
       }
       if (block.type === "tool_use") {
         const run = next.byRun[runId]
-        const items: AgentRunItem[] = [
+        const items: TimelineItem[] = [
           ...run.items,
           { kind: "tool", id: block.id, name: block.name, state: "pending" },
         ]
@@ -268,18 +290,25 @@ export function applyEvent(store: TranscriptStore, event: NormalizedEvent): Tran
         next = trackItem(next, runId, block.id)
         return setBlock(next, runId, index, { kind: "tool", itemId: block.id, partialJson: "" })
       }
-      // Thinking and unknown blocks are deliberately not surfaced on the
-      // timeline — leave the index unmapped, so their deltas are dropped too.
+      // Unknown blocks are deliberately not surfaced on the timeline — leave
+      // the index unmapped, so their deltas are dropped too.
       return next
     }
 
     case "block_delta": {
       const { index, delta } = payload as unknown as { index: number; delta: DeltaPayload }
       const entry = next.blocks[runId]?.[index]
-      if (!entry) return next // an unmapped (thinking/unknown) block
+      if (!entry) return next // an unmapped (unknown) block
       if (entry.kind === "message" && delta.type === "text") {
         return updateItem(next, runId, entry.itemId, (item) =>
           item.kind === "message" ? { ...item, text: item.text + delta.text } : item,
+        )
+      }
+      // `thinking_signature` carries no reasoning to show — it is the opaque
+      // token the provider needs back, and the harness is what keeps it.
+      if (entry.kind === "thinking" && delta.type === "thinking") {
+        return updateItem(next, runId, entry.itemId, (item) =>
+          item.kind === "thinking" ? { ...item, text: item.text + delta.thinking } : item,
         )
       }
       if (entry.kind === "tool" && delta.type === "tool_input_json") {
@@ -292,7 +321,14 @@ export function applyEvent(store: TranscriptStore, event: NormalizedEvent): Tran
     case "block_stop": {
       const { index } = payload as unknown as { index: number }
       const entry = next.blocks[runId]?.[index]
-      if (!entry || entry.kind !== "tool") return next
+      if (!entry) return next
+      if (entry.kind === "thinking") {
+        // The model is done reasoning here, whatever it does next.
+        return updateItem(next, runId, entry.itemId, (item) =>
+          item.kind === "thinking" ? { ...item, streaming: false } : item,
+        )
+      }
+      if (entry.kind !== "tool") return next
       const input = parseJsonLoosely(entry.partialJson)
       return updateItem(next, runId, entry.itemId, (item) =>
         item.kind === "tool" ? { ...item, state: "running" as AgentStepState, input } : item,
@@ -313,11 +349,17 @@ export function applyEvent(store: TranscriptStore, event: NormalizedEvent): Tran
     }
 
     case "run_end":
-      return updateRun(next, runId, { status: "done" })
+      return updateRun(next, runId, { status: "done", items: settleThinking(next, runId) })
 
     case "run_error": {
       const message = (payload as { message?: string } | null)?.message
-      return updateRun(next, runId, { status: "error", errorMessage: message })
+      return updateRun(next, runId, {
+        status: "error",
+        errorMessage: message,
+        // A run that died mid-block never sent the `block_stop` that ends its
+        // reasoning; the run being over ends it just as well.
+        items: settleThinking(next, runId),
+      })
     }
 
     default:
@@ -325,6 +367,13 @@ export function applyEvent(store: TranscriptStore, event: NormalizedEvent): Tran
       // this timeline renders.
       return next
   }
+}
+
+/** Every thinking row of a run, with none of them still streaming. */
+function settleThinking(store: TranscriptStore, runId: Uuid): TimelineItem[] {
+  return store.byRun[runId].items.map((item) =>
+    item.kind === "thinking" && item.streaming ? { ...item, streaming: false } : item,
+  )
 }
 
 export function applyEvents(store: TranscriptStore, events: NormalizedEvent[]): TranscriptStore {
@@ -341,12 +390,23 @@ export function applyEvents(store: TranscriptStore, events: NormalizedEvent[]): 
 function itemsFromContent(
   messageIndex: number,
   content: ContentBlock[],
-  previous: Map<string, AgentRunItem>,
-): AgentRunItem[] {
-  const items: AgentRunItem[] = []
+  previous: Map<string, TimelineItem>,
+): TimelineItem[] {
+  const items: TimelineItem[] = []
   content.forEach((block, index) => {
     if (block.type === "text") {
-      items.push({ kind: "message", id: textItemId(messageIndex, index), text: block.text })
+      items.push({ kind: "message", id: blockItemId(messageIndex, index), text: block.text })
+      return
+    }
+    if (block.type === "thinking") {
+      // The message this block belongs to is closed, so its reasoning is over
+      // — on replay that is the only thing a thinking row ever is.
+      items.push({
+        kind: "thinking",
+        id: blockItemId(messageIndex, index),
+        text: block.thinking,
+        streaming: false,
+      })
       return
     }
     if (block.type === "tool_use") {
@@ -362,14 +422,14 @@ function itemsFromContent(
         result: existing?.kind === "tool" ? existing.result : undefined,
       })
     }
-    // Thinking, unknown, and tool results are not timeline items — the same
+    // Unknown blocks and tool results are not timeline items — the same
     // omission the delta path makes.
   })
   return items
 }
 
 /** Stable across the delta-built item and its compacted replacement. */
-function textItemId(messageIndex: number, blockIndex: number): string {
+function blockItemId(messageIndex: number, blockIndex: number): string {
   return `m${messageIndex}:${blockIndex}`
 }
 

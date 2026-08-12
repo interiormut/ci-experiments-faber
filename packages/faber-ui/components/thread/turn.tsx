@@ -1,7 +1,8 @@
 import { FaberIndicator } from "@/components/thread/faber-indicator"
 import { Markdown } from "@/components/thread/markdown"
-import { AgentMessage, AgentRun, AgentStep } from "@/components/ui/agent-run"
+import { AgentMessage, AgentRun, AgentStep, AgentThinking } from "@/components/ui/agent-run"
 import type { ContentBlock, Turn } from "@/lib/thread/transcript"
+import { useThinkingModes } from "@/lib/thread/use-thinking-modes"
 
 function userText(turn: Turn): string {
   return turn.userContent
@@ -13,6 +14,7 @@ function userText(turn: Turn): string {
 /** One user turn plus the agent's run in response, on the session timeline. */
 export function TurnView({ turn, isLast = false }: { turn: Turn; isLast?: boolean }) {
   const text = userText(turn)
+  const thinking = useThinkingModes()
 
   return (
     <div className="flex flex-col gap-6">
@@ -28,17 +30,35 @@ export function TurnView({ turn, isLast = false }: { turn: Turn; isLast?: boolea
           still AgentRun's to inject. */}
       {turn.items.length > 0 ? (
         <AgentRun>
-          {turn.items.map((item) =>
-            item.kind === "message" ? (
-              <AgentMessage key={item.id}>
-                <Markdown text={item.text} />
-              </AgentMessage>
-            ) : (
+          {turn.items.map((item) => {
+            if (item.kind === "message") {
+              return (
+                <AgentMessage key={item.id}>
+                  <Markdown text={item.text} />
+                </AgentMessage>
+              )
+            }
+            if (item.kind === "thinking") {
+              const mode = thinking.modeOf(item.id, item.streaming)
+              return (
+                // Plain text, not Markdown: `peek` sizes its window in lines of
+                // this body's own leading, which a block element's margins
+                // would throw off.
+                <AgentThinking
+                  key={item.id}
+                  mode={mode}
+                  onModeChange={() => thinking.toggle(item.id, mode)}
+                >
+                  <p className="whitespace-pre-wrap">{item.text}</p>
+                </AgentThinking>
+              )
+            }
+            return (
               <AgentStep key={item.id} state={item.state} title={item.name}>
                 {item.result}
               </AgentStep>
-            ),
-          )}
+            )
+          })}
         </AgentRun>
       ) : null}
 
