@@ -2,7 +2,13 @@
 
 import * as React from "react"
 
-import { faber, FaberError, type StreamQuery, type Uuid } from "@/lib/api"
+import {
+  faber,
+  FaberError,
+  type StreamQuery,
+  type TranscriptEvent,
+  type Uuid,
+} from "@/lib/api"
 import {
   applyEvent,
   applyEvents,
@@ -33,11 +39,32 @@ async function loadHistory(threadId: Uuid): Promise<{ store: TranscriptStore; re
   let resume: StreamQuery = {}
 
   for (const run of runs) {
-    const events = await faber.listTranscript(run.id, { limit: TRANSCRIPT_LIMIT })
+    let events: TranscriptEvent[] = []
+    let afterSeq: number | undefined
+    for (;;) {
+      const page = await faber.listTranscript(run.id, {
+        after_seq: afterSeq,
+        limit: TRANSCRIPT_LIMIT,
+      })
+      events = [...events, ...page]
+      if (page.length < TRANSCRIPT_LIMIT) break
+      afterSeq = page[page.length - 1]?.seq
+      if (afterSeq === undefined) break
+    }
     store = applyEvents(
       store,
       events.map((event) => fromTranscriptEvent(run.id, event)),
     )
+    // Terminal SSE markers are intentionally live-only. On reload, the run
+    // row's completion timestamp is the durable equivalent of `run_end`.
+    if (run.completed_at !== null) {
+      store = applyEvent(store, {
+        runId: run.id,
+        seq: -1,
+        kind: "run_end",
+        payload: null,
+      })
+    }
     if (run.completed_at === null) {
       const last = events[events.length - 1]
       resume = last ? { run_id: run.id, after_seq: last.seq } : {}
