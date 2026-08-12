@@ -20,25 +20,32 @@
 //!   is an [`Outcome`], not a failure, and a timeout is an outcome too.
 //! - [`Manifest`] — capability published once at bind, never re-derived.
 //! - [`Registry`] — labels, append-only, tombstoning rather than removal.
-//! - [`Target`] — the trait every transport implements. [`LocalTarget`] is the
-//!   only implementation here; SSH and docker attach without a caller change.
+//! - [`Target`] — the agent-facing contract. [`Machine`] is its only
+//!   implementation; a mode is a `Machine` over a different [`Spawn`] and
+//!   [`Files`], so adding one is mechanism and never behavior.
 
 pub mod exec;
 pub mod fault;
 pub mod file;
+pub mod files;
 pub mod local;
+pub mod machine;
 pub mod manifest;
 pub mod path;
 pub mod registry;
+pub mod spawn;
 pub mod store;
 pub mod target;
 
 pub use exec::{Chunk, Cursor, Exec, Exit, Outcome, ProcId, Signal, Stream};
 pub use fault::{Denial, Fault};
 pub use file::{Edit, Entry, EntryKind, Listing, Patch, PatchOp, Replace, Stat, Window};
+pub use files::{Confined, DirEntry, Files};
 pub use local::LocalTarget;
+pub use machine::Machine;
 pub use manifest::{Capability, Manifest, Posture, Reachability, Scope};
 pub use path::{Root, RootedPath};
 pub use registry::{Binding, Label, Registry};
+pub use spawn::{Proc, Run, Spawn};
 pub use store::{Blob, BlobRef, Blobs, MemoryBlobs, Span};
 pub use target::Target;
