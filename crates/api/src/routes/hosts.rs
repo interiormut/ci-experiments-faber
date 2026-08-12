@@ -44,7 +44,10 @@ pub fn router() -> Router<AppState> {
             "/api/hosts/{id}/containers",
             post(create_container).get(list_containers),
         )
-        .route("/api/hosts/{id}/probes", post(record_probe).get(list_probes))
+        .route(
+            "/api/hosts/{id}/probes",
+            post(record_probe).get(list_probes),
+        )
         .route(
             "/api/host-containers/{id}",
             patch(update_container).delete(unregister_container),
@@ -62,6 +65,10 @@ struct CreateHostRequest {
     exec_mode: ExecMode,
     ssh_address: Option<String>,
     ssh_key_ref: Option<String>,
+    /// The fingerprint this host is known by. Omitted on first registration:
+    /// the first successful connection records what it saw, and everything
+    /// after verifies against it.
+    ssh_host_key: Option<String>,
     docker_endpoint: Option<String>,
 }
 
@@ -75,6 +82,10 @@ struct UpdateHostRequest {
     ssh_address: Option<Option<String>>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     ssh_key_ref: Option<Option<String>>,
+    /// `null` clears it, which is how a rebuilt machine is re-trusted — an
+    /// operator decision, never an automatic one on mismatch.
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    ssh_host_key: Option<Option<String>>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     docker_endpoint: Option<Option<String>>,
     /// Operator intent: `true` stamps `disabled_at`, `false` clears it. Never
@@ -90,6 +101,9 @@ struct HostResponse {
     exec_mode: String,
     ssh_address: Option<String>,
     ssh_key_ref: Option<String>,
+    /// Null until first contact. A public fingerprint, not a secret — it is
+    /// what a user checks against what their machine reports.
+    ssh_host_key: Option<String>,
     docker_endpoint: Option<String>,
     created_at: DateTime<Utc>,
     disabled_at: Option<DateTime<Utc>>,
@@ -166,6 +180,7 @@ fn host_response(
         exec_mode: h.exec_mode.clone(),
         ssh_address: h.ssh_address.clone(),
         ssh_key_ref: h.ssh_key_ref.clone(),
+        ssh_host_key: h.ssh_host_key.clone(),
         docker_endpoint: h.docker_endpoint.clone(),
         created_at: h.created_at,
         disabled_at: h.disabled_at,
@@ -195,6 +210,7 @@ fn validate_name(name: &str) -> Result<(), AppError> {
 fn validate_transport_config(
     transport: Transport,
     ssh_address: Option<&str>,
+    ssh_host_key: Option<&str>,
 ) -> Result<(), AppError> {
     match transport {
         Transport::Ssh if ssh_address.is_none_or(str::is_empty) => Err(AppError::BadRequest(
@@ -202,6 +218,9 @@ fn validate_transport_config(
         )),
         Transport::Local if ssh_address.is_some_and(|a| !a.is_empty()) => Err(
             AppError::BadRequest("ssh_address is only valid when transport is 'ssh'".into()),
+        ),
+        Transport::Local if ssh_host_key.is_some_and(|k| !k.is_empty()) => Err(
+            AppError::BadRequest("ssh_host_key is only valid when transport is 'ssh'".into()),
         ),
         _ => Ok(()),
     }
@@ -294,7 +313,8 @@ async fn create(
     validate_name(name)?;
 
     let ssh_address = trimmed(input.ssh_address.as_deref());
-    validate_transport_config(input.transport, ssh_address)?;
+    let ssh_host_key = trimmed(input.ssh_host_key.as_deref());
+    validate_transport_config(input.transport, ssh_address, ssh_host_key)?;
 
     let new_host = NewHost {
         id: Uuid::now_v7(),
@@ -304,6 +324,7 @@ async fn create(
         exec_mode: input.exec_mode.as_str(),
         ssh_address,
         ssh_key_ref: trimmed(input.ssh_key_ref.as_deref()),
+        ssh_host_key,
         docker_endpoint: trimmed(input.docker_endpoint.as_deref()),
     };
 
@@ -411,13 +432,39 @@ async fn update(
         Some(ref value) => trimmed(value.as_deref()),
         None => current.ssh_address.as_deref(),
     };
-    validate_transport_config(effective_transport, effective_ssh_address)?;
+    // A host key the caller is *setting* has to be checked; one already stored
+    // on a host being switched to local is cleared below rather than refused.
+    let submitted_host_key = input
+        .ssh_host_key
+        .as_ref()
+        .and_then(|value| trimmed(value.as_deref()));
+    validate_transport_config(
+        effective_transport,
+        effective_ssh_address,
+        submitted_host_key,
+    )?;
 
     // A transport switch that leaves the old address behind would fail the DB
     // check, so normalize: going local clears the address alongside it.
     let ssh_address_patch = match (input.transport, input.ssh_address.as_ref()) {
         (_, Some(value)) => Some(trimmed(value.as_deref())),
         (Some(Transport::Local), None) => Some(None),
+        _ => None,
+    };
+
+    // The host key travels with the address, for the same reason and one more:
+    // a host that stops being an ssh host has no key, and a host that changes
+    // address is a different machine whose stored fingerprint is now a claim
+    // about somewhere else. Keeping it would verify the next connection
+    // against the wrong host and refuse it for the wrong reason.
+    let ssh_host_key_patch = match (
+        input.transport,
+        input.ssh_host_key.as_ref(),
+        ssh_address_patch,
+    ) {
+        (_, Some(value), _) => Some(trimmed(value.as_deref())),
+        (Some(Transport::Local), None, _) => Some(None),
+        (_, None, Some(address)) if address != current.ssh_address.as_deref() => Some(None),
         _ => None,
     };
 
@@ -428,7 +475,11 @@ async fn update(
         exec_mode: input.exec_mode.map(|m| m.as_str()),
         ssh_address: ssh_address_patch,
         ssh_key_ref: input.ssh_key_ref.as_ref().map(|v| trimmed(v.as_deref())),
-        docker_endpoint: input.docker_endpoint.as_ref().map(|v| trimmed(v.as_deref())),
+        ssh_host_key: ssh_host_key_patch,
+        docker_endpoint: input
+            .docker_endpoint
+            .as_ref()
+            .map(|v| trimmed(v.as_deref())),
         disabled_at: input.disabled.map(|d| d.then(Utc::now)),
     };
 
@@ -572,10 +623,7 @@ async fn create_container(
             other => AppError::db(other, "hosts.containers.create"),
         })?;
 
-    Ok((
-        StatusCode::CREATED,
-        Json(container_response(&inserted)),
-    ))
+    Ok((StatusCode::CREATED, Json(container_response(&inserted))))
 }
 
 async fn list_containers(
@@ -656,21 +704,20 @@ async fn update_container(
         unregistered_at: input.unregistered.map(|u| u.then(Utc::now)),
     };
 
-    let updated: HostContainer = diesel::update(
-        host_container::table.filter(host_container::id.eq(current.id)),
-    )
-    .set(patch)
-    .returning(HostContainer::as_returning())
-    .get_result(&mut conn)
-    .await
-    .map_err(|err| match err {
-        diesel::result::Error::NotFound => AppError::NotFound,
-        diesel::result::Error::DatabaseError(
-            diesel::result::DatabaseErrorKind::UniqueViolation,
-            _,
-        ) => AppError::BadRequest("that ref is already registered on this host".into()),
-        other => AppError::db(other, "hosts.containers.update"),
-    })?;
+    let updated: HostContainer =
+        diesel::update(host_container::table.filter(host_container::id.eq(current.id)))
+            .set(patch)
+            .returning(HostContainer::as_returning())
+            .get_result(&mut conn)
+            .await
+            .map_err(|err| match err {
+                diesel::result::Error::NotFound => AppError::NotFound,
+                diesel::result::Error::DatabaseError(
+                    diesel::result::DatabaseErrorKind::UniqueViolation,
+                    _,
+                ) => AppError::BadRequest("that ref is already registered on this host".into()),
+                other => AppError::db(other, "hosts.containers.update"),
+            })?;
 
     Ok(Json(container_response(&updated)))
 }
@@ -787,4 +834,38 @@ async fn list_probes(
         .map_err(|err| AppError::db(err, "hosts.probes.list"))?;
 
     Ok(Json(rows.iter().map(probe_response).collect()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_local_host_may_not_carry_ssh_configuration() {
+        // Mirrors the DB checks, so a mismatch comes back naming the field
+        // rather than as an opaque constraint violation.
+        assert!(validate_transport_config(Transport::Local, None, None).is_ok());
+        assert!(validate_transport_config(Transport::Local, Some("a@b:22"), None).is_err());
+        assert!(validate_transport_config(Transport::Local, None, Some("SHA256:x")).is_err());
+    }
+
+    #[test]
+    fn an_ssh_host_needs_an_address_but_not_yet_a_host_key() {
+        assert!(validate_transport_config(Transport::Ssh, None, None).is_err());
+        // No host key is the normal state before first contact: the connection
+        // records what it saw, and everything after verifies against it.
+        assert!(validate_transport_config(Transport::Ssh, Some("a@b:22"), None).is_ok());
+        assert!(
+            validate_transport_config(Transport::Ssh, Some("a@b:22"), Some("SHA256:x")).is_ok()
+        );
+    }
+
+    #[test]
+    fn a_blank_field_is_not_a_value() {
+        // Whitespace reaching a nullable column would make "unset" and "set to
+        // nothing" two states that look different and behave the same.
+        assert_eq!(trimmed(Some("  ")), None);
+        assert_eq!(trimmed(Some(" SHA256:x ")), Some("SHA256:x"));
+        assert!(validate_transport_config(Transport::Local, Some(""), Some("")).is_ok());
+    }
 }

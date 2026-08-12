@@ -38,6 +38,7 @@ diesel::table! {
         exec_mode -> Text,
         ssh_address -> Nullable<Text>,
         ssh_key_ref -> Nullable<Text>,
+        ssh_host_key -> Nullable<Text>,
         docker_endpoint -> Nullable<Text>,
         created_at -> Timestamptz,
         disabled_at -> Nullable<Timestamptz>,

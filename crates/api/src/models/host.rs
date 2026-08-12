@@ -66,6 +66,10 @@ pub struct Host {
     pub exec_mode: String,
     pub ssh_address: Option<String>,
     pub ssh_key_ref: Option<String>,
+    /// The SHA256 fingerprint this host is known by. `None` until the first
+    /// successful connection, which stores what it saw; every connection after
+    /// verifies against it.
+    pub ssh_host_key: Option<String>,
     pub docker_endpoint: Option<String>,
     pub created_at: DateTime<Utc>,
     pub disabled_at: Option<DateTime<Utc>>,
@@ -81,6 +85,7 @@ pub struct NewHost<'a> {
     pub exec_mode: &'a str,
     pub ssh_address: Option<&'a str>,
     pub ssh_key_ref: Option<&'a str>,
+    pub ssh_host_key: Option<&'a str>,
     pub docker_endpoint: Option<&'a str>,
 }
 
@@ -92,6 +97,9 @@ pub struct UpdateHost<'a> {
     pub exec_mode: Option<&'a str>,
     pub ssh_address: Option<Option<&'a str>>,
     pub ssh_key_ref: Option<Option<&'a str>>,
+    /// `Some(None)` clears it, which is how a rebuilt machine is re-trusted:
+    /// deliberately, by the operator, rather than automatically on mismatch.
+    pub ssh_host_key: Option<Option<&'a str>>,
     pub docker_endpoint: Option<Option<&'a str>>,
     /// Operator intent. `Some(None)` re-enables; the column never reflects an
     /// observation.
