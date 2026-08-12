@@ -11,6 +11,7 @@ import {
   type Host,
   type HostContainer,
   type Image,
+  type SpawnContainerRequest,
   type Transport,
   type UpdateContainerRequest,
   type UpdateHostRequest,
@@ -324,7 +325,7 @@ export function ContainerFormDialog({
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <DialogHeader>
             <DialogTitle>
-              {editing ? "Edit registration" : `Register a container on ${host?.name ?? ""}`}
+              {editing ? "Edit registration" : `Add a container on ${host?.name ?? ""}`}
             </DialogTitle>
           </DialogHeader>
 
@@ -365,7 +366,161 @@ export function ContainerFormDialog({
 
           <DialogFooter>
             <Button type="submit" loading={submitting} loadingText="Saving">
-              {editing ? "Save" : "Register"}
+              {editing ? "Save" : "Add"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Container — spawned
+// ---------------------------------------------------------------------------
+
+type SpawnFormState = {
+  image_id: string
+  name: string
+  root_path: string
+}
+
+/**
+ * The "Create" half of the Add menu: faber starts the container instead of
+ * adopting one the user already runs.
+ *
+ * Root path is seeded from the chosen image and stays editable, so the common
+ * case is one click and the uncommon one is still reachable. The image list is
+ * passed in rather than fetched here — the Environments page already holds it
+ * for its own section.
+ */
+export function ContainerSpawnDialog({
+  open,
+  onOpenChange,
+  host,
+  images,
+  onSpawn,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  host: Host | null
+  images: Image[]
+  onSpawn: (hostId: Uuid, body: SpawnContainerRequest) => Promise<HostContainer>
+}) {
+  const [form, setForm] = React.useState<SpawnFormState>({
+    image_id: "",
+    name: "",
+    root_path: "",
+  })
+  const [submitting, setSubmitting] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+
+  // Only follows the image while the user has not typed a root of their own:
+  // an edited path survives switching images, an untouched one keeps tracking.
+  const [rootTouched, setRootTouched] = React.useState(false)
+
+  const selectImage = (id: string) => {
+    const image = images.find((row) => row.id === id)
+    setForm((f) => ({
+      ...f,
+      image_id: id,
+      root_path: rootTouched ? f.root_path : (image?.default_root_path ?? ""),
+    }))
+  }
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!host || !form.image_id) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      await onSpawn(host.id, {
+        image_id: form.image_id,
+        name: form.name.trim() ? form.name.trim() : null,
+        root_path: form.root_path.trim(),
+      })
+      onOpenChange(false)
+    } catch (err) {
+      setError(err instanceof FaberError ? err.message : "failed to create the container")
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <DialogHeader>
+            <DialogTitle>Create a container on {host?.name ?? ""}</DialogTitle>
+          </DialogHeader>
+
+          <p className="text-sm text-muted-foreground">
+            Faber starts this one from an image and registers what it started.
+          </p>
+
+          {images.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No images saved yet — add one below first, and it becomes available
+              here.
+            </p>
+          ) : (
+            <Field
+              id="spawn-image"
+              label="Image"
+              hint="Saved templates. The reference is pulled on the host, not here."
+            >
+              <select
+                id="spawn-image"
+                className={SELECT_CLASS}
+                value={form.image_id}
+                onChange={(event) => selectImage(event.target.value)}
+                required
+              >
+                <option value="" disabled>
+                  Choose an image
+                </option>
+                {images.map((image) => (
+                  <option key={image.id} value={image.id}>
+                    {image.name} — {image.reference}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+
+          <AnimatedField
+            id="spawn-name"
+            label="Name"
+            value={form.name}
+            onChange={(v) => setForm((f) => ({ ...f, name: v }))}
+            placeholder="Optional"
+            hint="Used as the container's name on the daemon, and as its label here."
+          />
+
+          <AnimatedField
+            id="spawn-root-path"
+            label="Root path"
+            value={form.root_path}
+            onChange={(v) => {
+              setRootTouched(true)
+              setForm((f) => ({ ...f, root_path: v }))
+            }}
+            placeholder="/workspace"
+            required
+            hint="Absolute. Seeded from the image, and editable."
+          />
+
+          {error ? <p className="text-sm text-destructive">{error}</p> : null}
+
+          <DialogFooter>
+            <Button
+              type="submit"
+              loading={submitting}
+              loadingText="Creating"
+              disabled={images.length === 0}
+            >
+              Create
             </Button>
           </DialogFooter>
         </form>

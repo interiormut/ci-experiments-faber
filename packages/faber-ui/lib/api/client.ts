@@ -23,6 +23,7 @@ import type {
   SendMessageRequest,
   SendMessageResponse,
   Session,
+  SpawnContainerRequest,
   SpineEntry,
   StreamEvent,
   StreamQuery,
@@ -201,6 +202,25 @@ export class FaberClient {
     return this.request(
       "POST",
       `/api/hosts/${encodeURIComponent(hostId)}/containers`,
+      { body },
+    )
+  }
+
+  /**
+   * Starts a container from an image and registers what it started.
+   *
+   * The counterpart to {@link createContainer}: this one is faber-managed, so
+   * unlike every other route here it does claim the create half of container
+   * lifecycle. **The server route is not implemented yet** — the UI is wired
+   * ahead of it, and calls fail until it lands.
+   */
+  async spawnContainer(
+    hostId: Uuid,
+    body: SpawnContainerRequest,
+  ): Promise<HostContainer> {
+    return this.request(
+      "POST",
+      `/api/hosts/${encodeURIComponent(hostId)}/containers/spawn`,
       { body },
     )
   }

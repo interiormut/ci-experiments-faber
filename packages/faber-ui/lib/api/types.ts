@@ -204,6 +204,23 @@ export interface CreateContainerRequest {
   root_path: string
 }
 
+/**
+ * Starts a container from an image and registers the result in one call.
+ *
+ * Unlike {@link CreateContainerRequest}, which only records a container the
+ * user already runs, this asks faber to create one — the "Create" half of the
+ * Add menu on `/environments`. The route it posts to does not exist server-side
+ * yet; the shape is here so the surface is settled before it lands.
+ */
+export interface SpawnContainerRequest {
+  /** The template to start from. */
+  image_id: Uuid
+  /** User label, and the container's name on the daemon when set. */
+  name?: string | null
+  /** Defaults to the image's `default_root_path` when omitted. */
+  root_path?: string
+}
+
 export interface UpdateContainerRequest {
   container_ref?: string
   name?: string | null

@@ -8,6 +8,7 @@ import {
   type CreateHostRequest,
   type Host,
   type HostContainer,
+  type SpawnContainerRequest,
   type UpdateContainerRequest,
   type UpdateHostRequest,
   type Uuid,
@@ -111,6 +112,24 @@ export function useHosts() {
     [],
   )
 
+  /**
+   * Starts one from an image, rather than adopting one already running. Folds
+   * in identically — the server answers with the registration either way, so
+   * nothing downstream has to know which half of the Add menu produced a row.
+   */
+  const spawnContainer = React.useCallback(
+    async (hostId: Uuid, body: SpawnContainerRequest): Promise<HostContainer> => {
+      const created = await faber.spawnContainer(hostId, body)
+      setHosts((prev) =>
+        prev.map((host) =>
+          host.id === hostId ? { ...host, containers: [...host.containers, created] } : host,
+        ),
+      )
+      return created
+    },
+    [],
+  )
+
   const editContainer = React.useCallback(
     async (
       hostId: Uuid,
@@ -154,6 +173,7 @@ export function useHosts() {
     editHost,
     removeHost,
     addContainer,
+    spawnContainer,
     editContainer,
     unregisterContainer,
   }
