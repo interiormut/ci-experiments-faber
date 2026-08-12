@@ -9,9 +9,7 @@ import { PromptBox } from "@/components/thread/prompt-box"
 import { ModelPicker } from "@/components/thread/model-picker"
 import { TurnView } from "@/components/thread/turn"
 import { useSessionTranscript } from "@/lib/thread/use-session-transcript"
-
-/** How close to the bottom (px) still counts as "at the bottom" for autoscroll. */
-const STICK_THRESHOLD = 96
+import { useStickToBottom } from "@/lib/thread/use-stick-to-bottom"
 
 export default function SessionPage() {
   const params = useParams<{ id: string }>()
@@ -57,20 +55,17 @@ function SessionThread({ sessionId }: { sessionId: Uuid }) {
 
   const { turns, loading, error, isRunning } = useSessionTranscript(sessionId, threadId)
 
-  const scrollRef = React.useRef<HTMLDivElement>(null)
-  const stickToBottomRef = React.useRef(true)
+  // What autoscroll counts as something new: a turn, or a row inside one —
+  // reasoning starting, a tool being called, the reply beginning. Not the
+  // tokens filling those rows in, which grow the page continuously and would
+  // have the view chasing every frame of a stream nobody asked to follow that
+  // closely.
+  const rows = React.useMemo(
+    () => turns.reduce((count, turn) => count + turn.items.length, turns.length),
+    [turns],
+  )
 
-  React.useEffect(() => {
-    const el = scrollRef.current
-    if (!el || !stickToBottomRef.current) return
-    el.scrollTop = el.scrollHeight
-  }, [turns])
-
-  const handleScroll = () => {
-    const el = scrollRef.current
-    if (!el) return
-    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_THRESHOLD
-  }
+  const { ref: scrollRef, onScroll, stick } = useStickToBottom<HTMLDivElement>(rows)
 
   const [sendError, setSendError] = React.useState<string | null>(null)
   const noModels = modelsLoaded && models.length === 0
@@ -87,19 +82,19 @@ function SessionThread({ sessionId }: { sessionId: Uuid }) {
 
       try {
         await faber.sendMessage(sessionId, { content, model, thread_id: threadId })
-        stickToBottomRef.current = true
+        stick()
         return true
       } catch (err) {
         setSendError(err instanceof FaberError ? err.message : "failed to send the message")
         return false
       }
     },
-    [sessionId, threadId, selectedModel],
+    [sessionId, threadId, selectedModel, stick],
   )
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      <div ref={scrollRef} onScroll={handleScroll} className="min-h-0 flex-1 overflow-y-auto">
+      <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-4xl flex-col gap-8 px-4 pt-8 pb-40">
           {threadError ? <p className="text-sm text-destructive">{threadError}</p> : null}
           {loading && !threadError ? (
