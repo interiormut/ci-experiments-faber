@@ -1,13 +1,13 @@
 //! Running commands, and what running one produces.
 //!
-//! The shape follows the common execution contract, with three amendments applied:
+//! The shape follows the common execution contract, with three amendments:
 //!
-//! - A1 — every [`Exit`] echoes the resolved `cwd` and the target label, so
-//!   the transcript carries the resolution rather than implying it.
-//! - A2 — captured output is both a [`Span`] (for the exchange) and a path
-//!   under the target's root (for the agent, which can `rg` a path and cannot
-//!   `rg` a ref).
-//! - A6 — [`Target::stdin`](crate::Target::stdin) exists, because
+//! - Every [`Exit`] echoes the resolved `cwd` and the target label, so the
+//!   transcript carries the resolution rather than implying it.
+//! - Captured output is both a [`Span`] (for the exchange) and a path under
+//!   the target's root (for the agent, which can `rg` a path and cannot `rg`
+//!   a ref).
+//! - [`Target::stdin`](crate::Target::stdin) exists, because
 //!   `start`/`output`/`signal` cannot answer an interactive prompt or drive a
 //!   REPL.
 
@@ -33,7 +33,7 @@ pub struct Exec {
     /// carry, so replay diverges for reasons nothing in the exchange explains
     /// — and it implies a long-lived shell, which is a lifecycle Faber would
     /// then own. Codex is the precedent for the stateless position:
-    /// required `workdir` plus an explicit ban on `cd` (A1).
+    /// required `workdir` plus an explicit ban on `cd`.
     pub cwd: Option<RootedPath>,
 
     /// Additive overlay on the probed base environment.
@@ -84,10 +84,10 @@ impl Exec {
 /// A command that ran. Not a failure, whatever the exit code.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Exit {
-    /// A1: which target, echoed rather than implied.
+    /// Which target, echoed rather than implied.
     pub target: Label,
-    /// A1: the *resolved* cwd, so a transcript replayed elsewhere sees the
-    /// same directory the run saw.
+    /// The *resolved* cwd, so a transcript replayed elsewhere sees the same
+    /// directory the run saw.
     pub cwd: RootedPath,
     pub outcome: Outcome,
     pub stdout: Stream,
@@ -110,10 +110,10 @@ pub enum Outcome {
 
 /// One captured stream.
 ///
-/// Both halves of A2: `span` is what the exchange carries, `spill` is a path
-/// *inside the target* holding the same bytes, present when capture was large
-/// enough that the agent will want to grep rather than read. `truncated` is
-/// A5 — a capped result must never read as a complete one.
+/// `span` is what the exchange carries; `spill` is a path *inside the target*
+/// holding the same bytes, present when capture was large enough that the
+/// agent will want to grep rather than read. `truncated` is the flag a capped
+/// result must carry so it never reads as a complete one.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stream {
     pub span: Span,

@@ -43,8 +43,8 @@ impl Window {
     }
 }
 
-/// What a write or an edit left behind. Echoes the path (A1) so no unqualified
-/// path enters the transcript.
+/// What a write or an edit left behind. Echoes the path so no unqualified path
+/// enters the transcript.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stat {
     pub path: RootedPath,
@@ -70,7 +70,7 @@ pub enum EntryKind {
     Other,
 }
 
-/// A directory listing, capped and *flagged* when capped (A5).
+/// A directory listing, capped and *flagged* when capped.
 ///
 /// Borrowed directly from `Glob`'s cap-plus-flag: a capped result the model
 /// reads as complete is worse than no result, because it terminates the

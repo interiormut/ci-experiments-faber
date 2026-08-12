@@ -1,4 +1,4 @@
-//! Spawn templates — see `internal-docs/host.md` X6.
+//! Spawn templates — see `internal-docs/host.md`.
 //!
 //! An image is not a host, not a container, and not owned by either. It exists
 //! purely so "start me a fresh one" is a one-shot convenience rather than a

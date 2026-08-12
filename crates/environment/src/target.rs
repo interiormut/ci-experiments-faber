@@ -51,7 +51,7 @@ pub trait Target: Send + Sync {
     /// Reads output produced since `from`.
     async fn output(&self, id: ProcId, from: Cursor) -> Result<Chunk, Fault>;
 
-    /// Writes to a running process's stdin (A6).
+    /// Writes to a running process's stdin.
     ///
     /// The missing verb: `start`/`output`/`signal` cannot answer an
     /// interactive prompt or drive a REPL. Requires a PTY rather than a pipe

@@ -1,14 +1,14 @@
 //! Bound labels.
 //!
-//! **S1: the target is a required parameter on every call and is never
-//! defaulted.** Ambient selection (S2) stops the call from recording where it
-//! ran and turns every path-taking tool into a place the resolution can be
+//! **The target is a required parameter on every call and is never
+//! defaulted.** Ambient selection stops the call from recording where it ran
+//! and turns every path-taking tool into a place the resolution can be
 //! forgotten — Codex had to patch `view_image` for exactly this. Namespaced
-//! per-target tools (S3) make the tool list a function of the bindings, which
-//! is not merely worse ergonomically: it forecloses mid-session binding, since
+//! per-target tools make the tool list a function of the bindings, which is
+//! not merely worse ergonomically: it forecloses mid-session binding, since
 //! new tools rewrite the schema block near the top of the prefix.
 //!
-//! With S1, binding a target mid-session touches **zero prefix bytes**. The
+//! So binding a target mid-session touches **zero prefix bytes**. The
 //! schema already has a `target` parameter of type string; a new binding is an
 //! appended event carrying a label and a manifest, at the end of the context.
 //!

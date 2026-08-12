@@ -29,7 +29,7 @@ CREATE TABLE host (
 
   UNIQUE (user_id, name),
 
-  -- R1: reachability is never a column. `disabled_at` above is the only state
+  -- Reachability is never a column. `disabled_at` above is the only state
   -- here, and it records what the operator asked for, not what was observed.
   CONSTRAINT host_transport_config CHECK (
       (transport = 'local' AND ssh_address IS NULL)

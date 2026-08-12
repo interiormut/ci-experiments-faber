@@ -39,7 +39,7 @@ use crate::store::{Blob, Blobs, Span};
 use crate::target::Target;
 
 /// Bytes of one stream kept in the blob store. Past this the capture is
-/// flagged truncated (A5) and the whole of it goes to a spill file (A2).
+/// flagged truncated and the whole of it goes to a spill file.
 pub const CAPTURE_CAP: usize = 256 * 1024;
 
 /// Output this size or larger also lands at a path inside the target, because
@@ -48,13 +48,13 @@ pub const SPILL_THRESHOLD: usize = 64 * 1024;
 
 /// Where spill files go, relative to the root.
 ///
-    /// Lifecycle cleanup is unresolved and this implementation does not pretend otherwise:
-    /// nothing deletes these. Faber owns no lifecycle, so a long run leaves
+/// Lifecycle cleanup is unresolved and this implementation does not pretend otherwise:
+/// nothing deletes these. Faber owns no lifecycle, so a long run leaves
 /// logs behind, under one predictable directory rather than scattered.
 pub const SPILL_DIR: &str = "/.faber/logs";
 
 /// Binaries probed at bind. Per-binary capability is manifest data, never tool
-    /// presence — there is no `git` verb on [`Target`], only a `git` line in
+/// presence — there is no `git` verb on [`Target`], only a `git` line in
 /// the manifest.
 const PROBED_TOOLS: &[&str] = &["git", "rg", "cargo", "node", "python3"];
 
@@ -69,8 +69,8 @@ pub struct LocalTarget {
     /// Distinguishes this binding's spill files from an earlier binding's over
     /// the same root. Call ids restart at 1 per bind, and nothing deletes a
     /// spill file — without this, a path recorded in an old transcript
-    /// would later resolve to different bytes, which is the one property A2
-    /// exists to provide.
+    /// would later resolve to different bytes, which is the one property a
+    /// spill path exists to provide.
     bind_nonce: u64,
 }
 
@@ -123,7 +123,7 @@ impl LocalTarget {
             Capability::List,
         ]);
 
-        // A7: rc files can see an agent is driving and skip fancy prompts.
+        // So rc files can see an agent is driving and skip fancy prompts.
         let agent_env = BTreeMap::from([
             ("FABER_AGENT".to_owned(), "1".to_owned()),
             ("FABER_TARGET".to_owned(), label.0.clone()),
@@ -145,8 +145,8 @@ impl LocalTarget {
             // does.
             posture: Posture::Conventional,
             agent_env,
-            // Commands run through `sh -c`, not a login shell. A7's other
-            // half: say so rather than let an absent alias become a mystery.
+            // Commands run through `sh -c`, not a login shell. Say so rather
+            // than let an absent alias become a mystery.
             login_shell_sourced: false,
             probed_at: SystemTime::now(),
         };
@@ -240,8 +240,8 @@ impl LocalTarget {
     }
 
     /// Stores captured bytes, spilling to a path inside the target when they
-    /// are large enough that the agent will want to grep rather than read
-    /// (A2), and flagging the capture when it was capped (A5).
+    /// are large enough that the agent will want to grep rather than read,
+    /// and flagging the capture when it was capped.
     async fn capture(&self, bytes: Vec<u8>, stream: &str, id: u64) -> Stream {
         let full = bytes.len();
         let spill = if full >= SPILL_THRESHOLD {
@@ -589,7 +589,7 @@ impl Target for LocalTarget {
 
         let text = String::from_utf8_lossy(&bytes);
         let lines: Vec<&str> = text.lines().collect();
-            // A window past the end is not an empty file.
+        // A window past the end is not an empty file.
         if window.offset > 0 && window.offset as usize >= lines.len() {
             return Err(Fault::Denied(Denial::OutOfRange {
                 path: path.to_string(),
@@ -653,7 +653,7 @@ impl Target for LocalTarget {
                 continue;
             }
             if entries.len() >= LIST_CAP {
-                // A5: cap *and* flag. A capped listing the model reads as
+                // Cap *and* flag. A capped listing the model reads as
                 // complete ends the search.
                 truncated = true;
                 break;
@@ -751,7 +751,7 @@ async fn drain<R: tokio::io::AsyncRead + Unpin>(reader: &mut Option<R>) -> Vec<u
 ///
 /// Unbounded on purpose-for-now: a background process producing gigabytes
 /// grows this buffer without limit. Bounding it means deciding whether
-/// background output spills the way [`Target::exec`]'s does (A2), which is not
+/// background output spills the way [`Target::exec`]'s does, which is not
 /// settled.
 fn pump<R>(reader: Option<R>, into: Arc<Mutex<Vec<u8>>>)
 where
@@ -1183,7 +1183,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        let spill = exit.stdout.spill.expect("large output spills (A2)");
+        let spill = exit.stdout.spill.expect("large output spills");
         assert!(spill.as_str().starts_with(SPILL_DIR));
         let span = target.read(&spill, None).await.unwrap();
         assert_eq!(span.len, 200_000);

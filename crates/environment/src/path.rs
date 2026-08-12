@@ -64,7 +64,7 @@ impl fmt::Display for Root {
 /// An absolute path inside a target's root, checked at construction.
 ///
 /// Carries both halves deliberately. `virtual_path` is what the agent said and
-/// what every result echoes (A1) — `/src/main.rs` denotes a different file per
+/// what every result echoes — `/src/main.rs` denotes a different file per
 /// target, so a bare path in the transcript is ambiguous and a
 /// `target:path` pair is not. `resolved` is what the transport uses and is
 /// never shown to the agent.

@@ -51,10 +51,10 @@ pub struct Manifest {
     pub network: Reachability,
     pub posture: Posture,
 
-    /// A7. Exported into every command so rc files can detect the agent and
-    /// skip fancy prompts and themes, the way Cursor's `CURSOR_AGENT` does.
+    /// Exported into every command so rc files can detect the agent and skip
+    /// fancy prompts and themes, the way Cursor's `CURSOR_AGENT` does.
     pub agent_env: BTreeMap<String, String>,
-    /// A7's other half: whether login rc files were sourced at all. Without
+    /// Whether login rc files were sourced at all. Without
     /// it, "my alias works in my terminal and not in yours" is an unfalsifiable
     /// bug report.
     pub login_shell_sourced: bool,
@@ -98,8 +98,8 @@ pub enum Capability {
     /// `isatty` — that is [`Capability::Pty`].
     Stdin,
     /// [`Capability::Stdin`] against a terminal rather than a pipe, which is
-    /// what A6 actually asks for: a password prompt, a REPL that line-edits, a
-    /// program that suppresses its prompt when not on a tty.
+    /// what stdin is actually wanted for: a password prompt, a REPL that
+    /// line-edits, a program that suppresses its prompt when not on a tty.
     ///
     /// Separate from `Stdin` because splitting them is what keeps a target
     /// from promising a prompt it cannot answer — a capability discovered by a

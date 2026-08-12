@@ -43,7 +43,7 @@ impl From<Vec<u8>> for Blob {
 /// Bytes on the way *out*: a ref, the size behind it, and whether capture was
 /// capped.
 ///
-/// `truncated` is a field rather than a convention (A5). A capped result the
+/// `truncated` is a field rather than a convention. A capped result the
 /// model reads as complete is worse than no result, because it terminates the
 /// search.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

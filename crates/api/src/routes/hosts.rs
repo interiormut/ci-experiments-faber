@@ -515,9 +515,9 @@ struct ListContainersQuery {
     include_unregistered: bool,
 }
 
-/// Registers a container faber should know about. It does not create one: under
-/// R2 the user owns container lifecycle, and this row is an assertion that
-/// faber knows the ref, not that the ref resolves.
+/// Registers a container faber should know about. It does not create one: the
+/// user owns container lifecycle, and this row is an assertion that faber knows
+/// the ref, not that the ref resolves.
 async fn create_container(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
