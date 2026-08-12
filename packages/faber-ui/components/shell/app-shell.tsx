@@ -20,6 +20,9 @@ type AppShellContextValue = {
   sessionsLoading: boolean
   models: ModelConfig[]
   modelsLoaded: boolean
+  /** The model new messages go to — the user's pick, or the first model. */
+  selectedModel: ModelConfig | null
+  selectModel: (alias: string) => void
   creatingSession: boolean
   createError: string | null
   createSession: () => Promise<CreatedSession | null>
@@ -67,6 +70,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [modelsLoaded, setModelsLoaded] = React.useState(false)
   const [creatingSession, setCreatingSession] = React.useState(false)
   const [createError, setCreateError] = React.useState<string | null>(null)
+
+  // Only the pick is stored; the model itself is derived, so a selection made
+  // before the list loaded — or one whose model was since deleted — falls back
+  // to the first model rather than leaving messages with nowhere to go.
+  const [pickedModel, setPickedModel] = React.useState<string | null>(null)
+  const selectedModel =
+    models.find((model) => model.alias === pickedModel) ?? models[0] ?? null
 
   React.useEffect(() => {
     let cancelled = false
@@ -155,6 +165,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       sessionsLoading,
       models,
       modelsLoaded,
+      selectedModel,
+      selectModel: setPickedModel,
       creatingSession,
       createError,
       createSession,
@@ -169,6 +181,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       sessionsLoading,
       models,
       modelsLoaded,
+      selectedModel,
       creatingSession,
       createError,
       createSession,

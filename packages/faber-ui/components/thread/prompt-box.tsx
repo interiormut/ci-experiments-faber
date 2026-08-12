@@ -27,7 +27,8 @@ export type PromptBoxProps = {
   sendDisabled?: boolean
   placeholder?: string
   className?: string
-  footerStart?: React.ReactNode
+  /** Extra controls for the footer, shown beside the attach button. */
+  footerActions?: React.ReactNode
 }
 
 export function PromptBox({
@@ -39,7 +40,7 @@ export function PromptBox({
   sendDisabled = false,
   placeholder = "Type a message...",
   className,
-  footerStart,
+  footerActions,
 }: PromptBoxProps) {
   const textareaRef = React.useRef<HTMLTextAreaElement>(null)
   const [message, setMessage] = React.useState("")
@@ -104,12 +105,11 @@ export function PromptBox({
             }}
           />
           <div className="flex flex-wrap items-end justify-between gap-3 px-2 pb-2">
-            <div className="flex min-w-0 flex-1 items-center">
-              {footerStart ?? (
-                <Button size="icon" variant="outline" disabled={disabled}>
-                  <Paperclip className="size-4" />
-                </Button>
-              )}
+            <div className="flex min-w-0 flex-1 items-center gap-1">
+              <Button size="icon" variant="outline" disabled={disabled}>
+                <Paperclip className="size-4" />
+              </Button>
+              {footerActions}
             </div>
             {isExecuting ? (
               <Button

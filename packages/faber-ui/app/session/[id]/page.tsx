@@ -6,6 +6,7 @@ import { useParams } from "next/navigation"
 import { faber, FaberError, type Uuid } from "@/lib/api"
 import { useAppShell } from "@/components/shell/app-shell"
 import { PromptBox } from "@/components/thread/prompt-box"
+import { ModelPicker } from "@/components/thread/model-picker"
 import { TurnView } from "@/components/thread/turn"
 import { useSessionTranscript } from "@/lib/thread/use-session-transcript"
 
@@ -23,7 +24,7 @@ export default function SessionPage() {
 }
 
 function SessionThread({ sessionId }: { sessionId: Uuid }) {
-  const { models, modelsLoaded } = useAppShell()
+  const { models, modelsLoaded, selectedModel, selectModel } = useAppShell()
 
   // Fork/multi-thread support is out of scope — this page always follows the
   // session's root thread.
@@ -78,7 +79,7 @@ function SessionThread({ sessionId }: { sessionId: Uuid }) {
     async (content: string) => {
       setSendError(null)
 
-      const model = models[0]?.alias
+      const model = selectedModel?.alias
       if (!model || !threadId) {
         setSendError("Add a model before sending a message.")
         return false
@@ -93,7 +94,7 @@ function SessionThread({ sessionId }: { sessionId: Uuid }) {
         return false
       }
     },
-    [sessionId, threadId, models],
+    [sessionId, threadId, selectedModel],
   )
 
   return (
@@ -123,6 +124,14 @@ function SessionThread({ sessionId }: { sessionId: Uuid }) {
           sendDisabled={noModels || !threadId}
           isExecuting={isRunning}
           onSend={handleSend}
+          footerActions={
+            <ModelPicker
+              models={models}
+              selected={selectedModel}
+              loaded={modelsLoaded}
+              onSelect={selectModel}
+            />
+          }
         />
       </div>
     </div>

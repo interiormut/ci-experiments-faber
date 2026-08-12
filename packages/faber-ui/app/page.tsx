@@ -6,10 +6,11 @@ import { useRouter } from "next/navigation"
 import { faber, FaberError } from "@/lib/api"
 import { useAppShell } from "@/components/shell/app-shell"
 import { PromptBox } from "@/components/thread/prompt-box"
+import { ModelPicker } from "@/components/thread/model-picker"
 
 export default function Home() {
   const router = useRouter()
-  const { models, modelsLoaded, createSession } = useAppShell()
+  const { models, modelsLoaded, selectedModel, selectModel, createSession } = useAppShell()
   const [sendError, setSendError] = React.useState<string | null>(null)
   const [sending, setSending] = React.useState(false)
 
@@ -19,7 +20,7 @@ export default function Home() {
     async (content: string) => {
       setSendError(null)
 
-      const model = models[0]?.alias
+      const model = selectedModel?.alias
       if (!model) {
         setSendError("Add a model before starting a thread.")
         return false
@@ -40,7 +41,7 @@ export default function Home() {
         setSending(false)
       }
     },
-    [models, createSession, router],
+    [selectedModel, createSession, router],
   )
 
   return (
@@ -50,6 +51,14 @@ export default function Home() {
         placeholder={noModels ? "Add a model to start chatting…" : "Start a thread…"}
         sendDisabled={noModels || sending}
         onSend={handleSend}
+        footerActions={
+          <ModelPicker
+            models={models}
+            selected={selectedModel}
+            loaded={modelsLoaded}
+            onSelect={selectModel}
+          />
+        }
       />
       {sendError ? (
         <p className="w-full max-w-2xl text-sm text-destructive">{sendError}</p>
