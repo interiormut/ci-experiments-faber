@@ -1786,6 +1786,7 @@ dependencies = [
  "async-stream",
  "deno_core",
  "deno_error",
+ "environment",
  "futures-util",
  "llm",
  "secrecy",

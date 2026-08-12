@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 llm = { path = "../llm" }
+environment = { path = "../environment" }
 deno_core = "0.409"
 deno_error = "0.7"
 url = "2"

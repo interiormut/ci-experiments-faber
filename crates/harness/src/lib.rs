@@ -10,10 +10,12 @@ mod ops;
 pub mod runtime;
 mod scaffold;
 pub mod state;
+pub mod tools;
 mod validate;
 
 pub use runtime::{HarnessRun, RunError, RunOutcome};
 pub use state::{Baseline, Grant, Seed};
+pub use tools::Surface;
 
 /// The bare harness: input straight to the model, appended to history.
 /// Commits nothing, so it does not advance the lineage.
