@@ -1,4 +1,5 @@
 import { Boxes } from "lucide-react"
+import * as React from "react"
 
 import { FaberIndicator } from "@/components/thread/faber-indicator"
 import { Markdown } from "@/components/thread/markdown"
@@ -17,6 +18,15 @@ function userText(turn: Turn): string {
 export function TurnView({ turn, isLast = false }: { turn: Turn; isLast?: boolean }) {
   const text = userText(turn)
   const thinking = useThinkingModes()
+
+  // Rows this turn already had when it mounted are HISTORY, not an entrance:
+  // a restored session, another conversation switched to, or a reload part way
+  // through a run. A reveal batch costs the SUM of its rows' durations, so
+  // letting them draw spends seconds redrawing a run the user has already seen.
+  // A turn opens with no items and gets them as they stream, so a live turn
+  // reads `false` here and still draws itself — as do rows arriving later,
+  // either way.
+  const [restored] = React.useState(() => turn.items.length > 0)
 
   return (
     <div className="flex flex-col gap-6">
@@ -44,7 +54,7 @@ export function TurnView({ turn, isLast = false }: { turn: Turn; isLast?: boolea
           way to hand it to Markdown is to build the row ourselves. `isLast` is
           still AgentRun's to inject. */}
       {turn.items.length > 0 ? (
-        <AgentRun>
+        <AgentRun revealOnMount={!restored}>
           {turn.items.map((item) => {
             if (item.kind === "message") {
               return (

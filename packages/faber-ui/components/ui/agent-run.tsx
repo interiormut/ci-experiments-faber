@@ -53,6 +53,12 @@ type RunContextValue = {
   reduce: boolean
   /** Registers a row's progress value with the reveal coordinator. */
   enroll: (progress: MotionValue<number>, duration: number) => () => void
+  /**
+   * True while the rows of {@link AgentRun}'s own first commit are mounting —
+   * i.e. this row was already there when the timeline appeared, rather than
+   * having streamed in. See {@link AgentRunProps.revealOnMount}.
+   */
+  isInitialCommit: () => boolean
 }
 
 const RunContext = React.createContext<RunContextValue | null>(null)
@@ -124,7 +130,7 @@ function useRevealCoordinator(reduce: boolean) {
     return () => active.forEach((controls) => controls.stop())
   }, [])
 
-  return React.useCallback(
+  const enroll = React.useCallback(
     (progress: MotionValue<number>, duration: number) => {
       const c = coord.current
       const entry: Entry = { progress, duration, cancelled: false }
@@ -180,15 +186,39 @@ function useRevealCoordinator(reduce: boolean) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [reduce]
   )
+
+  /**
+   * Records that the timeline already had rows without any of them enrolling —
+   * rows restored with {@link AgentRunProps.revealOnMount} off. The next row to
+   * stream in still pushes the row above it (the `transition-[padding]` growth),
+   * so it must wait out {@link PUSH_SETTLE} exactly as it would have if those
+   * rows had drawn themselves.
+   */
+  const markPlayed = React.useCallback(() => {
+    coord.current.hasPlayed = true
+  }, [])
+
+  return { enroll, markPlayed }
 }
 
-/** One row's reveal: a shared progress value 0 -> 1, driven by the coordinator. */
+/**
+ * One row's reveal: a shared progress value 0 -> 1, driven by the coordinator.
+ *
+ * A row that was already present when the timeline mounted is *settled*: it
+ * never enrolls, and its progress starts and stays at 1. Restoring a stored
+ * conversation is not an entrance — and because the coordinator's batch
+ * duration is the SUM of its rows', letting a whole history enroll would spend
+ * seconds redrawing a run the user has already seen.
+ */
 function useRowProgress(reduce: boolean, { duration = 0.9 } = {}) {
-  const { enroll } = useRun()
-  const progress = useMotionValue(reduce ? 1 : 0)
+  const { enroll, isInitialCommit } = useRun()
+  // Captured once per row, during its first render, so the value is stable and
+  // the row's first paint is already correct — no frame of invisible content.
+  const [settled] = React.useState(() => reduce || isInitialCommit())
+  const progress = useMotionValue(settled ? 1 : 0)
 
   React.useEffect(() => {
-    if (reduce) {
+    if (settled) {
       progress.set(1)
       return
     }
@@ -197,7 +227,7 @@ function useRowProgress(reduce: boolean, { duration = 0.9 } = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  return progress
+  return { progress, settled }
 }
 
 const stateStroke: Record<AgentStepState, string> = {
@@ -306,10 +336,12 @@ function StateGlyph({ state }: { state: AgentStepState }) {
 function useCloseRing(
   state: AgentStepState,
   reduce: boolean,
-  progress: MotionValue<number>
+  progress: MotionValue<number>,
+  /** The row never played an entrance, so its ring starts in its final shape. */
+  settled: boolean
 ) {
   const isTerminal = state === "success" || state === "error"
-  const close = useMotionValue(reduce ? (isTerminal ? 1 : 0) : 0)
+  const close = useMotionValue(reduce || settled ? (isTerminal ? 1 : 0) : 0)
   const firstRun = React.useRef(true)
 
   React.useEffect(() => {
@@ -317,6 +349,14 @@ function useCloseRing(
     if (reduce) {
       close.set(terminal ? 1 : 0)
       firstRun.current = false
+      return
+    }
+    // A restored row is already in its final state; only a state change that
+    // happens LATER — the call resolving under the user — is an event worth
+    // animating, so this bails on the first run only.
+    if (firstRun.current && settled) {
+      firstRun.current = false
+      close.set(terminal ? 1 : 0)
       return
     }
     const seal = () => animate(close, terminal ? 1 : 0, { duration: 0.5, ease: DRAW_EASE })
@@ -350,12 +390,14 @@ function useCloseRing(
 function StepNode({
   progress,
   state,
+  settled,
 }: {
   progress: MotionValue<number>
   state: AgentStepState
+  settled: boolean
 }) {
   const { nodeSize, reduce } = useRun()
-  const close = useCloseRing(state, reduce, progress)
+  const close = useCloseRing(state, reduce, progress, settled)
 
   // The icon settles in as the ring seals; the pending dot fades in with the row.
   const glyphFromClose = useTransform(close, [0.55, 1], [0, 1])
@@ -557,6 +599,18 @@ type AgentRunProps = {
    * manages itself and still reports here.
    */
   onThinkingModeChange?: (id: string, mode: AgentThinkingMode) => void
+  /**
+   * Whether rows that are already present when the timeline mounts play the
+   * reveal. Defaults to `true` — a run that starts empty and streams in draws
+   * itself, which is the point of the component.
+   *
+   * Turn it off when the rows are HISTORY rather than an entrance: restoring a
+   * stored session, switching to another conversation, navigating back. A batch
+   * costs the SUM of its rows' durations, so a restored turn otherwise spends
+   * seconds redrawing itself before the last row is on screen. Rows that stream
+   * in afterwards still reveal normally either way.
+   */
+  revealOnMount?: boolean
   /** Outer node diameter in pixels. Defaults to 64 (4rem) — a deliberately spacious node. */
   nodeSize?: number
   /** Stroke width of the line and the node ring, in pixels. */
@@ -569,16 +623,53 @@ export function AgentRun({
   items,
   renderTool,
   onThinkingModeChange,
+  revealOnMount = true,
   nodeSize = 64,
   lineWidth = 2,
   className,
 }: AgentRunProps) {
   const prefersReduced = useReducedMotion()
-  const enroll = useRevealCoordinator(!!prefersReduced)
-  const ctx = React.useMemo<RunContextValue>(
-    () => ({ nodeSize, lineWidth, reduce: !!prefersReduced, enroll }),
-    [nodeSize, lineWidth, prefersReduced, enroll]
+  const { enroll, markPlayed } = useRevealCoordinator(!!prefersReduced)
+
+  // True only while this commit's rows are mounting. Row effects run before the
+  // parent's, so a row that mounts with the timeline reads `true` here and one
+  // that streams in later reads `false` — which is exactly the distinction
+  // `revealOnMount` draws.
+  const initialCommit = React.useRef(true)
+  const hadInitialRows = React.useRef(false)
+  const isInitialCommit = React.useCallback(
+    () => !revealOnMount && initialCommit.current,
+    [revealOnMount]
   )
+
+  React.useEffect(() => {
+    initialCommit.current = false
+    // Settled rows never enrolled, so no batch has flushed to set `hasPlayed` —
+    // but the first row to stream in still pushes the last of them down, so the
+    // coordinator has to know the timeline is not starting from empty. When the
+    // initial rows DID reveal, their own batch sets this, and doing it here
+    // instead would wrongly charge that first batch a PUSH_SETTLE delay.
+    if (!revealOnMount && hadInitialRows.current) markPlayed()
+  }, [markPlayed, revealOnMount])
+
+  const ctx = React.useMemo<RunContextValue>(
+    () => ({ nodeSize, lineWidth, reduce: !!prefersReduced, enroll, isInitialCommit }),
+    [nodeSize, lineWidth, prefersReduced, enroll, isInitialCommit]
+  )
+
+  // Stable per-item handler, so a thinking row is not re-rendered (and its body
+  // re-rendered with it) every time an unrelated item in the list changes.
+  const modeHandlers = React.useRef(new Map<string, (mode: AgentThinkingMode) => void>())
+  const modeChangeRef = React.useRef(onThinkingModeChange)
+  modeChangeRef.current = onThinkingModeChange
+  const modeHandler = (id: string) => {
+    let handler = modeHandlers.current.get(id)
+    if (!handler) {
+      handler = (mode: AgentThinkingMode) => modeChangeRef.current?.(id, mode)
+      modeHandlers.current.set(id, handler)
+    }
+    return handler
+  }
 
   const rows = items
     ? items.map((item) => {
@@ -591,7 +682,7 @@ export function AgentRun({
               key={item.id}
               title={item.title}
               mode={item.mode}
-              onModeChange={(next) => onThinkingModeChange?.(item.id, next)}
+              onModeChange={modeHandler(item.id)}
             >
               {item.text}
             </AgentThinking>
@@ -611,6 +702,8 @@ export function AgentRun({
         )
       })
     : React.Children.toArray(children)
+
+  if (initialCommit.current) hadInitialRows.current = rows.length > 0
 
   // Mark the last row so it does not reserve trailing connector space — the line
   // should end where content ends, not dangle past a still-running last call.
@@ -652,7 +745,7 @@ type AgentStepProps = {
 }
 
 /** A tool call on the timeline: a node on the line plus its header and output. */
-export function AgentStep({
+function AgentStepImpl({
   state,
   title,
   meta,
@@ -662,7 +755,7 @@ export function AgentStep({
   isLast = false,
 }: AgentStepProps) {
   const { nodeSize, lineWidth, reduce } = useRun()
-  const progress = useRowProgress(reduce)
+  const { progress, settled } = useRowProgress(reduce)
   const contentOpacity = useTransform(progress, [HALF_END, 0.9], [0, 1])
   const contentY = useTransform(progress, [HALF_END, 0.9], [6, 0])
 
@@ -678,7 +771,7 @@ export function AgentStep({
           range={[HALF_END, 1]}
           isLast={isLast}
         />
-        <StepNode progress={progress} state={state} />
+        <StepNode progress={progress} state={state} settled={settled} />
       </div>
 
       <motion.div
@@ -713,6 +806,13 @@ export function AgentStep({
   )
 }
 
+// Rows are memoized because a row's body is whatever the app renders into it —
+// often a full markdown document. In `items` mode the timeline re-renders on
+// every streamed token, and without this each of those renders would walk every
+// other row's body as well.
+export const AgentStep = React.memo(AgentStepImpl)
+AgentStep.displayName = "AgentStep"
+
 type AgentMessageProps = {
   children: React.ReactNode
   className?: string
@@ -721,10 +821,10 @@ type AgentMessageProps = {
 }
 
 /** Agent prose on the timeline. The line passes through; there is no node. */
-export function AgentMessage({ children, className, isLast = false }: AgentMessageProps) {
+function AgentMessageImpl({ children, className, isLast = false }: AgentMessageProps) {
   const { nodeSize, reduce } = useRun()
   // Shorter slice than a step: prose has no ring to trace, just line + fade.
-  const progress = useRowProgress(reduce, { duration: 0.55 })
+  const { progress } = useRowProgress(reduce, { duration: 0.55 })
   const opacity = useTransform(progress, [0.1, 0.8], [0, 1])
   const y = useTransform(progress, [0.1, 0.8], [6, 0])
 
@@ -745,6 +845,9 @@ export function AgentMessage({ children, className, isLast = false }: AgentMessa
     </div>
   )
 }
+
+export const AgentMessage = React.memo(AgentMessageImpl)
+AgentMessage.displayName = "AgentMessage"
 
 // How long a thinking block takes to move between modes.
 const COLLAPSE_DURATION = 0.3
@@ -820,11 +923,18 @@ function useThinkingViewport(
    * shorter than the peek window would otherwise be scrolled to the bottom of
    * its previous, one-line-shorter self on the frame a line wraps: the text
    * jumps up, and the next frame (once the new height lands) puts it back.
+   *
+   * Only `peek` has a window to keep pinned, and this runs on EVERY frame of a
+   * mode tween (it is subscribed to `height`). So it must bail for the other two
+   * modes before it reads layout: `expanded` shows everything and `collapsed`
+   * has no height at all, and the two reads below — `getBoundingClientRect` on
+   * the content and `scrollHeight` on the clip box — are not free when the body
+   * is a large rendered document.
    */
   const pin = React.useCallback(() => {
     const clip = clipRef.current
     const el = contentRef.current
-    if (!clip || !el || modeRef.current === "expanded") return
+    if (!clip || !el || modeRef.current !== "peek") return
     if (el.getBoundingClientRect().height <= target.current.h + 1) return
     clip.scrollTop = clip.scrollHeight
   }, [])
@@ -986,7 +1096,7 @@ function nextMode(mode: AgentThinkingMode): AgentThinkingMode {
  * {@link AgentThinkingMode}. The header sits OUTSIDE the clipped body, so its
  * focus ring is never shaved by the height animation.
  */
-export function AgentThinking({
+function AgentThinkingImpl({
   children,
   title = "Thinking",
   mode,
@@ -1000,7 +1110,7 @@ export function AgentThinking({
   // Same slice as prose — a thinking row is part of the same stroke chain, and
   // its reveal is mount-only, so changing mode never re-enrolls with the
   // coordinator.
-  const progress = useRowProgress(reduce, { duration: 0.55 })
+  const { progress } = useRowProgress(reduce, { duration: 0.55 })
   const opacity = useTransform(progress, [0.1, 0.8], [0, 1])
   const y = useTransform(progress, [0.1, 0.8], [6, 0])
 
@@ -1083,3 +1193,6 @@ export function AgentThinking({
     </div>
   )
 }
+
+export const AgentThinking = React.memo(AgentThinkingImpl)
+AgentThinking.displayName = "AgentThinking"
