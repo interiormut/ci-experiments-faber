@@ -53,11 +53,16 @@ type BlockStartPayload =
   | { type: "tool_use"; id: string; name: string }
   | { type: "unknown"; raw: JsonValue }
 
+/**
+ * Every variant carries its payload in a field named `content` — that is how
+ * `crates/llm/src/event.rs`'s `Delta` serializes, and nothing between there and
+ * here renames it (`fromStreamEvent` passes the payload through untouched).
+ */
 type DeltaPayload =
-  | { type: "text"; text: string }
-  | { type: "thinking"; thinking: string }
-  | { type: "thinking_signature"; signature: string }
-  | { type: "tool_input_json"; partialJson: string }
+  | { type: "text"; content: string }
+  | { type: "thinking"; content: string }
+  | { type: "thinking_signature"; content: string }
+  | { type: "tool_input_json"; content: string }
   | { type: "unknown"; raw: JsonValue }
 
 /** A normalized event, uniform across the replay and live sources. */
@@ -344,18 +349,18 @@ export function applyEvent(store: TranscriptStore, event: NormalizedEvent): Tran
       if (!entry) return next // an unmapped (unknown) block
       if (entry.kind === "message" && delta.type === "text") {
         return updateItem(next, runId, entry.itemId, (item) =>
-          item.kind === "message" ? { ...item, text: item.text + delta.text } : item,
+          item.kind === "message" ? { ...item, text: item.text + delta.content } : item,
         )
       }
       // `thinking_signature` carries no reasoning to show — it is the opaque
       // token the provider needs back, and the harness is what keeps it.
       if (entry.kind === "thinking" && delta.type === "thinking") {
         return updateItem(next, runId, entry.itemId, (item) =>
-          item.kind === "thinking" ? { ...item, text: item.text + delta.thinking } : item,
+          item.kind === "thinking" ? { ...item, text: item.text + delta.content } : item,
         )
       }
       if (entry.kind === "tool" && delta.type === "tool_input_json") {
-        const partialJson = entry.partialJson + delta.partialJson
+        const partialJson = entry.partialJson + delta.content
         return setBlock(next, runId, index, { ...entry, partialJson })
       }
       return next
@@ -480,7 +485,16 @@ function itemsFromContent(
         name: block.name,
         // `running`, not `pending`: the arguments are complete, which is
         // exactly what the live path's `block_stop` says by setting the same.
-        state: existing?.kind === "tool" ? existing.state : "running",
+        //
+        // So `pending` is never carried over. A row that streamed in is still
+        // `pending` if its `block_stop` never landed, and this message is proof
+        // the arguments finished — keeping it would leave the call drawn as an
+        // unstarted node for the rest of the session, while the same run after
+        // a refresh (no `existing`, so `running`) drew it correctly.
+        state:
+          existing?.kind === "tool" && existing.state !== "pending"
+            ? existing.state
+            : "running",
         input: block.input,
         result: existing?.kind === "tool" ? existing.result : undefined,
       })
