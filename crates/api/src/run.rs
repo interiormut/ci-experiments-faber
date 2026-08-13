@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use diesel::{ExpressionMethods, JoinOnDsl, QueryDsl};
+use diesel::{ExpressionMethods, JoinOnDsl, QueryDsl, SelectableHelper};
 use diesel_async::{
     AsyncConnection, AsyncPgConnection, RunQueryDsl, scoped_futures::ScopedFutureExt,
 };
@@ -321,11 +321,12 @@ pub fn spawn_run(state: AppState, sender: broadcast::Sender<StreamEvent>, reques
     tokio::spawn(async move {
         let session_id = request.session_id;
         let run_id = request.run_id;
+        let thread_id = request.thread_id;
 
         let result = execute(&state, &sender, request).await;
 
-        let terminal = match result {
-            Ok(()) => StreamEvent {
+        let terminal = match &result {
+            Ok(_) => StreamEvent {
                 run_id,
                 seq: -1,
                 kind: KIND_RUN_END.to_owned(),
@@ -342,6 +343,21 @@ pub fn spawn_run(state: AppState, sender: broadcast::Sender<StreamEvent>, reques
             }
         };
         let _ = sender.send(terminal);
+
+        let needs_recovery = match &result {
+            Ok(committed) => !committed,
+            Err(_) => true,
+        };
+        if needs_recovery {
+            if let Err(recovery_error) = record_recovery_history(&state.db, run_id, thread_id).await
+            {
+                tracing::error!(
+                    %run_id,
+                    error = %recovery_error,
+                    "failed to preserve incomplete assistant text"
+                );
+            }
+        }
 
         // Stamped whether the run succeeded or failed — `completed_at` records
         // that the run is over, not that it went well, and it is the durable
@@ -363,7 +379,7 @@ async fn execute(
     state: &AppState,
     sender: &broadcast::Sender<StreamEvent>,
     request: RunRequest,
-) -> ApiResult<()> {
+) -> ApiResult<bool> {
     let RunRequest {
         run_id,
         session_id,
@@ -594,6 +610,104 @@ async fn mark_run_complete(db: &DbPool, run_id: Uuid) -> ApiResult<()> {
     Ok(())
 }
 
+/// Preserves only plain assistant text when a run ends before it can commit a
+/// valid exchange. Thinking and tool-call blocks are deliberately discarded:
+/// the former is not reliable conversational context and the latter may hold
+/// incomplete JSON that cannot be sent back to a provider as a message.
+async fn record_recovery_history(db: &DbPool, run_id: Uuid, thread_id: Uuid) -> ApiResult<()> {
+    use crate::models::transcript::Transcript;
+
+    let mut conn = db.get().await?;
+    let mut seed = load_seed(&mut conn, thread_id).await?;
+    let rows: Vec<Transcript> = crate::schema::transcript::table
+        .filter(crate::schema::transcript::run_id.eq(run_id))
+        .filter(crate::schema::transcript::kind.eq(KIND_MESSAGE))
+        .order(crate::schema::transcript::seq.asc())
+        .select(Transcript::as_select())
+        .load(&mut conn)
+        .await
+        .map_err(|err| AppError::db(err, "run.recovery.load_transcript"))?;
+
+    let text = rows
+        .iter()
+        .filter_map(|row| {
+            (row.payload.get("role").and_then(Value::as_str) == Some("assistant"))
+                .then(|| row.payload.get("content"))
+                .flatten()
+                .and_then(Value::as_array)
+        })
+        .flat_map(|blocks| blocks.iter())
+        .filter_map(|block| {
+            (block.get("type").and_then(Value::as_str) == Some("text"))
+                .then(|| block.get("text"))
+                .flatten()
+                .and_then(Value::as_str)
+        })
+        .collect::<String>();
+
+    if text.is_empty() {
+        return Ok(());
+    }
+
+    seed.messages
+        .push(llm::Message::assistant(vec![llm::ContentBlock::Text {
+            text,
+        }]));
+    let now = now_epoch();
+    let lineage = serde_json::to_vec(&seed).map_err(|error| {
+        tracing::error!(%run_id, error = %error, "recovery lineage failed to encode");
+        AppError::Internal
+    })?;
+
+    conn.transaction::<_, AppError, _>(|conn| {
+        async move {
+            let request_digest = put_blob(conn, &[], now).await?;
+            let lineage_digest = put_blob(conn, &lineage, now).await?;
+            let exchange_id = Uuid::now_v7();
+
+            diesel::insert_into(exchange::table)
+                .values(&NewExchange {
+                    id: exchange_id,
+                    run_id,
+                    request_blob_digest: &request_digest,
+                    provider_events_digest: None,
+                    canonical_blob_digest: Some(&lineage_digest),
+                    usage: None,
+                    outcome: Some(json!({ "type": "recovered_text" })),
+                    expected_cache_tokens: 0,
+                    started_at: now,
+                    completed_at: Some(now),
+                })
+                .execute(conn)
+                .await
+                .map_err(|err| AppError::db(err, "run.recovery.insert_exchange"))?;
+
+            let next_seq: i32 = diesel::update(thread::table.filter(thread::id.eq(thread_id)))
+                .set(thread::next_seq.eq(thread::next_seq + 1))
+                .returning(thread::next_seq)
+                .get_result(conn)
+                .await
+                .map_err(|err| AppError::db(err, "run.recovery.advance_next_seq"))?;
+
+            diesel::insert_into(spine::table)
+                .values(&NewSpine {
+                    thread_id,
+                    seq: i64::from(next_seq - 1),
+                    exchange_id,
+                    explicit_commit: false,
+                    created_at: now,
+                })
+                .execute(conn)
+                .await
+                .map_err(|err| AppError::db(err, "run.recovery.insert_spine"))?;
+
+            Ok(())
+        }
+        .scope_boxed()
+    })
+    .await
+}
+
 // ---------------------------------------------------------------------------
 // Persistence: the exchange log and the spine
 // ---------------------------------------------------------------------------
@@ -619,10 +733,10 @@ async fn record_history(
     thread_id: Uuid,
     started_at: i64,
     outcome: RunOutcome,
-) -> ApiResult<()> {
+) -> ApiResult<bool> {
     let frames = fold_model_frames(&outcome.frames);
     if frames.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
 
     let committed_lineage = match &outcome.committed_frame {
@@ -689,7 +803,7 @@ async fn record_history(
             }
 
             let Some(exchange_id) = committed_exchange else {
-                return Ok(());
+                return Ok(false);
             };
 
             // The allocator is the thread's, and reading it under the same
@@ -717,7 +831,7 @@ async fn record_history(
                 .await
                 .map_err(|err| AppError::db(err, "run.insert_spine"))?;
 
-            Ok(())
+            Ok(true)
         }
         .scope_boxed()
     })
