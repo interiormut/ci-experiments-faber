@@ -31,6 +31,14 @@ export type SessionTranscriptState = {
   error: string | null
   /** A run is in flight — drives the prompt box's send/interrupt affordance. */
   isRunning: boolean
+  /** The run to interrupt, or `null` when nothing is in flight. */
+  runningRunId: Uuid | null
+  /**
+   * How much prose the run in flight has produced, for deciding whether
+   * stopping is worth a confirmation — throwing away a sentence is not the
+   * same as throwing away an essay.
+   */
+  streamedChars: number
 }
 
 async function loadHistory(threadId: Uuid): Promise<{ store: TranscriptStore; resume: StreamQuery }> {
@@ -141,7 +149,32 @@ export function useSessionTranscript(
   }, [sessionId, threadId])
 
   const turns = React.useMemo(() => turnsOf(store), [store])
-  const isRunning = turns.some((turn) => turn.status === "running")
+  // The newest, because that is the one a stop means: a session cannot start a
+  // second run while one is in flight, but a reconnect can briefly leave an
+  // older run looking unfinished.
+  const running = React.useMemo(
+    () => [...turns].reverse().find((turn) => turn.status === "running") ?? null,
+    [turns],
+  )
 
-  return { turns, loading, error, isRunning }
+  // Reasoning counts alongside the reply. It is text the user watched arrive
+  // and is about to lose, and a long think followed by a first sentence is
+  // exactly the case where a misfired stop stings most.
+  const streamedChars = React.useMemo(
+    () =>
+      (running?.items ?? []).reduce(
+        (total, item) => total + (item.kind === "tool" ? 0 : item.text.length),
+        0,
+      ),
+    [running],
+  )
+
+  return {
+    turns,
+    loading,
+    error,
+    isRunning: running !== null,
+    runningRunId: running?.runId ?? null,
+    streamedChars,
+  }
 }

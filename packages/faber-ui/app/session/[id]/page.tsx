@@ -96,7 +96,8 @@ function SessionThread({ sessionId }: { sessionId: Uuid }) {
     [environments],
   )
 
-  const { turns, loading, error, isRunning } = useSessionTranscript(sessionId, threadId)
+  const { turns, loading, error, isRunning, runningRunId, streamedChars } =
+    useSessionTranscript(sessionId, threadId)
 
   // What autoscroll counts as something new: a turn, or a row inside one —
   // reasoning starting, a tool being called, the reply beginning. Not the
@@ -139,6 +140,22 @@ function SessionThread({ sessionId }: { sessionId: Uuid }) {
     [sessionId, threadId, selectedModel, stick],
   )
 
+  const handleInterrupt = React.useCallback(async () => {
+    if (!runningRunId) return
+    setSendError(null)
+
+    try {
+      await faber.interruptRun(runningRunId)
+    } catch (err) {
+      // A run that finished on its own in the moment before the click is not
+      // something the user did wrong, and the stream is about to say so
+      // anyway. Anything else is worth showing: the run is still going, and
+      // they need to know their stop did not land.
+      if (err instanceof FaberError && err.status === 409) return
+      setSendError(err instanceof FaberError ? err.message : "failed to stop the run")
+    }
+  }, [runningRunId])
+
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
@@ -170,7 +187,9 @@ function SessionThread({ sessionId }: { sessionId: Uuid }) {
           placeholder={noModels ? "Add a model to start chatting…" : "Message…"}
           sendDisabled={noModels || !threadId}
           isExecuting={isRunning}
+          streamedChars={streamedChars}
           onSend={handleSend}
+          onInterrupt={handleInterrupt}
           mentions={mentions}
           footerActions={
             <ModelPicker

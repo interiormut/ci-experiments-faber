@@ -107,6 +107,15 @@ export function TurnView({ turn, isLast = false }: { turn: Turn; isLast?: boolea
           {turn.errorMessage ?? "The run failed."}
         </p>
       ) : null}
+
+      {/* Muted, not destructive: the user stopped this themselves and already
+          knows why. The note is here so the reply reads as cut short on
+          purpose rather than as one that simply trailed off. */}
+      {turn.status === "interrupted" ? (
+        <p data-thread-block className="text-sm text-muted-foreground">
+          Stopped.
+        </p>
+      ) : null}
     </div>
   )
 }

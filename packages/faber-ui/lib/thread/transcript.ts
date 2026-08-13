@@ -1,6 +1,7 @@
 /**
  * Turns the wire vocabulary a run yields (`crates/harness/src/mapping.rs`'s
- * `LLMEvent` + the API's `tool_result`/`input`/`run_end`/`run_error`
+ * `LLMEvent` + the API's `tool_result`/`input`/`run_end`/`run_error`/
+ * `run_interrupted`
  * additions, `crates/api/src/run.rs`) into what {@link AgentRun} renders.
  *
  * Fed from two sources that share the same `{kind, payload}` shape —
@@ -87,7 +88,15 @@ export function fromStreamEvent(event: StreamEvent): NormalizedEvent {
 // Store
 // ---------------------------------------------------------------------------
 
-export type RunStatus = "running" | "done" | "error"
+/**
+ * `interrupted` is its own state rather than a flavour of `error`: the run
+ * stopped because the user asked it to, and the words it managed to get out
+ * before then are a real, if short, answer — not the wreckage of a failure.
+ * It is live-only. A reload reads a stopped run back as `done`, because the
+ * durable record (`run.completed_at`) says a run is over without saying how
+ * it ended (`crates/api/src/run.rs`).
+ */
+export type RunStatus = "running" | "done" | "error" | "interrupted"
 
 /**
  * A thinking row plus whether its block is still being written.
@@ -414,6 +423,15 @@ export function applyEvent(store: TranscriptStore, event: NormalizedEvent): Tran
 
     case "run_end":
       return updateRun(next, runId, { status: "done", items: settleThinking(next, runId) })
+
+    // Settled like any other ending: a stopped run's reasoning block never
+    // gets its `block_stop`, and leaving it open would keep a spinner running
+    // for a run that is over.
+    case "run_interrupted":
+      return updateRun(next, runId, {
+        status: "interrupted",
+        items: settleThinking(next, runId),
+      })
 
     case "run_error": {
       const message = (payload as { message?: string } | null)?.message

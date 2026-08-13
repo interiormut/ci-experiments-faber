@@ -535,6 +535,24 @@ export class FaberClient {
     )
   }
 
+  /**
+   * Asks a run in flight to stop, and resolves as soon as the ask has landed —
+   * not when the run has ended.
+   *
+   * The run stops the way `crates/api/src/run.rs` describes: its next model
+   * call or tool invocation fails, the harness gets to finish what it was
+   * saying, and the end arrives on {@link streamSession} as `run_interrupted`.
+   * So the caller updates nothing itself; it waits for the marker like every
+   * other change to a run.
+   *
+   * Sending it twice is not an error. A `409` means the run had already
+   * finished, which is a race a user can lose by half a second and not
+   * something to show them as a failure.
+   */
+  async interruptRun(runId: Uuid): Promise<void> {
+    await this.request("POST", `/api/runs/${encodeURIComponent(runId)}/interrupt`)
+  }
+
   // -------------------------------------------------------------------------
   // Transport
   // -------------------------------------------------------------------------
@@ -565,10 +583,15 @@ export class FaberClient {
 
     if (!response.ok) throw await errorFromResponse(response)
 
-    // 204 on every delete and on logout — nothing to parse.
-    if (response.status === 204) return undefined as T
+    // Read first, parse second. A bodyless success is normal here — 204 on
+    // every delete and on logout, 202 on an ask that was accepted but has not
+    // finished (`interruptRun`) — and `response.json()` on an empty body
+    // throws a parse error, which would reach the caller as a failed request
+    // when nothing failed.
+    const body = await response.text()
+    if (!body) return undefined as T
 
-    return (await response.json()) as T
+    return JSON.parse(body) as T
   }
 }
 
