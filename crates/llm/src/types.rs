@@ -254,7 +254,7 @@ pub struct Request {
 
 /// Enough headroom that a normal answer isn't truncated; a harness that cares
 /// sets its own.
-pub const DEFAULT_MAX_TOKENS: u32 = 16_000;
+pub const DEFAULT_MAX_TOKENS: u32 = 64_000;
 
 impl Request {
     /// The zero-configuration call: a model and a conversation.
