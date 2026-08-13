@@ -34,7 +34,9 @@ import { cn } from "@/lib/utils"
  * its body shows fully, not at all, or as a peeking window onto the newest few
  * lines while reasoning is still streaming. The height is animated, and the
  * line beside it tracks that animation frame by frame, so the fold and the
- * timeline move together.
+ * timeline move together. A tool call folds the same way — its description,
+ * arguments and output live behind its header, on the same machinery
+ * ({@link useCollapsibleBody}).
  *
  * Rows do not animate themselves. {@link AgentRun} owns a coordinator
  * that batches every row mounted in the same commit into ONE animation: each
@@ -294,8 +296,16 @@ function NodeRail({
         d={`M ${c} ${top} A ${r} ${r} 0 0 1 ${c} ${bottom} A ${r} ${r} 0 0 1 ${c} ${top}`}
         strokeWidth={w}
         strokeLinecap="round"
+        // The stroke is a presentation attribute and must NOT move into `style`:
+        // Motion seeds plain style entries into its own render state at mount
+        // and owns the element from then on, so a colour sitting there never
+        // repaints — a row created at `pending` when a tool call is announced
+        // would keep the muted ring for the rest of the run. React owns the
+        // attribute, so it is always the current state's. The
+        // `transition-[stroke]` class still tweens between colours.
+        stroke={stateStroke[state]}
         className="transition-[stroke] duration-300"
-        style={{ pathLength: ringLen, stroke: stateStroke[state], opacity: ringOpacity }}
+        style={{ pathLength: ringLen, opacity: ringOpacity }}
       />
     </svg>
   )
@@ -435,6 +445,7 @@ function TrailLine({
   range,
   isLast,
   pinned = false,
+  color = "var(--agent-line)",
 }: {
   progress: MotionValue<number>
   /** Distance from the top of the row where the line starts, in px. */
@@ -445,6 +456,13 @@ function TrailLine({
   isLast: boolean
   /** The row is mid height-animation of its own — track it exactly, never ease. */
   pinned?: boolean
+  /**
+   * Colour of the line. Defaults to the timeline's own. A tool call hands its
+   * state colour down while its body is open, so the stretch of line running
+   * past the details reads as belonging to that call rather than as more
+   * timeline — see {@link AgentStepImpl}.
+   */
+  color?: string
 }) {
   const { nodeSize, lineWidth, reduce } = useRun()
   const scaleY = useTransform(progress, range, [0, 1])
@@ -517,8 +535,17 @@ function TrailLine({
     <motion.div
       ref={ref}
       aria-hidden
-      className="absolute -translate-x-1/2 origin-top rounded-full bg-[var(--agent-line)]"
-      style={{ left: nodeSize / 2, top: from, width: lineWidth, height, scaleY }}
+      // The colour crossfades on the same 300ms the ring's stroke uses, so a
+      // call opening its body tints the line at the pace everything else moves.
+      className="absolute origin-top -translate-x-1/2 rounded-full transition-[background-color] duration-300"
+      style={{
+        left: nodeSize / 2,
+        top: from,
+        width: lineWidth,
+        height,
+        scaleY,
+        backgroundColor: color,
+      }}
     />
   )
 }
@@ -546,10 +573,20 @@ export type AgentRunToolItem = {
   /** The tool's name; the default title when {@link AgentRunProps.renderTool} doesn't override it. */
   name: string
   state: AgentStepState
-  /** The call's arguments, in whatever shape the app has them. Only read by `renderTool`. */
+  /**
+   * The call's arguments, in whatever shape the app has them. Only read by
+   * `renderTool` — return them as `arguments` to show them in the folded body.
+   */
   input?: unknown
-  /** Result body shown under the header, set when the call resolves. */
+  /** Result body, revealed when the row is expanded. Set when the call resolves. */
   result?: React.ReactNode
+  /**
+   * Controlled fold. Set it to drive the row from app state (and pair it with
+   * {@link AgentRunProps.onToolOpenChange}) — that is how an app shows a call's
+   * output while it runs and folds it away once it succeeds. Leave it undefined
+   * to let the row own its own state, starting closed.
+   */
+  open?: boolean
 }
 
 export type AgentRunThinkingItem = {
@@ -580,6 +617,11 @@ export type AgentToolRender = {
   title?: React.ReactNode
   meta?: React.ReactNode
   icon?: React.ComponentType<{ className?: string }>
+  /** Prose describing the call, shown first in the expanded body. */
+  description?: React.ReactNode
+  /** The call's arguments, rendered in a monospace block. */
+  arguments?: React.ReactNode
+  /** Output body. Defaults to the item's `result`. */
   children?: React.ReactNode
 }
 
@@ -600,6 +642,13 @@ type AgentRunProps = {
    */
   onThinkingModeChange?: (id: string, mode: AgentThinkingMode) => void
   /**
+   * Fires when the user clicks a tool item's header, with the fold state the
+   * click implies. Required only to *control* the fold from app state (write
+   * the value back onto the item's `open`); an item without `open` manages
+   * itself and still reports here.
+   */
+  onToolOpenChange?: (id: string, open: boolean) => void
+  /**
    * Whether rows that are already present when the timeline mounts play the
    * reveal. Defaults to `true` — a run that starts empty and streams in draws
    * itself, which is the point of the component.
@@ -618,11 +667,32 @@ type AgentRunProps = {
   className?: string
 }
 
+/**
+ * Per-item callbacks that stay identical across renders, so a row is not
+ * re-rendered — and its body, often a whole rendered document, re-rendered with
+ * it — every time an unrelated item in the list changes. In `items` mode that
+ * happens on every streamed token.
+ */
+function useItemHandler<T>(callback: ((id: string, value: T) => void) | undefined) {
+  const handlers = React.useRef(new Map<string, (value: T) => void>())
+  const latest = React.useRef(callback)
+  latest.current = callback
+  return React.useCallback((id: string) => {
+    let handler = handlers.current.get(id)
+    if (!handler) {
+      handler = (value: T) => latest.current?.(id, value)
+      handlers.current.set(id, handler)
+    }
+    return handler
+  }, [])
+}
+
 export function AgentRun({
   children,
   items,
   renderTool,
   onThinkingModeChange,
+  onToolOpenChange,
   revealOnMount = true,
   nodeSize = 64,
   lineWidth = 2,
@@ -657,19 +727,8 @@ export function AgentRun({
     [nodeSize, lineWidth, prefersReduced, enroll, isInitialCommit]
   )
 
-  // Stable per-item handler, so a thinking row is not re-rendered (and its body
-  // re-rendered with it) every time an unrelated item in the list changes.
-  const modeHandlers = React.useRef(new Map<string, (mode: AgentThinkingMode) => void>())
-  const modeChangeRef = React.useRef(onThinkingModeChange)
-  modeChangeRef.current = onThinkingModeChange
-  const modeHandler = (id: string) => {
-    let handler = modeHandlers.current.get(id)
-    if (!handler) {
-      handler = (mode: AgentThinkingMode) => modeChangeRef.current?.(id, mode)
-      modeHandlers.current.set(id, handler)
-    }
-    return handler
-  }
+  const modeHandler = useItemHandler(onThinkingModeChange)
+  const openHandler = useItemHandler(onToolOpenChange)
 
   const rows = items
     ? items.map((item) => {
@@ -696,6 +755,10 @@ export function AgentRun({
             title={r.title ?? item.name}
             meta={r.meta}
             icon={r.icon}
+            description={r.description}
+            arguments={r.arguments}
+            open={item.open}
+            onOpenChange={openHandler(item.id)}
           >
             {r.children ?? item.result}
           </AgentStep>
@@ -733,24 +796,86 @@ type AgentStepProps = {
   state: AgentStepState
   /** Short label — usually the tool name or action. */
   title: React.ReactNode
-  /** Optional secondary line — target, duration, count. */
+  /** Optional secondary line — target, duration, count. Always visible. */
   meta?: React.ReactNode
   /** Optional leading icon for the tool, shown before the title. */
   icon?: React.ComponentType<{ className?: string }>
-  /** Result / output body, revealed under the header. */
+  /** What the call does, in prose. First section of the expanded body. */
+  description?: React.ReactNode
+  /**
+   * The call's arguments, shown in a monospace block. Pass whatever the app
+   * wants read — a formatted JSON string is the usual choice.
+   */
+  arguments?: React.ReactNode
+  /** Result / output body. The last section of the expanded body. */
   children?: React.ReactNode
+  /**
+   * Controlled fold. Pass it (with `onOpenChange`) to own whether the body
+   * shows — which is how an app opens a call while it runs and folds it away
+   * once it succeeds. Omit it and the row manages its own, starting at
+   * `defaultOpen`.
+   */
+  open?: boolean
+  /** Initial fold state when uncontrolled. Defaults to `false`. */
+  defaultOpen?: boolean
+  /** Fires on every header click, controlled or not, with the state a click implies. */
+  onOpenChange?: (open: boolean) => void
   className?: string
   /** @internal Set by {@link AgentRun}; true for the final row. */
   isLast?: boolean
 }
 
-/** A tool call on the timeline: a node on the line plus its header and output. */
+/** True for anything React would actually paint. */
+function isPresent(node: React.ReactNode) {
+  return node !== null && node !== undefined && node !== false && node !== ""
+}
+
+/** A labelled section of an expanded tool call. */
+function StepSection({
+  label,
+  mono = false,
+  children,
+}: {
+  label: string
+  mono?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <div>
+      <div className="mb-1 text-[10px] font-medium tracking-wide text-muted-foreground/70 uppercase">
+        {label}
+      </div>
+      {mono ? (
+        <pre className="overflow-x-auto rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs whitespace-pre-wrap text-muted-foreground">
+          {children}
+        </pre>
+      ) : (
+        <div className="text-sm text-muted-foreground">{children}</div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * A tool call on the timeline: a node on the line plus its header, and — when
+ * there is anything to show — a body the user can fold open.
+ *
+ * The header stays in the node-height box so it never drifts away from the ring
+ * beside it; everything expansible hangs below that box, on the same viewport
+ * driver a thinking block uses ({@link useCollapsibleBody}), so the height
+ * animates and the timeline's line tracks it frame by frame.
+ */
 function AgentStepImpl({
   state,
   title,
   meta,
   icon: Icon,
+  description,
+  arguments: args,
   children,
+  open,
+  defaultOpen = false,
+  onOpenChange,
   className,
   isLast = false,
 }: AgentStepProps) {
@@ -758,6 +883,61 @@ function AgentStepImpl({
   const { progress, settled } = useRowProgress(reduce)
   const contentOpacity = useTransform(progress, [HALF_END, 0.9], [0, 1])
   const contentY = useTransform(progress, [HALF_END, 0.9], [6, 0])
+
+  const [uncontrolled, setUncontrolled] = React.useState(defaultOpen)
+  const current = open ?? uncontrolled
+  const bodyId = React.useId()
+
+  const expansible =
+    isPresent(description) || isPresent(args) || isPresent(children)
+  // A row with nothing folded away must not claim to be open, or its clip box
+  // would measure to zero and the chevron would lie.
+  const isOpen = expansible && current
+
+  const toggle = () => {
+    if (open === undefined) setUncontrolled(!current)
+    onOpenChange?.(!current)
+  }
+
+  // A tool call never peeks — it is open or it is not — so the peek window size
+  // is moot here.
+  const { clipRef, contentRef, height, mask, toggling } = useCollapsibleBody(
+    isOpen ? "expanded" : "collapsed",
+    reduce,
+    0
+  )
+
+  const header = (
+    <>
+      {/* A span, not a div: this also renders inside a <button>, which only
+          admits phrasing content. */}
+      <span className="flex items-center gap-2">
+        {Icon ? <Icon className="h-4 w-4 shrink-0 text-muted-foreground" /> : null}
+        <span
+          className={cn(
+            "truncate text-sm font-medium",
+            state === "error" ? "text-destructive" : "text-foreground"
+          )}
+        >
+          {title}
+        </span>
+        {expansible ? (
+          <ChevronRight
+            className={cn(
+              "ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground",
+              !reduce && "transition-transform duration-300",
+              isOpen && "rotate-90"
+            )}
+          />
+        ) : null}
+      </span>
+      {meta ? (
+        <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+          {meta}
+        </span>
+      ) : null}
+    </>
+  )
 
   return (
     <div className={cn("relative flex gap-4", className)}>
@@ -770,6 +950,11 @@ function AgentStepImpl({
           from={nodeSize - lineWidth}
           range={[HALF_END, 1]}
           isLast={isLast}
+          pinned={toggling}
+          // Open, the line past the details carries the call's own colour — the
+          // ring's stroke continuing down the body it belongs to, so an expanded
+          // block reads as part of the call and not as another row.
+          color={isOpen ? stateStroke[state] : undefined}
         />
         <StepNode progress={progress} state={state} settled={settled} />
       </div>
@@ -781,26 +966,62 @@ function AgentStepImpl({
         )}
         style={{ minHeight: nodeSize, opacity: contentOpacity, y: contentY }}
       >
-        <div className="flex flex-col justify-center" style={{ minHeight: nodeSize }}>
-          <div className="flex items-center gap-2">
-            {Icon ? <Icon className="h-4 w-4 shrink-0 text-muted-foreground" /> : null}
-            <span
-              className={cn(
-                "truncate text-sm font-medium",
-                state === "error" ? "text-destructive" : "text-foreground"
-              )}
-            >
-              {title}
-            </span>
+        {/* The header keeps the node's height whether the body is open or not,
+            so the title stays level with the ring instead of riding the fold. */}
+        {expansible ? (
+          <button
+            type="button"
+            onClick={toggle}
+            aria-expanded={isOpen}
+            aria-controls={bodyId}
+            // The width is spelled out because a button sizes to its content
+            // even as a flex container — without it the chevron would sit next
+            // to the title instead of at the row's edge, and `truncate` would
+            // have nothing to truncate against. The extra 0.5rem is the negative
+            // margin, so the hit area and focus ring reach past the text on both
+            // sides while the icon stays aligned with the rows that have no fold.
+            className="-mx-1 flex w-[calc(100%_+_0.5rem)] flex-col justify-center rounded-md px-1 text-left outline-none transition-colors hover:bg-muted/40 focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            style={{ minHeight: nodeSize }}
+          >
+            {header}
+          </button>
+        ) : (
+          <div className="flex flex-col justify-center" style={{ minHeight: nodeSize }}>
+            {header}
           </div>
-          {meta ? (
-            <span className="mt-0.5 truncate text-xs text-muted-foreground">{meta}</span>
-          ) : null}
-        </div>
+        )}
 
-        {children ? (
-          <div className="mt-1 text-sm text-muted-foreground">{children}</div>
-        ) : null}
+        {/* The clip box, as in AgentThinking: `overflow: hidden` rides the
+            animated element itself, and the text stays in the DOM at height 0,
+            so it is hidden from assistive tech while folded away. */}
+        <motion.div
+          ref={clipRef}
+          aria-hidden={!isOpen}
+          style={{ height, overflow: "hidden", maskImage: mask, WebkitMaskImage: mask }}
+        >
+          <div
+            id={bodyId}
+            ref={contentRef}
+            // `flow-root` keeps the padding inside the measured height rather
+            // than letting a child's margin collapse out of it.
+            className="pt-2"
+            style={{ display: "flow-root" }}
+          >
+            <div className="flex flex-col gap-3">
+              {isPresent(description) ? (
+                <p className="text-sm text-muted-foreground">{description}</p>
+              ) : null}
+              {isPresent(args) ? (
+                <StepSection label="Arguments" mono>
+                  {args}
+                </StepSection>
+              ) : null}
+              {isPresent(children) ? (
+                <StepSection label="Output">{children}</StepSection>
+              ) : null}
+            </div>
+          </div>
+        </motion.div>
       </motion.div>
     </div>
   )
@@ -849,26 +1070,30 @@ function AgentMessageImpl({ children, className, isLast = false }: AgentMessageP
 export const AgentMessage = React.memo(AgentMessageImpl)
 AgentMessage.displayName = "AgentMessage"
 
-// How long a thinking block takes to move between modes.
+// How long a foldable body takes to move between modes.
 const COLLAPSE_DURATION = 0.3
 
 // Height of the fade at the top of a peeking block, in px.
 const PEEK_FADE_PX = 40
 
 /**
- * How much of a thinking block is showing.
+ * How much of a foldable body is showing.
  *
  * - `collapsed` — header only.
  * - `peek` — a fixed window onto the LAST few lines, pinned to the newest one
  *   and faded out at the top. This is the shape reasoning wants *while it is
  *   still arriving*: the text keeps moving, but the row's height does not.
  * - `expanded` — the whole thing.
+ *
+ * A thinking block uses all three; a tool call only ever folds between
+ * `collapsed` and `expanded`.
  */
 export type AgentThinkingMode = "collapsed" | "peek" | "expanded"
 
 /**
- * Viewport driver for a thinking body: how tall the clip box is, how strong the
- * top fade is, and where it is scrolled.
+ * Viewport driver for a foldable body — {@link AgentThinking}'s reasoning and
+ * {@link AgentStep}'s description / arguments / output alike: how tall the clip
+ * box is, how strong the top fade is, and where it is scrolled.
  *
  * The steady-state height is NOT an animation target — it is `set()` straight
  * from the measurement whenever the content changes. That matters because
@@ -893,7 +1118,7 @@ export type AgentThinkingMode = "collapsed" | "peek" | "expanded"
  * it to {@link TrailLine} as `pinned` so the line tracks the change exactly
  * instead of easing after it.
  */
-function useThinkingViewport(
+function useCollapsibleBody(
   mode: AgentThinkingMode,
   reduce: boolean,
   peekLines: number
@@ -1124,7 +1349,7 @@ function AgentThinkingImpl({
     onModeChange?.(next)
   }
 
-  const { clipRef, contentRef, height, mask, toggling } = useThinkingViewport(
+  const { clipRef, contentRef, height, mask, toggling } = useCollapsibleBody(
     current,
     reduce,
     peekLines
