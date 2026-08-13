@@ -378,13 +378,27 @@ export function applyEvent(store: TranscriptStore, event: NormalizedEvent): Tran
       )
     }
 
+    /**
+     * Which tool call this answers is named two ways in the wild. The Rust
+     * `TranscriptEvent::ToolResult` writes `toolUseId`, but a harness is free
+     * to yield its own presentation events, and the conversational one
+     * (`crates/harness/harnesses/conversational.js`) sends `id` — it keeps
+     * `toolUseId` for the block it pushes back to the *model*, where the
+     * pairing is validated, which is why only this timeline ever noticed.
+     * Reading both is the only thing that renders every run already stored.
+     *
+     * A miss is silent by construction: `updateItem` maps over the run's rows
+     * and matches none, leaving the call at `running` — a node stuck as a
+     * half-drawn ring with nothing inside it.
+     */
     case "tool_result": {
-      const { toolUseId, content, isError } = payload as unknown as {
-        toolUseId: string
+      const { toolUseId, id, content, isError } = payload as unknown as {
+        toolUseId?: string
+        id?: string
         content: string
         isError?: boolean
       }
-      return updateItem(next, runId, toolUseId, (item) =>
+      return updateItem(next, runId, toolUseId ?? id ?? "", (item) =>
         item.kind === "tool"
           ? { ...item, state: isError ? "error" : "success", result: content }
           : item,
