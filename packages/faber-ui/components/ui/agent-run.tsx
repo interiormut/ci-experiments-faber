@@ -660,7 +660,7 @@ type AgentRunProps = {
    * in afterwards still reveal normally either way.
    */
   revealOnMount?: boolean
-  /** Outer node diameter in pixels. Defaults to 64 (4rem) — a deliberately spacious node. */
+  /** Outer node diameter in pixels. Defaults to 40. */
   nodeSize?: number
   /** Stroke width of the line and the node ring, in pixels. */
   lineWidth?: number
@@ -694,8 +694,8 @@ export function AgentRun({
   onThinkingModeChange,
   onToolOpenChange,
   revealOnMount = true,
-  nodeSize = 64,
-  lineWidth = 2,
+  nodeSize = 40,
+  lineWidth = 1.5,
   className,
 }: AgentRunProps) {
   const prefersReduced = useReducedMotion()
