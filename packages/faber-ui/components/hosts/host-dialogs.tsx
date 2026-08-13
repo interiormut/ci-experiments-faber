@@ -223,8 +223,9 @@ export function HostFormDialog({
               label="Docker endpoint"
               value={form.docker_endpoint}
               onChange={(v) => setForm((f) => ({ ...f, docker_endpoint: v }))}
-              placeholder="Optional"
-              hint="unix:// or tcp://. Leave empty to use the host's local socket."
+              placeholder="unix:///var/run/docker.sock"
+              required
+              hint="Required. Use unix:// for a local socket or tcp:// for a reachable Docker daemon."
             />
           ) : null}
 

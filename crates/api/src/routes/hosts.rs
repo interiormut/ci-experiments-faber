@@ -256,6 +256,35 @@ fn validate_transport_config(
     }
 }
 
+fn validate_docker_endpoint(
+    transport: Transport,
+    exec_mode: ExecMode,
+    endpoint: Option<&str>,
+) -> Result<(), AppError> {
+    if exec_mode != ExecMode::Docker {
+        return Ok(());
+    }
+
+    // Local Docker access is explicit: Faber must not silently use the
+    // operator's ambient Docker context or socket.
+    if transport == Transport::Local && endpoint.is_none_or(str::is_empty) {
+        return Err(AppError::BadRequest(
+            "docker_endpoint is required for a local docker host".into(),
+        ));
+    }
+
+    if let Some(endpoint) = endpoint
+        && !endpoint.starts_with("unix://")
+        && !endpoint.starts_with("tcp://")
+    {
+        return Err(AppError::BadRequest(
+            "docker_endpoint must start with 'unix://' or 'tcp://'".into(),
+        ));
+    }
+
+    Ok(())
+}
+
 /// The same absolute-path rule a container's root carries, and for the same
 /// reason: the whole of the path contract rests on one rooted namespace per
 /// target, and a relative root would teach the agent host-specific path habits
@@ -361,6 +390,8 @@ async fn create(
     if let Some(root) = host_root {
         validate_host_root(root)?;
     }
+    let docker_endpoint = trimmed(input.docker_endpoint.as_deref());
+    validate_docker_endpoint(input.transport, input.exec_mode, docker_endpoint)?;
 
     let new_host = NewHost {
         id: Uuid::now_v7(),
@@ -371,7 +402,7 @@ async fn create(
         ssh_address,
         ssh_key_ref: trimmed(input.ssh_key_ref.as_deref()),
         ssh_host_key,
-        docker_endpoint: trimmed(input.docker_endpoint.as_deref()),
+        docker_endpoint,
         root_path: host_root,
     };
 
@@ -492,6 +523,23 @@ async fn update(
         effective_transport,
         effective_ssh_address,
         submitted_host_key,
+    )?;
+
+    let effective_exec_mode = input.exec_mode.unwrap_or_else(|| {
+        if current.exec_mode == ExecMode::Docker.as_str() {
+            ExecMode::Docker
+        } else {
+            ExecMode::Direct
+        }
+    });
+    let effective_docker_endpoint = match input.docker_endpoint.as_ref() {
+        Some(ref value) => trimmed(value.as_deref()),
+        None => current.docker_endpoint.as_deref(),
+    };
+    validate_docker_endpoint(
+        effective_transport,
+        effective_exec_mode,
+        effective_docker_endpoint,
     )?;
 
     // A transport switch that leaves the old address behind would fail the DB
