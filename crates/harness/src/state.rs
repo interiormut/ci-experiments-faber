@@ -179,6 +179,13 @@ pub struct Grant {
     pub tools: Vec<llm::ToolDef>,
     pub tool_invoker: Option<ToolInvoker>,
     pub commit_granted: bool,
+    /// How a stop asked for from outside reaches this run
+    /// ([`crate::interrupt`]). Here rather than alongside the run handle
+    /// because the grant is the one thing built on the caller's thread and
+    /// moved into the harness's — the same single crossing `ToolInvoker`
+    /// takes. `None` is a run nobody can stop, which is the right default for
+    /// a caller that has nowhere to put the other half.
+    pub interrupt: Option<crate::interrupt::Interrupt>,
 }
 
 pub struct HarnessState {

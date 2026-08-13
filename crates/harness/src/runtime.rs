@@ -54,6 +54,20 @@ pub struct HarnessRun {
     thread: std::thread::JoinHandle<Result<RunOutcome, RunError>>,
 }
 
+/// A standalone kill switch for one run's isolate, handed out by
+/// [`HarnessRun::terminator`]. Terminating a run that has already finished is
+/// a no-op, so a stale one is harmless to hold.
+#[derive(Clone)]
+pub struct Terminator(Option<deno_core::v8::IsolateHandle>);
+
+impl Terminator {
+    pub fn terminate(&self) {
+        if let Some(handle) = &self.0 {
+            handle.terminate_execution();
+        }
+    }
+}
+
 impl HarnessRun {
     /// Boots an isolate on a new thread and starts running `harness_source`'s
     /// default export against `input`, under `grant`. `seed` is what a prior
@@ -178,6 +192,17 @@ impl HarnessRun {
         if let Some(handle) = &self.isolate_handle {
             handle.terminate_execution();
         }
+    }
+
+    /// The same kill, detached from the run handle so it can be held by
+    /// something else while the run is being consumed.
+    ///
+    /// [`Self::terminate`] needs `&self`, and a caller that streams the
+    /// transcript and then `join`s has given the handle away by the time it
+    /// would want to use it. A watchdog waiting out an interrupt's grace
+    /// period is exactly that caller.
+    pub fn terminator(&self) -> Terminator {
+        Terminator(self.isolate_handle.clone())
     }
 
     /// Blocks until the run finishes, returning what it left behind or the

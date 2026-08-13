@@ -35,6 +35,17 @@ async fn shared_async(state: &Rc<RefCell<OpState>>) -> Rc<RefCell<HarnessState>>
     shared(&op_state)
 }
 
+/// Whether a stop has been asked for from outside this run
+/// (`crate::interrupt`). A run that was granted no interrupt is one nobody
+/// can stop, and reads as never stopped.
+fn stopped(harness: &HarnessState) -> bool {
+    harness
+        .grant
+        .interrupt
+        .as_ref()
+        .is_some_and(crate::interrupt::Interrupt::raised)
+}
+
 // ---------------------------------------------------------------------------
 // Capabilities and tools
 // ---------------------------------------------------------------------------
@@ -71,16 +82,38 @@ pub async fn op_tool_invoke(
 ) -> Result<ToolResult, OpError> {
     let harness = shared_async(&state).await;
 
-    let invocation = {
+    let (invocation, interrupt) = {
         let harness = harness.borrow();
         let Some(invoker) = harness.grant.tool_invoker.as_ref() else {
             return Err(OpError::UnknownTool { name });
         };
-        (invoker)(name.clone(), input)
+        // Checked before dispatch as well as during it: a stop that landed
+        // while the harness was between calls must not be answered by
+        // starting fresh work outside the isolate.
+        if stopped(&harness) {
+            return Err(HarnessErrorInfo::cancelled().into());
+        }
+        (
+            (invoker)(name.clone(), input),
+            harness.grant.interrupt.clone(),
+        )
     };
 
-    invocation
-        .await
+    let dispatched = match &interrupt {
+        Some(signal) => tokio::select! {
+            biased;
+            // Dropping `invocation` here is what abandons the call. What the
+            // tool already did on the other side is not undone — an
+            // interrupted `exec` may well have written a file — so this is a
+            // stop, not a rollback, and the environment layer is where any
+            // stronger promise would have to live.
+            () = signal.raised_at() => return Err(HarnessErrorInfo::cancelled().into()),
+            dispatched = invocation => dispatched,
+        },
+        None => invocation.await,
+    };
+
+    dispatched
         .map(|result| ToolResult {
             content: result.content,
             is_error: result.is_error,
@@ -139,6 +172,14 @@ pub fn op_llm_stream_open(
 ) -> Result<u32, OpError> {
     let harness = shared(state);
     let mut harness = harness.borrow_mut();
+
+    // Refused before anything is rendered or logged. A harness is free to
+    // catch a `cancelled` failure and keep going — that is what makes it an
+    // ordinary failure — but "keep going" must not extend to opening new
+    // calls against the provider after the user asked for a stop.
+    if stopped(&harness) {
+        return Err(HarnessErrorInfo::cancelled().into());
+    }
 
     let baseline = harness.baseline.clone();
 
@@ -306,8 +347,50 @@ async fn advance(
     // call lands in, while the frame is still needed to tag the log events
     // emitted alongside it.
     let frame = sent.frame.clone();
+    let interrupt = harness.borrow().grant.interrupt.clone();
 
-    let next = inner.next().await;
+    // Observed at the await the run spends nearly all its time in, not only
+    // between events: a provider mid-answer would otherwise keep the run open
+    // for as long as it kept talking. A `Pending` slot that is stopped here
+    // was never polled, so nothing was sent at all.
+    let next = match &interrupt {
+        Some(signal) => tokio::select! {
+            biased;
+            () = signal.raised_at() => None,
+            event = inner.next() => Some(event),
+        },
+        None => Some(inner.next().await),
+    };
+
+    let Some(next) = next else {
+        // Terminal, and shaped exactly like a stream that broke: whatever the
+        // accumulator folded is kept, so `commit(call, { partial: true })`
+        // (§6.3) still has something to adopt, and the frame stops failed
+        // because this call never produced a completion. Dropping `inner` is
+        // what closes the provider connection.
+        let info = HarnessErrorInfo::cancelled();
+        let partial = accumulator.finish().ok();
+        let mut state = harness.borrow_mut();
+        if let Some(completion) = &partial {
+            let _ = state.frames_tx.send(CoreEvent::ModelUsage {
+                frame: frame.clone(),
+                usage: completion.usage,
+            });
+        }
+        let _ = state.frames_tx.send(CoreEvent::FrameStop {
+            frame,
+            outcome: Outcome::Failed { error: info.clone() },
+        });
+        state.streams.insert(
+            rid,
+            StreamSlot::Failed {
+                sent,
+                partial,
+                error: info.clone(),
+            },
+        );
+        return Err(info.into());
+    };
 
     match next {
         Some(Ok(event)) => {

@@ -493,9 +493,11 @@ async fn send_message(
     let input_events = runner::record_input(&mut conn, run_id, &input).await?;
     drop(conn);
 
-    // Claimed before the response goes out, so a client that opens the stream
-    // on seeing the run id cannot arrive before the channel exists.
+    // Both claimed before the response goes out, so a client that acts on the
+    // run id the moment it has one — opening the stream, or pressing stop —
+    // cannot arrive before there is something there to reach.
     let sender = runner::open_run(&state.runs, id);
+    let interrupt = runner::open_interrupt(&state.interrupts, run_id);
     for event in input_events {
         let _ = sender.send(event);
     }
@@ -511,6 +513,7 @@ async fn send_message(
             config: resolved.config,
             api_key: resolved.api_key,
             input,
+            interrupt,
         },
     );
 

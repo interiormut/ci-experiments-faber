@@ -1,7 +1,11 @@
 use axum::extract::FromRef;
 use std::sync::Arc;
 
-use crate::{config::Config, db::DbPool, run::RunRegistry};
+use crate::{
+    config::Config,
+    db::DbPool,
+    run::{InterruptRegistry, RunRegistry},
+};
 
 /// 32-byte master key for envelope encryption. Never printed — Debug is intentionally redacted.
 #[derive(Clone)]
@@ -36,6 +40,10 @@ pub struct AppState {
     /// to. In-process, so it only reaches subscribers on the instance that
     /// owns the run.
     pub runs: RunRegistry,
+    /// Live harness runs that can still be stopped, keyed by run. In-process
+    /// for the same reason `runs` is, and with the same limit: an interrupt
+    /// only reaches a run on the instance that owns it.
+    pub interrupts: InterruptRegistry,
 }
 
 /// Required by `surge::AuthSession`, which resolves the provider off the router state.

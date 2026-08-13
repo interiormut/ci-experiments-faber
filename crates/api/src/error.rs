@@ -21,6 +21,14 @@ pub enum AppError {
     #[error("bad request: {0}")]
     BadRequest(String),
 
+    /// A well-formed request against a row whose state does not admit it —
+    /// stopping a run that already finished. Distinct from `BadRequest`
+    /// because nothing about the request was wrong: the same bytes sent a
+    /// moment earlier would have worked, and a client can tell "retry is
+    /// pointless" from "fix your input".
+    #[error("conflict: {0}")]
+    Conflict(String),
+
     #[error("database error: {source}")]
     Db {
         source: diesel::result::Error,
@@ -84,7 +92,8 @@ impl AppError {
             AppError::Unauthorized(_)
             | AppError::ServiceUnavailable(_)
             | AppError::NotFound
-            | AppError::BadRequest(_) => {}
+            | AppError::BadRequest(_)
+            | AppError::Conflict(_) => {}
         }
     }
 }
@@ -105,6 +114,7 @@ impl IntoResponse for AppError {
             AppError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
             AppError::NotFound => (StatusCode::NOT_FOUND, "not found".to_owned()),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+            AppError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             AppError::Db { source, .. } => {
                 use diesel::result::Error as De;
                 match source {

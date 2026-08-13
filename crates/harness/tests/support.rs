@@ -269,6 +269,8 @@ pub fn grant(client: Arc<dyn ModelClient>) -> Grant {
         tools: Vec::new(),
         tool_invoker: None,
         commit_granted: true,
+        // Tests that exercise a stop build their own pair and set it here.
+        interrupt: None,
     }
 }
 

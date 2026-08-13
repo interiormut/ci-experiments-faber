@@ -95,6 +95,7 @@ async fn main() {
         auth,
         master_key,
         runs: Default::default(),
+        interrupts: Default::default(),
     };
 
     let cors_origins = config

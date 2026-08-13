@@ -24,7 +24,7 @@ use diesel_async::{
     AsyncConnection, AsyncPgConnection, RunQueryDsl, scoped_futures::ScopedFutureExt,
 };
 use harness::frame::{CoreEvent, FrameDetail, FrameId, Outcome};
-use harness::{Grant, HarnessRun, RunOutcome, Seed};
+use harness::{Grant, HarnessRun, Interrupt, Interrupter, RunOutcome, Seed};
 use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -106,6 +106,12 @@ pub struct StreamEvent {
 pub const KIND_RUN_END: &str = "run_end";
 /// Terminal marker: the run ended in a failure the harness did not handle.
 pub const KIND_RUN_ERROR: &str = "run_error";
+/// Terminal marker: the run stopped because someone asked it to.
+///
+/// Its own marker rather than a `run_error` with a special message: a user who
+/// pressed stop got what they asked for, and a client that renders that as a
+/// failure is telling them something went wrong when nothing did.
+pub const KIND_RUN_INTERRUPTED: &str = "run_interrupted";
 /// The user's own turn. Not harness-yielded, but H2 makes the transcript the
 /// user-facing conversation, and a conversation missing one side of itself is
 /// not one.
@@ -268,6 +274,8 @@ pub struct RunRequest {
     /// session had something to say alongside it, such as an environment
     /// having been added.
     pub input: Vec<TurnMessage>,
+    /// The run's half of the stop signal, from [`open_interrupt`].
+    pub interrupt: Interrupt,
 }
 
 /// Claims the session's channel for a run that is about to start.
@@ -291,6 +299,71 @@ pub fn close_run(registry: &RunRegistry, session_id: Uuid) {
         if channel.is_inert() {
             guard.remove(&session_id);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Interruption
+// ---------------------------------------------------------------------------
+
+/// Every run this instance can still stop, keyed by run — not by session, the
+/// way [`RunRegistry`] is. A stop names one run: a session may have several in
+/// flight, and stopping the wrong one is worse than stopping none.
+///
+/// In-process, and for the same reason and with the same consequence as
+/// [`RunRegistry`]: an interrupt that lands on an instance which does not own
+/// the run cannot reach it, and says so rather than pretending. The fix is the
+/// same shared bus, not a bigger map.
+pub type InterruptRegistry = Arc<RwLock<HashMap<Uuid, Interrupter>>>;
+
+/// How long a stopped run is left to wind itself up before the isolate is
+/// killed.
+///
+/// The signal is the mechanism and the kill is the backstop
+/// (`history-abstract.md` H9.3), so this window is what separates them. It has
+/// to be long enough for a harness to notice a rejected call, commit what it
+/// has, and yield a closing event — and short enough that a harness which
+/// cannot notice, because it is busy in its own JavaScript, still stops while
+/// the user is watching.
+const INTERRUPT_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Registers a run as interruptible and hands back the run's half of the
+/// signal.
+///
+/// Called before the POST returns, like [`open_run`] and for the same reason:
+/// the response carries the `run_id` a client interrupts by, so the moment it
+/// has one, a stop for it must land somewhere. Paired with
+/// [`close_interrupt`].
+pub fn open_interrupt(registry: &InterruptRegistry, run_id: Uuid) -> Interrupt {
+    let (interrupter, interrupt) = harness::interrupt();
+    registry
+        .write()
+        .expect("interrupt registry lock poisoned")
+        .insert(run_id, interrupter);
+    interrupt
+}
+
+/// Forgets a finished run. After this a stop for it is answered from
+/// `run.completed_at` instead — the run is over, and the durable record is
+/// what says so.
+pub fn close_interrupt(registry: &InterruptRegistry, run_id: Uuid) {
+    registry
+        .write()
+        .expect("interrupt registry lock poisoned")
+        .remove(&run_id);
+}
+
+/// Raises the stop for a run this instance owns. `false` when it owns no such
+/// run — either it finished, or it belongs to another instance, which the
+/// caller distinguishes because only it knows what the database says.
+pub fn raise_interrupt(registry: &InterruptRegistry, run_id: Uuid) -> bool {
+    let guard = registry.read().expect("interrupt registry lock poisoned");
+    match guard.get(&run_id) {
+        Some(interrupter) => {
+            interrupter.raise();
+            true
+        }
+        None => false,
     }
 }
 
@@ -322,17 +395,34 @@ pub fn spawn_run(state: AppState, sender: broadcast::Sender<StreamEvent>, reques
         let session_id = request.session_id;
         let run_id = request.run_id;
         let thread_id = request.thread_id;
+        let interrupt = request.interrupt.clone();
 
         let result = execute(&state, &sender, request).await;
 
-        let terminal = match &result {
-            Ok(_) => StreamEvent {
+        // A stopped run almost always *also* ends in error — the rejected
+        // call propagates out of the harness, or the isolate was killed
+        // outright — so the stop is read first. It is the cause, and the error
+        // is its shadow; reporting the shadow would tell the user their run
+        // broke when they are the one who stopped it.
+        let terminal = match (&result, interrupt.raised()) {
+            (_, true) => {
+                if let Err(error) = &result {
+                    tracing::info!(%run_id, error = %error, "interrupted run ended in error");
+                }
+                StreamEvent {
+                    run_id,
+                    seq: -1,
+                    kind: KIND_RUN_INTERRUPTED.to_owned(),
+                    payload: Value::Null,
+                }
+            }
+            (Ok(_), false) => StreamEvent {
                 run_id,
                 seq: -1,
                 kind: KIND_RUN_END.to_owned(),
                 payload: Value::Null,
             },
-            Err(error) => {
+            (Err(error), false) => {
                 tracing::error!(%run_id, error = %error, "harness run failed");
                 StreamEvent {
                     run_id,
@@ -368,6 +458,11 @@ pub fn spawn_run(state: AppState, sender: broadcast::Sender<StreamEvent>, reques
             tracing::error!(%run_id, error = %error, "failed to stamp run completion");
         }
 
+        // Released here rather than anywhere earlier: right up until the row
+        // is stamped, a stop is still something a user could reasonably ask
+        // for, and after it there is nothing left to stop.
+        close_interrupt(&state.interrupts, run_id);
+
         // Dropped before the claim is released, so the count is the only thing
         // keeping the entry alive by the time `close_run` inspects it.
         drop(sender);
@@ -388,7 +483,16 @@ async fn execute(
         config,
         api_key,
         input,
+        interrupt,
     } = request;
+
+    // A stop can arrive before any of this: the POST returned the `run_id`
+    // and detached, so the window between that and the isolate booting is a
+    // real one a user can hit. Nothing has been sent to a provider yet, which
+    // makes this the cheapest place the answer is ever available.
+    if interrupt.raised() {
+        return Ok(false);
+    }
 
     let client = build_client(&config, api_key)?;
 
@@ -431,6 +535,10 @@ async fn execute(
         tools: harness::Surface::definitions(),
         tool_invoker: Some(Arc::clone(&surface).invoker()),
         commit_granted: true,
+        // Granted like everything else here: a run that was handed no
+        // interrupt is one nobody can stop, and the harness sees a stop only
+        // as a call of its own failing.
+        interrupt: Some(interrupt.clone()),
     };
 
     let mut first_harness_seq = INPUT_SEQ + input.len() as i64;
@@ -456,6 +564,23 @@ async fn execute(
         grant,
         seed,
     );
+
+    // The backstop, armed for the whole run. A harness that never touches an
+    // op after the stop — one looping in its own JavaScript, or one catching
+    // the failure and refusing to end — is unreachable by the signal, and
+    // `history-abstract.md` H9.3 is explicit that killing the isolate is what
+    // covers that case. Aborted below once the run is over, so a run that
+    // stopped itself in time is never killed after the fact.
+    let watchdog = tokio::spawn({
+        let terminator = run.terminator();
+        let interrupt = interrupt.clone();
+        async move {
+            interrupt.raised_at().await;
+            tokio::time::sleep(INTERRUPT_GRACE).await;
+            tracing::warn!(%run_id, "harness did not stop within the grace period; killing the isolate");
+            terminator.terminate();
+        }
+    });
 
     // Harness output starts after this turn's own input messages.
     //
@@ -528,14 +653,27 @@ async fn execute(
 
     // `join` blocks on an OS thread handle, which must not happen on the async
     // runtime's worker.
-    let outcome = tokio::task::spawn_blocking(move || run.join())
-        .await
+    let joined = tokio::task::spawn_blocking(move || run.join()).await;
+
+    // Disarmed before either error is propagated: the run is over either way,
+    // and a watchdog outliving it would sit holding a handle to a dead isolate
+    // for as long as the grace period.
+    watchdog.abort();
+
+    let outcome = joined
         .map_err(|error| {
             tracing::error!(%run_id, error = %error, "harness join task panicked");
             AppError::Internal
         })?
         .map_err(|error| {
-            tracing::error!(%run_id, error = %error, "harness run ended in error");
+            // A stopped run almost always arrives here: the refused call
+            // propagates out of a harness that did not catch it, which is the
+            // expected shape of a stop and not a fault to page anyone about.
+            if interrupt.raised() {
+                tracing::info!(%run_id, error = %error, "harness run ended at a stop");
+            } else {
+                tracing::error!(%run_id, error = %error, "harness run ended in error");
+            }
             AppError::Harness(error.to_string())
         })?;
 

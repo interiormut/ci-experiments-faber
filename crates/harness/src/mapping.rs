@@ -804,6 +804,24 @@ pub struct HarnessErrorInfo {
     pub request_id: Option<String>,
 }
 
+impl HarnessErrorInfo {
+    /// A stop asked for from outside the run ([`crate::interrupt`]).
+    ///
+    /// `cancelled` is `types.d.ts`'s own kind for this, and it is deliberately
+    /// one of the ordinary failure kinds rather than a channel of its own —
+    /// "so a harness cannot handle one and silently ignore the other". Not
+    /// transient: retrying is exactly what was just asked not to happen.
+    pub fn cancelled() -> Self {
+        HarnessErrorInfo {
+            kind: "cancelled",
+            message: "the run was interrupted".to_owned(),
+            transient: false,
+            status: None,
+            request_id: None,
+        }
+    }
+}
+
 impl From<&llm::Error> for HarnessErrorInfo {
     fn from(error: &llm::Error) -> Self {
         let transient = error.is_transient();

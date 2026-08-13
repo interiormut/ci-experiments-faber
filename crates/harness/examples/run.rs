@@ -32,6 +32,9 @@ async fn main() {
         tools: Vec::new(),
         tool_invoker: None,
         commit_granted: true,
+        // Nothing here can ask this run to stop — the example runs it to
+        // completion or not at all.
+        interrupt: None,
     };
 
     let input = vec![Message {

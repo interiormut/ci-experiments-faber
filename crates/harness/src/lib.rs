@@ -4,6 +4,7 @@
 mod canonical;
 pub mod error;
 pub mod frame;
+pub mod interrupt;
 mod loader;
 pub mod mapping;
 mod ops;
@@ -13,7 +14,8 @@ pub mod state;
 pub mod tools;
 mod validate;
 
-pub use runtime::{HarnessRun, RunError, RunOutcome};
+pub use interrupt::{Interrupt, Interrupter, interrupt};
+pub use runtime::{HarnessRun, RunError, RunOutcome, Terminator};
 pub use state::{Baseline, Grant, Seed};
 pub use tools::Surface;
 
