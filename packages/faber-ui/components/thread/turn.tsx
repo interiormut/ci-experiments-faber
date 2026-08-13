@@ -32,7 +32,10 @@ export function TurnView({ turn, isLast = false }: { turn: Turn; isLast?: boolea
   return (
     <div className="flex flex-col gap-6">
       {text ? (
-        <div className="ml-auto max-w-[85%] rounded-2xl bg-muted px-4 py-2.5 text-[15px] leading-relaxed text-foreground">
+        <div
+          data-thread-block
+          className="ml-auto max-w-[85%] rounded-2xl bg-muted px-4 py-2.5 text-[15px] leading-relaxed text-foreground"
+        >
           <Markdown text={text} softBreaks />
         </div>
       ) : null}
@@ -43,6 +46,7 @@ export function TurnView({ turn, isLast = false }: { turn: Turn; isLast?: boolea
       {turn.notices.map((notice, index) => (
         <p
           key={`${turn.runId}:notice:${index}`}
+          data-thread-block
           className="mx-auto flex items-center gap-1.5 text-xs text-muted-foreground"
         >
           <Boxes className="size-3.5" />
@@ -53,9 +57,12 @@ export function TurnView({ turn, isLast = false }: { turn: Turn; isLast?: boolea
       {/* Rows are composed by hand rather than passed as `items`, because the
           data-driven path renders a message's text as a plain string — the only
           way to hand it to Markdown is to build the row ourselves. `isLast` is
-          still AgentRun's to inject. */}
+          still AgentRun's to inject.
+
+          `thread-rows` styles nothing — it is how autoscroll finds the rows of
+          a run, which it aims at one at a time. See `useCenteredTail`. */}
       {turn.items.length > 0 ? (
-        <AgentRun revealOnMount={!restored}>
+        <AgentRun className="thread-rows" revealOnMount={!restored}>
           {turn.items.map((item) => {
             if (item.kind === "message") {
               return (
@@ -90,11 +97,15 @@ export function TurnView({ turn, isLast = false }: { turn: Turn; isLast?: boolea
       ) : null}
 
       {/* The indicator is the tail of the timeline, so only the last turn — the
-          one that can still be running — carries it. */}
+          one that can still be running — carries it. Not a block autoscroll
+          aims at: it trails whatever just arrived, and centring it would push
+          the row the user came to read above the middle. */}
       {isLast ? <FaberIndicator working={turn.status === "running"} /> : null}
 
       {turn.status === "error" ? (
-        <p className="text-sm text-destructive">{turn.errorMessage ?? "The run failed."}</p>
+        <p data-thread-block className="text-sm text-destructive">
+          {turn.errorMessage ?? "The run failed."}
+        </p>
       ) : null}
     </div>
   )

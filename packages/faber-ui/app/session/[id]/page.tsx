@@ -16,6 +16,7 @@ import { TurnView } from "@/components/thread/turn"
 import type { MentionOption } from "@/components/thread/mention-textarea"
 import { useSessionTranscript } from "@/lib/thread/use-session-transcript"
 import { useStickToBottom } from "@/lib/thread/use-stick-to-bottom"
+import { useCenteredTail } from "@/lib/thread/use-centered-tail"
 
 export default function SessionPage() {
   const params = useParams<{ id: string }>()
@@ -109,6 +110,10 @@ function SessionThread({ sessionId }: { sessionId: Uuid }) {
 
   const { ref: scrollRef, onScroll, stick } = useStickToBottom<HTMLDivElement>(rows)
 
+  // Autoscroll pins to the bottom; this is what puts the newest block at the
+  // middle of the view once it gets there.
+  const tailRef = useCenteredTail<HTMLDivElement>(scrollRef, rows)
+
   const [sendError, setSendError] = React.useState<string | null>(null)
   const noModels = modelsLoaded && models.length === 0
 
@@ -145,7 +150,12 @@ function SessionThread({ sessionId }: { sessionId: Uuid }) {
           {turns.map((turn, index) => (
             <TurnView key={turn.runId} turn={turn} isLast={index === turns.length - 1} />
           ))}
-          {error ? <p className="text-sm text-destructive">{error}</p> : null}
+          {error ? <p data-thread-block className="text-sm text-destructive">{error}</p> : null}
+
+          {/* Room under the transcript for the newest block to rise to the
+              middle. `-mt-8` cancels the column gap, so at zero height it
+              costs nothing. */}
+          <div ref={tailRef} aria-hidden className="-mt-8 shrink-0" />
         </div>
       </div>
 
