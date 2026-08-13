@@ -4,6 +4,7 @@ import * as React from "react"
 import { FaberIndicator } from "@/components/thread/faber-indicator"
 import { Markdown } from "@/components/thread/markdown"
 import { AgentMessage, AgentRun, AgentStep, AgentThinking } from "@/components/ui/agent-run"
+import { toolDisplay } from "@/lib/thread/tools"
 import type { ContentBlock, Turn } from "@/lib/thread/transcript"
 import { useThinkingModes } from "@/lib/thread/use-thinking-modes"
 
@@ -78,8 +79,9 @@ export function TurnView({ turn, isLast = false }: { turn: Turn; isLast?: boolea
                 </AgentThinking>
               )
             }
+            const tool = toolDisplay(item.name, item.input)
             return (
-              <AgentStep key={item.id} state={item.state} title={item.name}>
+              <AgentStep key={item.id} state={item.state} title={tool.title} meta={tool.meta}>
                 {item.result}
               </AgentStep>
             )
