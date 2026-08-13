@@ -54,15 +54,17 @@ type BlockStartPayload =
   | { type: "unknown"; raw: JsonValue }
 
 /**
- * Every variant carries its payload in a field named `content` — that is how
- * `crates/llm/src/event.rs`'s `Delta` serializes, and nothing between there and
- * here renames it (`fromStreamEvent` passes the payload through untouched).
+ * The names here are the harness-facing ones from `crates/harness`'s `Delta`,
+ * NOT `crates/llm`'s — the latter calls every variant's payload `content`, and
+ * `From<llm::Delta>` renames it on the way out to the isolate. What reaches
+ * this reducer is whatever the harness yielded, so this side is the one to
+ * match.
  */
 type DeltaPayload =
-  | { type: "text"; content: string }
-  | { type: "thinking"; content: string }
-  | { type: "thinking_signature"; content: string }
-  | { type: "tool_input_json"; content: string }
+  | { type: "text"; text: string }
+  | { type: "thinking"; thinking: string }
+  | { type: "thinking_signature"; signature: string }
+  | { type: "tool_input_json"; partialJson: string }
   | { type: "unknown"; raw: JsonValue }
 
 /** A normalized event, uniform across the replay and live sources. */
@@ -349,18 +351,18 @@ export function applyEvent(store: TranscriptStore, event: NormalizedEvent): Tran
       if (!entry) return next // an unmapped (unknown) block
       if (entry.kind === "message" && delta.type === "text") {
         return updateItem(next, runId, entry.itemId, (item) =>
-          item.kind === "message" ? { ...item, text: item.text + delta.content } : item,
+          item.kind === "message" ? { ...item, text: item.text + delta.text } : item,
         )
       }
       // `thinking_signature` carries no reasoning to show — it is the opaque
       // token the provider needs back, and the harness is what keeps it.
       if (entry.kind === "thinking" && delta.type === "thinking") {
         return updateItem(next, runId, entry.itemId, (item) =>
-          item.kind === "thinking" ? { ...item, text: item.text + delta.content } : item,
+          item.kind === "thinking" ? { ...item, text: item.text + delta.thinking } : item,
         )
       }
       if (entry.kind === "tool" && delta.type === "tool_input_json") {
-        const partialJson = entry.partialJson + delta.content
+        const partialJson = entry.partialJson + delta.partialJson
         return setBlock(next, runId, index, { ...entry, partialJson })
       }
       return next
