@@ -110,8 +110,10 @@ fn exec() -> llm::ToolDef {
             },
             "cwd": {
                 "type": "string",
-                "description": "Absolute path inside the environment's root. Defaults to \
-                                the root. Applies to this call only.",
+                "description": "Absolute virtual path inside the environment's root. Do not \
+                                 prefix it with the root shown by `targets` (for example, use \
+                                 `/src/main.rs`, not `/workspace/src/main.rs`). Defaults to the \
+                                 root. Applies to this call only.",
             },
             "timeout_ms": {
                 "type": "integer",
@@ -145,8 +147,10 @@ fn start() -> llm::ToolDef {
             "command": { "type": "string" },
             "cwd": {
                 "type": "string",
-                "description": "Absolute path inside the environment's root. Defaults to \
-                                the root.",
+                "description": "Absolute virtual path inside the environment's root. Do not \
+                                 prefix it with the root shown by `targets` (for example, use \
+                                 `/src/main.rs`, not `/workspace/src/main.rs`). Defaults to the \
+                                 root.",
             },
             "env": {
                 "type": "object",
@@ -232,7 +236,9 @@ fn read() -> llm::ToolDef {
         json!({
             "path": {
                 "type": "string",
-                "description": "Absolute path inside the environment's root.",
+                "description": "Absolute virtual path inside the environment's root. Do not \
+                                prefix it with the root shown by `targets` (for example, use \
+                                `/src/main.rs`, not `/workspace/src/main.rs`).",
             },
             "offset": {
                 "type": "integer",
@@ -256,7 +262,12 @@ fn write() -> llm::ToolDef {
          To change part of a file, use `edit` — rewriting a large file to change one line \
          is slower, loses anything you had not read, and is harder to review.",
         json!({
-            "path": { "type": "string" },
+            "path": {
+                "type": "string",
+                "description": "Absolute virtual path inside the environment's root. Do not \
+                                prefix it with the root shown by `targets` (for example, use \
+                                `/src/main.rs`, not `/workspace/src/main.rs`).",
+            },
             "content": { "type": "string" },
         }),
         &["path", "content"],
@@ -271,7 +282,12 @@ fn edit() -> llm::ToolDef {
          deliberately. A refusal is about the request, so change the anchor rather than \
          retrying it.",
         json!({
-            "path": { "type": "string" },
+            "path": {
+                "type": "string",
+                "description": "Absolute virtual path inside the environment's root. Do not \
+                                prefix it with the root shown by `targets` (for example, use \
+                                `/src/main.rs`, not `/workspace/src/main.rs`).",
+            },
             "old": {
                 "type": "string",
                 "description": "Text to find. Must match exactly, whitespace included.",
@@ -306,14 +322,24 @@ fn patch() -> llm::ToolDef {
                         },
                         "path": {
                             "type": "string",
-                            "description": "For add, update, and delete.",
+                            "description": "Absolute virtual path inside the environment's root; \
+                                            do not prefix it with the root shown by `targets`. \
+                                            For add, update, and delete.",
                         },
                         "content": { "type": "string", "description": "For add." },
                         "old": { "type": "string", "description": "For update." },
                         "new": { "type": "string", "description": "For update." },
                         "all": { "type": "boolean", "description": "For update." },
-                        "from": { "type": "string", "description": "For move." },
-                        "to": { "type": "string", "description": "For move." },
+                        "from": {
+                            "type": "string",
+                            "description": "Absolute virtual source path; do not prefix it with \
+                                            the root shown by `targets`. For move.",
+                        },
+                        "to": {
+                            "type": "string",
+                            "description": "Absolute virtual destination path; do not prefix it \
+                                            with the root shown by `targets`. For move.",
+                        },
                     },
                     "required": ["op"],
                     "additionalProperties": false,
@@ -333,7 +359,12 @@ fn list() -> llm::ToolDef {
          empty directory. A listing that hit the cap says so — narrow it rather than \
          reading it as complete.",
         json!({
-            "path": { "type": "string" },
+            "path": {
+                "type": "string",
+                "description": "Absolute virtual path inside the environment's root. Do not \
+                                prefix it with the root shown by `targets` (for example, use \
+                                `/src/main.rs`, not `/workspace/src/main.rs`).",
+            },
             "glob": {
                 "type": "string",
                 "description": "Shell-style: `*`, `?`, `[abc]`, `[!abc]`.",

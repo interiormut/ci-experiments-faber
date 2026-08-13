@@ -230,7 +230,11 @@ pub fn manifests(manifests: &[&Manifest]) -> String {
     let mut out = String::new();
     for manifest in manifests {
         let _ = writeln!(out, "{}", manifest.label);
-        let _ = writeln!(out, "  root      {}", manifest.root);
+        let _ = writeln!(
+            out,
+            "  root      {} (transport root; tool paths are virtual and must not repeat it)",
+            manifest.root
+        );
         let _ = writeln!(out, "  system    {} {}", manifest.os, manifest.arch);
         let _ = writeln!(out, "  shell     {}", manifest.shell);
         let _ = writeln!(
