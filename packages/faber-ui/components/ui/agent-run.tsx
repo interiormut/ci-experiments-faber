@@ -821,6 +821,14 @@ type AgentStepProps = {
   /** Fires on every header click, controlled or not, with the state a click implies. */
   onOpenChange?: (open: boolean) => void
   className?: string
+  /**
+   * Background applied to the header on hover/focus. Defaults to a stronger
+   * wash than the rest of the registry's `hover:bg-muted/40` convention,
+   * because `--muted` sits so close to the page background that the usual
+   * opacity reads as invisible against an app's own ambient gradients — see
+   * the header's `header` render below.
+   */
+  hoverClassName?: string
   /** @internal Set by {@link AgentRun}; true for the final row. */
   isLast?: boolean
 }
@@ -877,6 +885,7 @@ function AgentStepImpl({
   defaultOpen = false,
   onOpenChange,
   className,
+  hoverClassName = "hover:bg-accent focus-visible:bg-accent",
   isLast = false,
 }: AgentStepProps) {
   const { nodeSize, lineWidth, reduce } = useRun()
@@ -980,7 +989,10 @@ function AgentStepImpl({
             // have nothing to truncate against. The extra 0.5rem is the negative
             // margin, so the hit area and focus ring reach past the text on both
             // sides while the icon stays aligned with the rows that have no fold.
-            className="-mx-1 flex w-[calc(100%_+_0.5rem)] flex-col justify-center rounded-md px-1 text-left outline-none transition-colors hover:bg-muted/40 focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            className={cn(
+              "-mx-1 flex w-[calc(100%_+_0.5rem)] flex-col justify-center rounded-md px-1 text-left outline-none transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/50",
+              hoverClassName
+            )}
             style={{ minHeight: nodeSize }}
           >
             {header}
