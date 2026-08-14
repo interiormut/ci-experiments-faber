@@ -74,7 +74,10 @@ pub enum CoreEvent {
         frame: FrameId,
         outcome: Outcome,
     },
-    #[allow(dead_code, reason = "mark() is not wired to ctx in this slice; §7 rejected, kept for the log's own vocabulary")]
+    #[allow(
+        dead_code,
+        reason = "mark() is not wired to ctx in this slice; §7 rejected, kept for the log's own vocabulary"
+    )]
     Mark {
         frame: FrameId,
         label: String,

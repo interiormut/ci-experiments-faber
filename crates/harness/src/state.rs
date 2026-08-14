@@ -176,6 +176,13 @@ pub type ToolInvoker = Arc<
 pub struct Grant {
     pub client: Arc<dyn ModelClient>,
     pub model: String,
+    /// How much of a replayed assistant turn's reasoning this model wants back
+    /// (`llm::ReasoningHistory`). Granted rather than proposed: which endpoint
+    /// accepts what is a fact about the model the caller resolved, not a
+    /// decision the harness gets to make per call, so it sits beside `model`
+    /// rather than in the [`Baseline`] a workflow can override. `None` leaves
+    /// it to the wire's default.
+    pub reasoning_history: Option<llm::ReasoningHistory>,
     pub tools: Vec<llm::ToolDef>,
     pub tool_invoker: Option<ToolInvoker>,
     pub commit_granted: bool,
@@ -311,7 +318,9 @@ impl HarnessState {
     /// A borrowed view of the canonical lineage, in order — for anything
     /// that needs "just the messages", without ids attached.
     pub fn lineage_iter(&self) -> impl Iterator<Item = &llm::Message> + Clone {
-        self.committed_messages.iter().map(|committed| &committed.message)
+        self.committed_messages
+            .iter()
+            .map(|committed| &committed.message)
     }
 
     /// Recomputes [`Self::scaffold`] from the current `baseline.tools`,

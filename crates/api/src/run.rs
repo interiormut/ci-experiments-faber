@@ -527,6 +527,10 @@ async fn execute(
     let grant = Grant {
         client,
         model: config.wire_id.clone(),
+        // A property of the endpoint behind this row, not of the wire: some
+        // models reject a thinking turn replayed without its signature, others
+        // reject the reasoning outright. Unset leaves the wire's own default.
+        reasoning_history: config.reasoning_history(),
         // Granted, not implemented: the surface is the standard projection of
         // the environment contract, and a harness gets a working environment
         // by being handed it. An ungranted tool is simply absent from `ctx` —

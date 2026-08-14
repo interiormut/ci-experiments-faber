@@ -14,17 +14,28 @@ use crate::error::Error;
 use crate::event::{BlockStart, Delta, Event};
 use crate::span::{RenderedRequest, RenderedSpan, append_element, split_span, wrap_array};
 use crate::types::{
-    ContentBlock, Effort, Message, Request, Role, StopReason, Thinking, ToolChoice, UsageDelta,
+    ContentBlock, Effort, Message, ReasoningHistory, Request, Role, StopReason, Thinking,
+    ToolChoice, UsageDelta,
 };
 
 const PROVIDER: &str = "openai";
+
+/// What this wire does when a request expresses no preference.
+///
+/// Chat Completions has no reasoning field of its own — `reasoning_content` is
+/// a convention several providers grew independently, and OpenAI's own
+/// endpoint rejects it on an assistant turn. Dropping is the only default that
+/// is safe against every endpoint speaking this wire; a provider that wants
+/// its reasoning back says so per model.
+pub const DEFAULT_REASONING: ReasoningHistory = ReasoningHistory::Omitted;
 
 /// Renders a [`Request`] to the Chat Completions wire format.
 ///
 /// Unlike Anthropic there is one region, `messages` — a system turn stays
 /// inline here regardless of position, so nothing is ever hoisted out of it.
 pub(super) fn render(request: &Request) -> Result<RenderedRequest, Error> {
-    let (span, new_turns) = split_span(&request.messages, PROVIDER, &request.model)?;
+    let reasoning = request.reasoning_history.unwrap_or(DEFAULT_REASONING);
+    let (span, new_turns) = split_span(&request.messages, PROVIDER, &request.model, reasoning)?;
 
     let mut messages_bytes = span
         .and_then(|span| span.regions.get("messages"))
@@ -38,13 +49,16 @@ pub(super) fn render(request: &Request) -> Result<RenderedRequest, Error> {
                 &json!({"role": "system", "content": message.text()}),
             ),
             Role::User => append_user_elements(message, &mut messages_bytes),
-            Role::Assistant => append_element(&mut messages_bytes, &assistant_message(message)),
+            Role::Assistant => {
+                append_element(&mut messages_bytes, &assistant_message(message, reasoning))
+            }
         }
     }
 
     let prefix = RenderedSpan {
         provider: PROVIDER.into(),
         model: request.model.clone(),
+        reasoning,
         regions: [("messages".to_string(), messages_bytes.clone())]
             .into_iter()
             .collect(),
@@ -195,9 +209,10 @@ fn append_user_elements(message: &Message, region: &mut Vec<u8>) {
     }
 }
 
-fn assistant_message(message: &Message) -> Value {
+fn assistant_message(message: &Message, reasoning: ReasoningHistory) -> Value {
     let mut parts = Vec::new();
     let mut calls = Vec::new();
+    let mut thinking = String::new();
     for block in &message.content {
         match block {
             ContentBlock::Text { text } => parts.push(json!({"type": "text", "text": text})),
@@ -206,16 +221,31 @@ fn assistant_message(message: &Message) -> Value {
                 "type": "function",
                 "function": {"name": name, "arguments": input.to_string()},
             })),
-            // Thinking can't be fed back — reasoning is ephemeral on this API
-            // — and Unknown blocks belong to another provider's dialect.
+            // Sent back only when the model asked for it. There is no
+            // signature field on this wire, so `Text` and `Full` render the
+            // same bytes — the signature has nowhere to go.
+            ContentBlock::Thinking { thinking: text, .. }
+                if reasoning != ReasoningHistory::Omitted =>
+            {
+                thinking.push_str(text);
+            }
+            // Unknown blocks belong to another provider's dialect.
             _ => {}
         }
     }
 
     let mut value = json!({"role": "assistant"});
+    // Concatenated rather than one field per block: `reasoning_content` is a
+    // single string on every provider that reads it, so a turn that reasoned
+    // twice around a tool call has one place to land.
+    if !thinking.is_empty() {
+        value["reasoning_content"] = json!(thinking);
+    }
     // Content may be null only when tool calls carry the turn. With neither —
     // a turn whose only block was thinking, dropped just above — null would be
-    // rejected, so the turn goes back as empty text.
+    // rejected, so the turn goes back as empty text. Reasoning does not count
+    // as content here: a provider that ignores `reasoning_content` would be
+    // handed a turn with nothing in it.
     value["content"] = match (parts.is_empty(), calls.is_empty()) {
         (true, true) => json!(""),
         (true, false) => Value::Null,
@@ -684,7 +714,59 @@ mod tests {
             thinking: "hmm".into(),
             signature: None,
         }]);
-        assert_eq!(assistant_message(&message)["content"], json!(""));
+        assert_eq!(
+            assistant_message(&message, DEFAULT_REASONING)["content"],
+            json!("")
+        );
+    }
+
+    #[test]
+    fn reasoning_goes_back_as_reasoning_content_when_the_model_wants_it() {
+        let message = Message::assistant(vec![
+            ContentBlock::Thinking {
+                thinking: "hmm".into(),
+                signature: Some("sig".into()),
+            },
+            ContentBlock::text("done"),
+        ]);
+        let value = assistant_message(&message, ReasoningHistory::Full);
+
+        assert_eq!(value["reasoning_content"], json!("hmm"));
+        // No signature field exists on this wire, so `Full` and `Text` agree.
+        assert_eq!(
+            value,
+            assistant_message(&message, ReasoningHistory::Text),
+            "a signature has nowhere to go on this wire"
+        );
+    }
+
+    #[test]
+    fn reasoning_is_dropped_by_default() {
+        let message = Message::assistant(vec![
+            ContentBlock::Thinking {
+                thinking: "hmm".into(),
+                signature: None,
+            },
+            ContentBlock::text("done"),
+        ]);
+        let value = assistant_message(&message, DEFAULT_REASONING);
+
+        assert_eq!(value.get("reasoning_content"), None);
+        assert_eq!(value["content"][0]["text"], json!("done"));
+    }
+
+    #[test]
+    fn a_reasoning_only_turn_still_carries_content_when_reasoning_is_sent() {
+        // `reasoning_content` is not content: a provider that ignores the
+        // field would otherwise be handed a turn with nothing in it.
+        let message = Message::assistant(vec![ContentBlock::Thinking {
+            thinking: "hmm".into(),
+            signature: None,
+        }]);
+        let value = assistant_message(&message, ReasoningHistory::Full);
+
+        assert_eq!(value["reasoning_content"], json!("hmm"));
+        assert_eq!(value["content"], json!(""));
     }
 
     #[test]
@@ -694,7 +776,10 @@ mod tests {
             name: "read_file".into(),
             input: json!({}),
         }]);
-        assert_eq!(assistant_message(&message)["content"], Value::Null);
+        assert_eq!(
+            assistant_message(&message, DEFAULT_REASONING)["content"],
+            Value::Null
+        );
     }
 
     #[test]

@@ -69,6 +69,20 @@ pub enum Error {
         request_model: String,
     },
 
+    /// A [`crate::Turn::Span`] was rendered under a different reasoning-history
+    /// policy than the request replaying it.
+    ///
+    /// Refused for the same reason as [`Self::SpanScope`]: the span's bytes
+    /// already committed to what reasoning history contains, and splicing them
+    /// under a changed policy sends neither the old history nor the new one.
+    #[error(
+        "span was rendered with reasoning history {span:?}, cannot be reused against {request:?}"
+    )]
+    SpanReasoning {
+        span: crate::types::ReasoningHistory,
+        request: crate::types::ReasoningHistory,
+    },
+
     /// A [`crate::Turn::Span`] appeared somewhere other than index 0.
     ///
     /// A span names a *prefix*; only the tail may be sent by value, so a span

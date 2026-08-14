@@ -97,11 +97,11 @@ mod tests {
         let (interrupter, interrupt) = interrupt();
         drop(interrupter);
 
-        let waited = tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            interrupt.raised_at(),
-        )
-        .await;
-        assert!(waited.is_err(), "a dropped interrupter must not read as a stop");
+        let waited =
+            tokio::time::timeout(std::time::Duration::from_millis(50), interrupt.raised_at()).await;
+        assert!(
+            waited.is_err(),
+            "a dropped interrupter must not read as a stop"
+        );
     }
 }

@@ -70,7 +70,9 @@ pub async fn authorize_session(
     session_id: Uuid,
 ) -> ApiResult<Session> {
     session::table
-        .inner_join(workspace_member::table.on(workspace_member::workspace_id.eq(session::workspace_id)))
+        .inner_join(
+            workspace_member::table.on(workspace_member::workspace_id.eq(session::workspace_id)),
+        )
         .filter(session::id.eq(session_id))
         .filter(workspace_member::user_id.eq(user_id))
         .select(Session::as_select())
@@ -86,7 +88,9 @@ pub async fn authorize_thread(
 ) -> ApiResult<Thread> {
     thread::table
         .inner_join(session::table.on(session::id.eq(thread::session_id)))
-        .inner_join(workspace_member::table.on(workspace_member::workspace_id.eq(session::workspace_id)))
+        .inner_join(
+            workspace_member::table.on(workspace_member::workspace_id.eq(session::workspace_id)),
+        )
         .filter(thread::id.eq(thread_id))
         .filter(workspace_member::user_id.eq(user_id))
         .select(Thread::as_select())
@@ -95,11 +99,17 @@ pub async fn authorize_thread(
         .map_err(|err| scope_error(err, "access.authorize_thread"))
 }
 
-pub async fn authorize_run(conn: &mut AsyncPgConnection, user_id: Uuid, run_id: Uuid) -> ApiResult<Run> {
+pub async fn authorize_run(
+    conn: &mut AsyncPgConnection,
+    user_id: Uuid,
+    run_id: Uuid,
+) -> ApiResult<Run> {
     run::table
         .inner_join(thread::table.on(thread::id.eq(run::thread_id)))
         .inner_join(session::table.on(session::id.eq(thread::session_id)))
-        .inner_join(workspace_member::table.on(workspace_member::workspace_id.eq(session::workspace_id)))
+        .inner_join(
+            workspace_member::table.on(workspace_member::workspace_id.eq(session::workspace_id)),
+        )
         .filter(run::id.eq(run_id))
         .filter(workspace_member::user_id.eq(user_id))
         .select(Run::as_select())

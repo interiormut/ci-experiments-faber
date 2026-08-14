@@ -9,6 +9,7 @@ import {
   type CreateModelRequest,
   type Credential,
   type ModelConfig,
+  type ReasoningHistory,
   type UpdateModelRequest,
   type Uuid,
   type Wire,
@@ -36,6 +37,39 @@ import {
 
 const WIRE_OPTIONS: Wire[] = ["anthropic", "openai"]
 
+/** `""` is "say nothing", which leaves the wire's own default. */
+const REASONING_OPTIONS: { value: ReasoningHistory | ""; label: string }[] = [
+  { value: "", label: "Provider default" },
+  { value: "full", label: "Send reasoning and signature" },
+  { value: "text", label: "Send reasoning without signature" },
+  { value: "omitted", label: "Don't send reasoning" },
+]
+
+const REASONING_KEY = "reasoning_history"
+
+function reasoningOf(capabilities: unknown): ReasoningHistory | "" {
+  if (typeof capabilities !== "object" || capabilities === null) return ""
+  const value = (capabilities as Record<string, unknown>)[REASONING_KEY]
+  return value === "full" || value === "text" || value === "omitted" ? value : ""
+}
+
+/**
+ * Sets the key without disturbing the rest of the blob — `capabilities` is a
+ * free-form column this form owns only one field of.
+ */
+function withReasoning(
+  capabilities: unknown,
+  reasoning: ReasoningHistory | "",
+): Record<string, unknown> {
+  const base =
+    typeof capabilities === "object" && capabilities !== null && !Array.isArray(capabilities)
+      ? { ...(capabilities as Record<string, unknown>) }
+      : {}
+  if (reasoning) base[REASONING_KEY] = reasoning
+  else delete base[REASONING_KEY]
+  return base
+}
+
 type FormState = {
   alias: string
   wire: Wire
@@ -43,6 +77,9 @@ type FormState = {
   base_url: string
   family: string
   credential_id: Uuid | ""
+  reasoning_history: ReasoningHistory | ""
+  /** Carried whole so saving one field doesn't drop the others. */
+  capabilities: unknown
 }
 
 const EMPTY_FORM: FormState = {
@@ -52,6 +89,8 @@ const EMPTY_FORM: FormState = {
   base_url: "",
   family: "",
   credential_id: "",
+  reasoning_history: "",
+  capabilities: {},
 }
 
 function formFromModel(model: ModelConfig): FormState {
@@ -62,6 +101,8 @@ function formFromModel(model: ModelConfig): FormState {
     base_url: model.base_url,
     family: model.family ?? "",
     credential_id: model.credential_id ?? "",
+    reasoning_history: reasoningOf(model.capabilities),
+    capabilities: model.capabilities,
   }
 }
 
@@ -73,6 +114,10 @@ function requestFromForm(form: FormState): CreateModelRequest {
     base_url: form.base_url.trim(),
     family: form.family.trim() ? form.family.trim() : null,
     credential_id: form.credential_id || null,
+    capabilities: withReasoning(
+      form.capabilities,
+      form.reasoning_history,
+    ) as CreateModelRequest["capabilities"],
   }
 }
 
@@ -356,6 +401,36 @@ function ModelFormDialog({
             onChange={(v) => setForm((f) => ({ ...f, family: v }))}
             placeholder="Optional"
           />
+
+          <div className="w-full">
+            <label
+              htmlFor="model-reasoning"
+              className="mb-1.5 block text-sm font-medium text-foreground/80"
+            >
+              Reasoning history
+            </label>
+            <select
+              id="model-reasoning"
+              value={form.reasoning_history}
+              onChange={(e) =>
+                setForm((f) => ({
+                  ...f,
+                  reasoning_history: e.target.value as ReasoningHistory | "",
+                }))
+              }
+              className="w-full rounded-lg border border-border bg-card px-3 py-2.5 text-[15px] text-foreground outline-none transition-colors hover:border-foreground/20 focus:border-primary focus:ring-4 focus:ring-primary/10"
+            >
+              {REASONING_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1.5 text-sm text-muted-foreground">
+              What this model gets back when an earlier answer of its own is replayed.
+              Some reject reasoning sent without its signature; others reject it entirely.
+            </p>
+          </div>
 
           <div className="w-full">
             <label htmlFor="model-credential" className="mb-1.5 block text-sm font-medium text-foreground/80">

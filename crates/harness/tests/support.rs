@@ -68,6 +68,7 @@ impl ModelClient for Scripted {
         let prefix = RenderedSpan {
             provider: "scripted".into(),
             model: request.model.clone(),
+            reasoning: reasoning(request),
             regions: [("messages".to_string(), messages_bytes)]
                 .into_iter()
                 .collect(),
@@ -168,6 +169,7 @@ impl ModelClient for Failing {
             prefix: RenderedSpan {
                 provider: "scripted".into(),
                 model: request.model.clone(),
+                reasoning: reasoning(request),
                 regions: Default::default(),
             },
         })
@@ -262,10 +264,21 @@ pub fn tool_call_reply(id: &str, name: &str, args_json: &str) -> Vec<Event> {
     ]
 }
 
+/// What a fake render records as the span's scope. No wire here has an
+/// opinion, so an unset request takes the same default the Anthropic wire
+/// does — the point is only that a span is scoped to the policy it was made
+/// under.
+fn reasoning(request: &Request) -> llm::ReasoningHistory {
+    request
+        .reasoning_history
+        .unwrap_or(llm::ReasoningHistory::Full)
+}
+
 pub fn grant(client: Arc<dyn ModelClient>) -> Grant {
     Grant {
         client,
         model: "test-model".into(),
+        reasoning_history: None,
         tools: Vec::new(),
         tool_invoker: None,
         commit_granted: true,

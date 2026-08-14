@@ -58,7 +58,9 @@ async fn create(
         return Err(AppError::BadRequest("label is required".into()));
     }
     if label.chars().count() > 100 {
-        return Err(AppError::BadRequest("label must be 100 characters or fewer".into()));
+        return Err(AppError::BadRequest(
+            "label must be 100 characters or fewer".into(),
+        ));
     }
 
     let key = input.key.trim();
@@ -66,11 +68,23 @@ async fn create(
         return Err(AppError::BadRequest("key is required".into()));
     }
 
-    let last_four: String = key.chars().rev().take(4).collect::<String>().chars().rev().collect();
+    let last_four: String = key
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
 
     let cred_id = Uuid::now_v7();
-    let (ciphertext, nonce) = encrypt_key(key.as_bytes(), state.master_key.as_bytes(), cred_id, user.id)
-        .map_err(|_| AppError::Internal)?;
+    let (ciphertext, nonce) = encrypt_key(
+        key.as_bytes(),
+        state.master_key.as_bytes(),
+        cred_id,
+        user.id,
+    )
+    .map_err(|_| AppError::Internal)?;
 
     let new_cred = NewCredential {
         id: cred_id,

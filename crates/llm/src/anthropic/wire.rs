@@ -12,11 +12,19 @@ use crate::error::Error;
 use crate::event::{BlockStart, Delta, Event};
 use crate::span::{RenderedRequest, RenderedSpan, append_element, split_span, wrap_array};
 use crate::types::{
-    ContentBlock, Effort, Message, Request, Role, StopDetails, StopReason, Thinking,
-    ThinkingDisplay, ToolChoice, UsageDelta, leading_system_run,
+    ContentBlock, Effort, Message, ReasoningHistory, Request, Role, StopDetails, StopReason,
+    Thinking, ThinkingDisplay, ToolChoice, UsageDelta, leading_system_run,
 };
 
 const PROVIDER: &str = "anthropic";
+
+/// What this wire does when a request expresses no preference.
+///
+/// Current Anthropic models verify the signature on a thinking block they are
+/// handed back and reject a turn whose reasoning was edited or dropped, so
+/// sending it back in full is the only default that keeps a thinking
+/// conversation working.
+pub const DEFAULT_REASONING: ReasoningHistory = ReasoningHistory::Full;
 
 /// Renders a [`Request`] to Anthropic's wire format.
 ///
@@ -25,7 +33,8 @@ const PROVIDER: &str = "anthropic";
 /// carry forward from a resumed [`crate::Turn::Span`] byte-for-byte — see
 /// `crate::span` for why that matters (H5).
 pub fn render(request: &Request) -> Result<RenderedRequest, Error> {
-    let (span, new_turns) = split_span(&request.messages, PROVIDER, &request.model)?;
+    let reasoning = request.reasoning_history.unwrap_or(DEFAULT_REASONING);
+    let (span, new_turns) = split_span(&request.messages, PROVIDER, &request.model, reasoning)?;
 
     let mut system_bytes = span
         .and_then(|span| span.regions.get("system"))
@@ -55,12 +64,19 @@ pub fn render(request: &Request) -> Result<RenderedRequest, Error> {
         );
     }
     for message in rest {
-        append_element(&mut messages_bytes, &message_to_json(message));
+        // A turn that renders to nothing is dropped rather than sent empty:
+        // reachable only when a reasoning-only assistant turn meets a policy
+        // that drops reasoning, and `content: []` is rejected outright.
+        match message_to_json(message, reasoning) {
+            Some(value) => append_element(&mut messages_bytes, &value),
+            None => continue,
+        }
     }
 
     let prefix = RenderedSpan {
         provider: PROVIDER.into(),
         model: request.model.clone(),
+        reasoning,
         regions: [
             ("system".to_string(), system_bytes.clone()),
             ("messages".to_string(), messages_bytes.clone()),
@@ -209,30 +225,50 @@ fn request_head(request: &Request) -> Map<String, Value> {
     body
 }
 
-fn message_to_json(message: &Message) -> Value {
-    json!({
+/// `None` when the policy leaves the turn with no content at all — see the
+/// call site in [`render`].
+fn message_to_json(message: &Message, reasoning: ReasoningHistory) -> Option<Value> {
+    let content: Vec<Value> = message
+        .content
+        .iter()
+        .filter_map(|block| block_to_json(block, reasoning))
+        .collect();
+
+    // Only a turn the policy emptied is dropped. A turn that arrived empty is
+    // rendered as it is and refused by the provider, the way it always was —
+    // swallowing it here would turn a caller's mistake into a silent one.
+    if content.is_empty() && !message.content.is_empty() {
+        return None;
+    }
+
+    Some(json!({
         "role": match message.role {
             Role::User => "user",
             Role::Assistant => "assistant",
             Role::System => "system",
         },
-        "content": Value::Array(message.content.iter().map(block_to_json).collect()),
-    })
+        "content": Value::Array(content),
+    }))
 }
 
-fn block_to_json(block: &ContentBlock) -> Value {
-    match block {
+/// `None` when the block has no wire form under `reasoning`.
+fn block_to_json(block: &ContentBlock, reasoning: ReasoningHistory) -> Option<Value> {
+    let value = match block {
         ContentBlock::Text { text } => json!({"type": "text", "text": text}),
         ContentBlock::Thinking {
             thinking,
             signature,
-        } => {
-            let mut value = json!({"type": "thinking", "thinking": thinking});
-            if let Some(signature) = signature {
-                value["signature"] = json!(signature);
+        } => match reasoning {
+            ReasoningHistory::Omitted => return None,
+            ReasoningHistory::Text => json!({"type": "thinking", "thinking": thinking}),
+            ReasoningHistory::Full => {
+                let mut value = json!({"type": "thinking", "thinking": thinking});
+                if let Some(signature) = signature {
+                    value["signature"] = json!(signature);
+                }
+                value
             }
-            value
-        }
+        },
         ContentBlock::ToolUse { id, name, input } => {
             json!({"type": "tool_use", "id": id, "name": name, "input": input})
         }
@@ -248,7 +284,8 @@ fn block_to_json(block: &ContentBlock) -> Value {
         }),
         // Echoed back exactly as it arrived — see the Unknown note on ContentBlock.
         ContentBlock::Unknown { raw } => raw.clone(),
-    }
+    };
+    Some(value)
 }
 
 /// Maps one SSE frame to a neutral event.
@@ -457,6 +494,105 @@ mod tests {
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[1]["role"], "system");
+    }
+
+    #[test]
+    fn reasoning_goes_back_whole_by_default() {
+        let mut request = request();
+        push(
+            &mut request,
+            Message::assistant(vec![
+                ContentBlock::Thinking {
+                    thinking: "hmm".into(),
+                    signature: Some("sig".into()),
+                },
+                ContentBlock::text("done"),
+            ]),
+        );
+        push(&mut request, Message::user("and again"));
+        let body = request_body(&request);
+
+        let blocks = &body["messages"][1]["content"];
+        assert_eq!(blocks[0]["thinking"], json!("hmm"));
+        assert_eq!(blocks[0]["signature"], json!("sig"));
+    }
+
+    #[test]
+    fn text_only_reasoning_leaves_the_signature_behind() {
+        let mut request = request();
+        request.reasoning_history = Some(ReasoningHistory::Text);
+        push(
+            &mut request,
+            Message::assistant(vec![
+                ContentBlock::Thinking {
+                    thinking: "hmm".into(),
+                    signature: Some("sig".into()),
+                },
+                ContentBlock::text("done"),
+            ]),
+        );
+        push(&mut request, Message::user("and again"));
+        let body = request_body(&request);
+
+        let blocks = &body["messages"][1]["content"];
+        assert_eq!(blocks[0]["thinking"], json!("hmm"));
+        assert!(blocks[0].get("signature").is_none());
+    }
+
+    #[test]
+    fn omitted_reasoning_leaves_the_rest_of_the_turn_intact() {
+        let mut request = request();
+        request.reasoning_history = Some(ReasoningHistory::Omitted);
+        push(
+            &mut request,
+            Message::assistant(vec![
+                ContentBlock::Thinking {
+                    thinking: "hmm".into(),
+                    signature: Some("sig".into()),
+                },
+                ContentBlock::text("done"),
+            ]),
+        );
+        push(&mut request, Message::user("and again"));
+        let body = request_body(&request);
+
+        let blocks = body["messages"][1]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["text"], json!("done"));
+    }
+
+    #[test]
+    fn a_turn_left_empty_by_the_policy_is_dropped_rather_than_sent() {
+        // Reachable when a reasoning model runs out of tokens before writing
+        // anything: `content: []` is rejected outright, so the turn goes.
+        let mut request = request();
+        request.reasoning_history = Some(ReasoningHistory::Omitted);
+        push(
+            &mut request,
+            Message::assistant(vec![ContentBlock::Thinking {
+                thinking: "hmm".into(),
+                signature: Some("sig".into()),
+            }]),
+        );
+        push(&mut request, Message::user("and again"));
+        let body = request_body(&request);
+
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1]["content"][0]["text"], json!("and again"));
+    }
+
+    #[test]
+    fn a_turn_that_arrived_empty_is_still_sent_as_it_is() {
+        // Not this feature's business: an empty turn is a caller's mistake,
+        // and the provider's refusal is how it has always been reported.
+        let mut request = request();
+        push(&mut request, Message::assistant(Vec::new()));
+        let body = request_body(&request);
+
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1]["content"], json!([]));
     }
 
     #[test]

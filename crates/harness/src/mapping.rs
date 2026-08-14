@@ -178,7 +178,11 @@ impl From<Message> for llm::Message {
     fn from(message: Message) -> Self {
         llm::Message {
             role: message.role.into(),
-            content: message.content.into_iter().map(ContentBlock::from).collect(),
+            content: message
+                .content
+                .into_iter()
+                .map(ContentBlock::from)
+                .collect(),
         }
     }
 }
@@ -493,9 +497,9 @@ impl From<llm::Delta> for Delta {
         match delta {
             llm::Delta::Text { content } => Delta::Text { text: content },
             llm::Delta::Thinking { content } => Delta::Thinking { thinking: content },
-            llm::Delta::ThinkingSignature { content } => Delta::ThinkingSignature {
-                signature: content,
-            },
+            llm::Delta::ThinkingSignature { content } => {
+                Delta::ThinkingSignature { signature: content }
+            }
             llm::Delta::ToolInputJson { content } => Delta::ToolInputJson {
                 partial_json: content,
             },
@@ -870,7 +874,10 @@ impl From<&llm::Error> for HarnessErrorInfo {
                 status: None,
                 request_id: None,
             },
-            llm::Error::SpanScope { .. } => HarnessErrorInfo {
+            // The same kind as `SpanScope`: a span rendered under another
+            // reasoning policy is out of scope for the same reason and asks
+            // the same thing of a harness. The message names which part drifted.
+            llm::Error::SpanScope { .. } | llm::Error::SpanReasoning { .. } => HarnessErrorInfo {
                 kind: "span_scope",
                 message: error.to_string(),
                 transient: false,
@@ -912,9 +919,7 @@ mod tests {
     #[test]
     fn every_delta_variant_serializes() {
         let deltas = [
-            Delta::Text {
-                text: "hi".into(),
-            },
+            Delta::Text { text: "hi".into() },
             Delta::Thinking {
                 thinking: "hmm".into(),
             },

@@ -29,6 +29,7 @@ async fn main() {
     let grant = Grant {
         client: Arc::new(client),
         model: llm::anthropic::DEFAULT_MODEL.to_string(),
+        reasoning_history: None,
         tools: Vec::new(),
         tool_invoker: None,
         commit_granted: true,

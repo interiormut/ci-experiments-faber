@@ -141,7 +141,9 @@ pub fn check(
             return Err(Refusal::ScaffoldMismatch { component: "tools" });
         }
         if scaffold_now.system != scaffold_run.system {
-            return Err(Refusal::ScaffoldMismatch { component: "system" });
+            return Err(Refusal::ScaffoldMismatch {
+                component: "system",
+            });
         }
         if scaffold_now.model != scaffold_run.model {
             return Err(Refusal::ScaffoldMismatch { component: "model" });
@@ -298,9 +300,15 @@ mod tests {
             model: scaffold::model_hash("anthropic", "claude"),
         };
         let supplied = [WireTurn::Ref(MessageRef { id: "m0".into() })];
-        let error =
-            check(&supplied, &lineage(), &[], "anthropic", "a-different-model", &scaffold_run)
-                .unwrap_err();
+        let error = check(
+            &supplied,
+            &lineage(),
+            &[],
+            "anthropic",
+            "a-different-model",
+            &scaffold_run,
+        )
+        .unwrap_err();
         assert!(matches!(
             error,
             Refusal::ScaffoldMismatch { component: "model" }

@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use harness::{HarnessRun, Interrupter, Seed};
 use llm::{
-    BlockStart, Delta, Event, EventStream, ModelClient, RenderedRequest,
-    RenderedSpan, Request, ToolDef, UsageDelta,
+    BlockStart, Delta, Event, EventStream, ModelClient, RenderedRequest, RenderedSpan, Request,
+    ToolDef, UsageDelta,
 };
 use serde_json::{Value, json};
 use support::{grant, input};
@@ -35,6 +35,9 @@ impl ModelClient for Stalling {
             prefix: RenderedSpan {
                 provider: "scripted".into(),
                 model: request.model.clone(),
+                reasoning: request
+                    .reasoning_history
+                    .unwrap_or(llm::ReasoningHistory::Full),
                 regions: Default::default(),
             },
         })
@@ -228,9 +231,7 @@ fn a_stop_during_a_tool_call_abandons_it() {
         input_schema: json!({ "type": "object" }),
     }];
     // A tool that never returns: without a stop, this run does not end.
-    grant.tool_invoker = Some(Arc::new(|_name, _input| {
-        Box::pin(std::future::pending())
-    }));
+    grant.tool_invoker = Some(Arc::new(|_name, _input| Box::pin(std::future::pending())));
 
     let run = HarnessRun::start(TOOL_USING.to_string(), Vec::new(), grant, Seed::default());
     let (events, outcome) =
@@ -258,11 +259,8 @@ fn a_run_stopped_before_it_starts_never_reaches_the_provider() {
     // the isolate has to behave if it doesn't, and the refusal lands at
     // `llm.stream(...)` where nothing has been sent yet.
     let run = HarnessRun::start(CATCHING.to_string(), input("hi"), grant, Seed::default());
-    let (events, outcome) = drain_interrupting_at_first_event(
-        run,
-        interrupter.clone(),
-        Duration::from_secs(10),
-    );
+    let (events, outcome) =
+        drain_interrupting_at_first_event(run, interrupter.clone(), Duration::from_secs(10));
     outcome.expect("a refusal at open is an ordinary failure, not a broken run");
 
     assert_eq!(

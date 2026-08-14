@@ -34,7 +34,13 @@ pub fn encrypt_key(
 
     let aad = format!("credential:{cred_id}:{user_id}");
     let ciphertext = cipher
-        .encrypt(&nonce, Payload { msg: plaintext, aad: aad.as_bytes() })
+        .encrypt(
+            &nonce,
+            Payload {
+                msg: plaintext,
+                aad: aad.as_bytes(),
+            },
+        )
         .map_err(|_| CryptoError::Encrypt)?;
 
     Ok((ciphertext, nonce_bytes.to_vec()))
@@ -55,6 +61,12 @@ pub fn decrypt_key(
 
     let aad = format!("credential:{cred_id}:{user_id}");
     cipher
-        .decrypt(&nonce, Payload { msg: ciphertext, aad: aad.as_bytes() })
+        .decrypt(
+            &nonce,
+            Payload {
+                msg: ciphertext,
+                aad: aad.as_bytes(),
+            },
+        )
         .map_err(|_| CryptoError::Decrypt)
 }

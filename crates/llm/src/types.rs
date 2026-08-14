@@ -191,6 +191,30 @@ pub enum Thinking {
     Disabled,
 }
 
+/// How much of an assistant turn's reasoning goes back to the provider when
+/// that turn is replayed as history.
+///
+/// Providers disagree, and not only across wires: one endpoint verifies a
+/// signature and rejects reasoning without it, the next rejects reasoning
+/// altogether, and a third accepts either. That is a property of the model
+/// behind the URL, not of the wire, so it is a setting rather than something
+/// this crate decides. Left unset on a [`Request`], each wire keeps the
+/// behaviour it has always had — see [`crate::anthropic::DEFAULT_REASONING`]
+/// and [`crate::openai::DEFAULT_REASONING`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningHistory {
+    /// Reasoning text and its signature both go back, verbatim. What a model
+    /// that verifies its own reasoning requires.
+    Full,
+    /// Reasoning text goes back; the signature does not. On a wire with no
+    /// signature field this is indistinguishable from [`Self::Full`].
+    Text,
+    /// No reasoning goes back. Thinking blocks are dropped from the rendered
+    /// history; an assistant turn left with nothing else is dropped whole.
+    Omitted,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThinkingDisplay {
@@ -244,6 +268,9 @@ pub struct Request {
     pub tool_choice: Option<ToolChoice>,
     pub thinking: Option<Thinking>,
     pub effort: Option<Effort>,
+    /// How much of a replayed assistant turn's reasoning to send back.
+    /// `None` leaves it to the wire module's default.
+    pub reasoning_history: Option<ReasoningHistory>,
     pub sampling: Sampling,
     pub stop_sequences: Vec<String>,
     /// Fields merged into the request body verbatim, for provider features
@@ -267,6 +294,7 @@ impl Request {
             tool_choice: None,
             thinking: None,
             effort: None,
+            reasoning_history: None,
             sampling: Sampling::default(),
             stop_sequences: Vec::new(),
             extra: serde_json::Map::new(),

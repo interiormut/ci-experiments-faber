@@ -181,10 +181,9 @@ impl Accumulator {
                 };
                 match (block, delta) {
                     (PartialBlock::Text(text), Delta::Text { content }) => text.push_str(content),
-                    (
-                        PartialBlock::Thinking { thinking, .. },
-                        Delta::Thinking { content },
-                    ) => thinking.push_str(content),
+                    (PartialBlock::Thinking { thinking, .. }, Delta::Thinking { content }) => {
+                        thinking.push_str(content)
+                    }
                     (
                         PartialBlock::Thinking { signature, .. },
                         Delta::ThinkingSignature { content },

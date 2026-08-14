@@ -6,11 +6,11 @@
 //! else. No filesystem, no network, no other harness's code.
 
 use deno_core::error::ModuleLoaderError;
-use deno_error::JsErrorBox;
 use deno_core::{
     ModuleLoadOptions, ModuleLoadReferrer, ModuleLoadResponse, ModuleLoader, ModuleResolveResponse,
     ModuleSource, ModuleSourceCode, ModuleSpecifier, ModuleType, ResolutionKind,
 };
+use deno_error::JsErrorBox;
 
 pub const HARNESS_SPECIFIER: &str = "harness:main";
 // Deliberately not an `ext:` specifier: deno_core only allows `ext:` modules

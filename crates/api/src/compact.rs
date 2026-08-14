@@ -160,12 +160,7 @@ impl Compactor {
                 name: string_at(block, "name"),
                 json: String::new(),
             },
-            _ => PartialBlock::Unknown(
-                block
-                    .get("raw")
-                    .cloned()
-                    .unwrap_or_else(|| block.clone()),
-            ),
+            _ => PartialBlock::Unknown(block.get("raw").cloned().unwrap_or_else(|| block.clone())),
         };
 
         // A `block_start` with no `message_start` ahead of it still carries
@@ -310,8 +305,14 @@ mod tests {
 
     fn text_message(fragments: &[&str]) -> Vec<(&'static str, Value)> {
         let mut events = vec![
-            ("message_start", json!({"id": "m", "model": "x", "usage": {}})),
-            ("block_start", json!({"index": 0, "block": {"type": "text"}})),
+            (
+                "message_start",
+                json!({"id": "m", "model": "x", "usage": {}}),
+            ),
+            (
+                "block_start",
+                json!({"index": 0, "block": {"type": "text"}}),
+            ),
         ];
         for fragment in fragments {
             events.push((
@@ -401,8 +402,14 @@ mod tests {
         // shape for. Closing the message around it would store one generation
         // as several.
         let mut events = vec![
-            ("message_start", json!({"id": "m", "model": "x", "usage": {}})),
-            ("block_start", json!({"index": 0, "block": {"type": "text"}})),
+            (
+                "message_start",
+                json!({"id": "m", "model": "x", "usage": {}}),
+            ),
+            (
+                "block_start",
+                json!({"index": 0, "block": {"type": "text"}}),
+            ),
             (
                 "block_delta",
                 json!({"index": 0, "delta": {"type": "text", "text": "one "}}),
@@ -423,7 +430,10 @@ mod tests {
 
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].0, "unknown", "kept, and kept where it arrived");
-        assert_eq!(rows[1].1["content"], json!([{"type": "text", "text": "one message"}]));
+        assert_eq!(
+            rows[1].1["content"],
+            json!([{"type": "text", "text": "one message"}])
+        );
     }
 
     #[test]
@@ -434,14 +444,20 @@ mod tests {
         let (kind, payload) = &rows[0];
         assert_eq!(kind, KIND_MESSAGE);
         assert_eq!(payload["role"], json!("assistant"));
-        assert_eq!(payload["content"], json!([{"type": "text", "text": "Hello, world"}]));
+        assert_eq!(
+            payload["content"],
+            json!([{"type": "text", "text": "Hello, world"}])
+        );
         assert_eq!(payload["stopReason"], json!({"type": "end_turn"}));
     }
 
     #[test]
     fn tool_arguments_fold_into_the_call_they_belong_to() {
         let rows = persisted(&[
-            ("message_start", json!({"id": "m", "model": "x", "usage": {}})),
+            (
+                "message_start",
+                json!({"id": "m", "model": "x", "usage": {}}),
+            ),
             (
                 "block_start",
                 json!({"index": 0, "block": {"type": "tool_use", "id": "t1", "name": "grep"}}),
@@ -470,7 +486,10 @@ mod tests {
         // Losing the tool call is already the cost of a truncated stream;
         // losing the message it was part of would be a second one.
         let rows = persisted(&[
-            ("message_start", json!({"id": "m", "model": "x", "usage": {}})),
+            (
+                "message_start",
+                json!({"id": "m", "model": "x", "usage": {}}),
+            ),
             (
                 "block_start",
                 json!({"index": 0, "block": {"type": "tool_use", "id": "t1", "name": "grep"}}),
@@ -488,7 +507,10 @@ mod tests {
     #[test]
     fn an_empty_argument_call_gets_an_empty_object() {
         let rows = persisted(&[
-            ("message_start", json!({"id": "m", "model": "x", "usage": {}})),
+            (
+                "message_start",
+                json!({"id": "m", "model": "x", "usage": {}}),
+            ),
             (
                 "block_start",
                 json!({"index": 0, "block": {"type": "tool_use", "id": "t1", "name": "now"}}),
@@ -519,18 +541,30 @@ mod tests {
         // Ordering, not tidiness: a compacted message published *after* an
         // event that followed it would replay out of order.
         let rows = persisted(&[
-            ("message_start", json!({"id": "m", "model": "x", "usage": {}})),
-            ("block_start", json!({"index": 0, "block": {"type": "text"}})),
+            (
+                "message_start",
+                json!({"id": "m", "model": "x", "usage": {}}),
+            ),
+            (
+                "block_start",
+                json!({"index": 0, "block": {"type": "text"}}),
+            ),
             (
                 "block_delta",
                 json!({"index": 0, "delta": {"type": "text", "text": "hi"}}),
             ),
-            ("note", json!({"type": "note", "text": "something the harness invented"})),
+            (
+                "note",
+                json!({"type": "note", "text": "something the harness invented"}),
+            ),
         ]);
 
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].0, KIND_MESSAGE);
-        assert_eq!(rows[0].1["content"], json!([{"type": "text", "text": "hi"}]));
+        assert_eq!(
+            rows[0].1["content"],
+            json!([{"type": "text", "text": "hi"}])
+        );
         assert_eq!(rows[1].0, "note");
     }
 
@@ -548,8 +582,14 @@ mod tests {
     #[test]
     fn a_message_left_open_by_a_broken_stream_is_still_persisted() {
         let rows = persisted(&[
-            ("message_start", json!({"id": "m", "model": "x", "usage": {}})),
-            ("block_start", json!({"index": 0, "block": {"type": "text"}})),
+            (
+                "message_start",
+                json!({"id": "m", "model": "x", "usage": {}}),
+            ),
+            (
+                "block_start",
+                json!({"index": 0, "block": {"type": "text"}}),
+            ),
             (
                 "block_delta",
                 json!({"index": 0, "delta": {"type": "text", "text": "half a th"}}),
@@ -557,14 +597,23 @@ mod tests {
         ]);
 
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].1["content"], json!([{"type": "text", "text": "half a th"}]));
+        assert_eq!(
+            rows[0].1["content"],
+            json!([{"type": "text", "text": "half a th"}])
+        );
     }
 
     #[test]
     fn a_skipped_index_leaves_no_block_behind() {
         let rows = persisted(&[
-            ("message_start", json!({"id": "m", "model": "x", "usage": {}})),
-            ("block_start", json!({"index": 2, "block": {"type": "text"}})),
+            (
+                "message_start",
+                json!({"id": "m", "model": "x", "usage": {}}),
+            ),
+            (
+                "block_start",
+                json!({"index": 2, "block": {"type": "text"}}),
+            ),
             (
                 "block_delta",
                 json!({"index": 2, "delta": {"type": "text", "text": "hi"}}),
@@ -572,14 +621,23 @@ mod tests {
             ("message_stop", json!({})),
         ]);
 
-        assert_eq!(rows[0].1["content"], json!([{"type": "text", "text": "hi"}]));
+        assert_eq!(
+            rows[0].1["content"],
+            json!([{"type": "text", "text": "hi"}])
+        );
     }
 
     #[test]
     fn thinking_keeps_its_signature() {
         let rows = persisted(&[
-            ("message_start", json!({"id": "m", "model": "x", "usage": {}})),
-            ("block_start", json!({"index": 0, "block": {"type": "thinking"}})),
+            (
+                "message_start",
+                json!({"id": "m", "model": "x", "usage": {}}),
+            ),
+            (
+                "block_start",
+                json!({"index": 0, "block": {"type": "thinking"}}),
+            ),
             (
                 "block_delta",
                 json!({"index": 0, "delta": {"type": "thinking", "thinking": "hmm"}}),
@@ -600,7 +658,10 @@ mod tests {
     #[test]
     fn a_message_that_carried_nothing_is_not_recorded() {
         let rows = persisted(&[
-            ("message_start", json!({"id": "m", "model": "x", "usage": {}})),
+            (
+                "message_start",
+                json!({"id": "m", "model": "x", "usage": {}}),
+            ),
             ("message_stop", json!({})),
         ]);
 

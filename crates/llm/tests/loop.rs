@@ -50,6 +50,9 @@ impl ModelClient for Scripted {
             prefix: RenderedSpan {
                 provider: "scripted".into(),
                 model: request.model.clone(),
+                reasoning: request
+                    .reasoning_history
+                    .unwrap_or(llm::ReasoningHistory::Full),
                 regions: Default::default(),
             },
         })

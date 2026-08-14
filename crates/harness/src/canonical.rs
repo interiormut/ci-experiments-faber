@@ -17,8 +17,10 @@ pub fn canonical_json(value: &Value) -> String {
 fn normalize(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
-            let mut entries: Vec<(String, Value)> =
-                map.iter().map(|(key, value)| (key.clone(), normalize(value))).collect();
+            let mut entries: Vec<(String, Value)> = map
+                .iter()
+                .map(|(key, value)| (key.clone(), normalize(value)))
+                .collect();
             entries.sort_by(|a, b| a.0.cmp(&b.0));
             Value::Object(entries.into_iter().collect())
         }

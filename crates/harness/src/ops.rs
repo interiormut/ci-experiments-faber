@@ -195,7 +195,10 @@ pub fn op_llm_stream_open(
         .clone()
         .map(llm::ToolChoice::from)
         .or_else(|| baseline.tool_choice.clone());
-    let thinking = request.thinking.map(llm::Thinking::from).or(baseline.thinking);
+    let thinking = request
+        .thinking
+        .map(llm::Thinking::from)
+        .or(baseline.thinking);
     let effort = request.effort.map(llm::Effort::from).or(baseline.effort);
     let sampling = request
         .sampling
@@ -220,13 +223,11 @@ pub fn op_llm_stream_open(
     let mut llm_messages = Vec::with_capacity(sent_turns.len());
     for turn in &sent_turns {
         let message = match turn {
-            SentTurn::Ref { id } => {
-                harness
-                    .resolve(id)
-                    .expect("validate::check only ever returns ids it resolved against this lineage")
-                    .1
-                    .clone()
-            }
+            SentTurn::Ref { id } => harness
+                .resolve(id)
+                .expect("validate::check only ever returns ids it resolved against this lineage")
+                .1
+                .clone(),
             SentTurn::Value(message) => message.clone(),
         };
         llm_messages.push(llm::Turn::Value(message));
@@ -239,6 +240,7 @@ pub fn op_llm_stream_open(
     llm_request.tool_choice = tool_choice.clone();
     llm_request.thinking = thinking;
     llm_request.effort = effort;
+    llm_request.reasoning_history = harness.grant.reasoning_history;
     llm_request.sampling = sampling.unwrap_or_default();
     llm_request.stop_sequences = stop_sequences.clone().unwrap_or_default();
     llm_request.extra = extra.clone().unwrap_or_default();
@@ -305,7 +307,10 @@ async fn advance(
 ) -> Result<Option<LLMEvent>, OpError> {
     let (mut inner, mut accumulator, sent) = {
         let mut state = harness.borrow_mut();
-        let slot = state.streams.remove(&rid).ok_or(OpError::UnknownStream { rid })?;
+        let slot = state
+            .streams
+            .remove(&rid)
+            .ok_or(OpError::UnknownStream { rid })?;
         match slot {
             // Another `advance()` for this rid is between removing its slot
             // and re-inserting it (i.e. mid-`.await`). Put the marker back
@@ -329,15 +334,28 @@ async fn advance(
                 (inner, accumulator, sent)
             }
             StreamSlot::Done { sent, completion } => {
-                state.streams.insert(rid, StreamSlot::Done { sent, completion });
+                state
+                    .streams
+                    .insert(rid, StreamSlot::Done { sent, completion });
                 return Ok(None);
             }
             // Re-polling an already-failed stream returns its *original*
             // failure, not a misleading "unknown stream" — `Call.completion`
             // on a call that broke mid-iteration must see the real reason.
-            StreamSlot::Failed { sent, partial, error } => {
+            StreamSlot::Failed {
+                sent,
+                partial,
+                error,
+            } => {
                 let info = error.clone();
-                state.streams.insert(rid, StreamSlot::Failed { sent, partial, error });
+                state.streams.insert(
+                    rid,
+                    StreamSlot::Failed {
+                        sent,
+                        partial,
+                        error,
+                    },
+                );
                 return Err(info.into());
             }
         }
@@ -379,7 +397,9 @@ async fn advance(
         }
         let _ = state.frames_tx.send(CoreEvent::FrameStop {
             frame,
-            outcome: Outcome::Failed { error: info.clone() },
+            outcome: Outcome::Failed {
+                error: info.clone(),
+            },
         });
         state.streams.insert(
             rid,
@@ -426,9 +446,18 @@ async fn advance(
             }
             let _ = state.frames_tx.send(CoreEvent::FrameStop {
                 frame: frame.clone(),
-                outcome: Outcome::Failed { error: info.clone() },
+                outcome: Outcome::Failed {
+                    error: info.clone(),
+                },
             });
-            state.streams.insert(rid, StreamSlot::Failed { sent, partial, error: info.clone() });
+            state.streams.insert(
+                rid,
+                StreamSlot::Failed {
+                    sent,
+                    partial,
+                    error: info.clone(),
+                },
+            );
             Err(info.into())
         }
         None => {
@@ -443,7 +472,9 @@ async fn advance(
                         frame,
                         outcome: Outcome::Ok,
                     });
-                    state.streams.insert(rid, StreamSlot::Done { sent, completion });
+                    state
+                        .streams
+                        .insert(rid, StreamSlot::Done { sent, completion });
                     Ok(None)
                 }
                 Err(error) => {
@@ -454,9 +485,18 @@ async fn advance(
                     let info = HarnessErrorInfo::from(&error);
                     let _ = state.frames_tx.send(CoreEvent::FrameStop {
                         frame,
-                        outcome: Outcome::Failed { error: info.clone() },
+                        outcome: Outcome::Failed {
+                            error: info.clone(),
+                        },
                     });
-                    state.streams.insert(rid, StreamSlot::Failed { sent, partial: None, error: info.clone() });
+                    state.streams.insert(
+                        rid,
+                        StreamSlot::Failed {
+                            sent,
+                            partial: None,
+                            error: info.clone(),
+                        },
+                    );
                     Err(info.into())
                 }
             }
@@ -564,8 +604,19 @@ pub async fn op_commit(
             partial: Some(completion),
             ..
         } if options.partial => (sent, completion),
-        StreamSlot::Failed { sent, partial, error } => {
-            harness.streams.insert(rid, StreamSlot::Failed { sent, partial, error });
+        StreamSlot::Failed {
+            sent,
+            partial,
+            error,
+        } => {
+            harness.streams.insert(
+                rid,
+                StreamSlot::Failed {
+                    sent,
+                    partial,
+                    error,
+                },
+            );
             return Err(OpError::from(&Refusal::IncompleteCompletion));
         }
         // Unreachable after the drain loop above (it only exits once the

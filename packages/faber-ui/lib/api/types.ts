@@ -62,6 +62,16 @@ export interface CreateCredentialRequest {
 /** Provider protocol the model speaks. */
 export type Wire = "openai" | "anthropic"
 
+/**
+ * How much of a replayed assistant turn's reasoning goes back to the provider.
+ *
+ * Lives under `capabilities.reasoning_history`; omitting it leaves the wire's
+ * own default (Anthropic sends reasoning back whole, OpenAI drops it).
+ * `"full"` sends the reasoning and its signature, `"text"` the reasoning
+ * without the signature, `"omitted"` neither.
+ */
+export type ReasoningHistory = "full" | "text" | "omitted"
+
 export interface ModelConfig {
   id: Uuid
   alias: string

@@ -14,7 +14,10 @@ use uuid::Uuid;
 use crate::{
     auth::AuthUser,
     error::{ApiResult, AppError},
-    models::model_config::{ModelConfig, NewModelConfig, UpdateModelConfig, Wire},
+    models::model_config::{
+        ModelConfig, NewModelConfig, REASONING_HISTORY_KEY, UpdateModelConfig, Wire,
+        parse_reasoning_history,
+    },
     routes::deserialize_optional_field,
     schema::{credentials, models},
     state::AppState,
@@ -84,12 +87,27 @@ fn model_response(m: &ModelConfig) -> ModelResponse {
     }
 }
 
+/// Rejects a `capabilities` blob whose reasoning-history setting is not one
+/// this service understands.
+///
+/// Checked here rather than at run time: a typo that quietly means "the wire
+/// default" is a setting the user believes they made and cannot see fail.
+fn validate_capabilities(capabilities: &Value) -> Result<(), AppError> {
+    let Some(value) = capabilities.get(REASONING_HISTORY_KEY) else {
+        return Ok(());
+    };
+    parse_reasoning_history(value).map_err(AppError::BadRequest)?;
+    Ok(())
+}
+
 fn validate_alias(alias: &str) -> Result<(), AppError> {
     if alias.is_empty() {
         return Err(AppError::BadRequest("alias is required".into()));
     }
     if alias.chars().count() > 100 {
-        return Err(AppError::BadRequest("alias must be 100 characters or fewer".into()));
+        return Err(AppError::BadRequest(
+            "alias must be 100 characters or fewer".into(),
+        ));
     }
     Ok(())
 }
@@ -108,6 +126,8 @@ async fn create(
     if input.wire_id.trim().is_empty() {
         return Err(AppError::BadRequest("wire_id is required".into()));
     }
+
+    validate_capabilities(&input.capabilities)?;
 
     let wire_str = input.wire.as_str();
 
@@ -193,6 +213,10 @@ async fn update(
         if wire_id.trim().is_empty() {
             return Err(AppError::BadRequest("wire_id cannot be empty".into()));
         }
+    }
+
+    if let Some(capabilities) = &input.capabilities {
+        validate_capabilities(capabilities)?;
     }
 
     let mut conn = state.db.get().await?;

@@ -47,6 +47,35 @@ pub struct ModelConfig {
     pub created_at: DateTime<Utc>,
 }
 
+/// The key under `capabilities` that carries the reasoning-history policy.
+pub const REASONING_HISTORY_KEY: &str = "reasoning_history";
+
+impl ModelConfig {
+    /// How much of a replayed assistant turn's reasoning this model wants back.
+    ///
+    /// `None` means the row says nothing and the wire's own default applies —
+    /// which is also the answer for a row written before this setting existed.
+    /// The value is validated when the row is written (see `routes::models`),
+    /// so anything unreadable here is a row that went around the API, and
+    /// falling back to the wire default beats refusing to run.
+    pub fn reasoning_history(&self) -> Option<llm::ReasoningHistory> {
+        parse_reasoning_history(self.capabilities.get(REASONING_HISTORY_KEY)?).ok()?
+    }
+}
+
+/// Reads a `capabilities.reasoning_history` value, naming what is wrong with
+/// it rather than falling back — the write path wants the complaint.
+pub fn parse_reasoning_history(value: &Value) -> Result<Option<llm::ReasoningHistory>, String> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    serde_json::from_value(value.clone())
+        .map(Some)
+        .map_err(|_| {
+            format!("{REASONING_HISTORY_KEY} must be one of \"full\", \"text\", or \"omitted\"")
+        })
+}
+
 #[derive(Insertable)]
 #[diesel(table_name = models)]
 pub struct NewModelConfig<'a> {
@@ -96,4 +125,73 @@ pub struct Capabilities {
     pub streaming: bool,
     #[serde(default)]
     pub vision: bool,
+    /// See [`ModelConfig::reasoning_history`] — that reader is the one the run
+    /// path uses, since it has to answer for a row that carries nothing here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_history: Option<llm::ReasoningHistory>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn config(capabilities: Value) -> ModelConfig {
+        ModelConfig {
+            id: Uuid::nil(),
+            user_id: Uuid::nil(),
+            alias: "fast".into(),
+            base_url: "https://api.anthropic.com".into(),
+            wire: "anthropic".into(),
+            wire_id: "claude-opus-5".into(),
+            family: None,
+            credential_id: None,
+            params: json!({}),
+            capabilities,
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn a_row_that_says_nothing_leaves_the_wire_its_default() {
+        assert!(config(json!({})).reasoning_history().is_none());
+        assert!(config(json!(null)).reasoning_history().is_none());
+    }
+
+    #[test]
+    fn each_setting_reaches_the_run_as_itself() {
+        for (written, expected) in [
+            ("full", llm::ReasoningHistory::Full),
+            ("text", llm::ReasoningHistory::Text),
+            ("omitted", llm::ReasoningHistory::Omitted),
+        ] {
+            let config = config(json!({ REASONING_HISTORY_KEY: written }));
+            assert_eq!(config.reasoning_history(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn a_row_written_around_the_api_falls_back_rather_than_failing_the_run() {
+        // The write path refuses this value; a row carrying it anyway came
+        // from somewhere else, and the wire default beats refusing to run.
+        let config = config(json!({ REASONING_HISTORY_KEY: "sometimes" }));
+        assert!(config.reasoning_history().is_none());
+    }
+
+    #[test]
+    fn the_write_path_gets_told_what_is_wrong_with_the_value() {
+        assert!(parse_reasoning_history(&json!("sometimes")).is_err());
+        assert!(parse_reasoning_history(&json!(true)).is_err());
+        assert_eq!(parse_reasoning_history(&json!(null)), Ok(None));
+    }
+
+    #[test]
+    fn other_capabilities_are_left_alone() {
+        let config = config(json!({"context_window": 200000, REASONING_HISTORY_KEY: "text"}));
+        assert_eq!(
+            config.reasoning_history(),
+            Some(llm::ReasoningHistory::Text)
+        );
+        assert_eq!(config.capabilities["context_window"], json!(200000));
+    }
 }
