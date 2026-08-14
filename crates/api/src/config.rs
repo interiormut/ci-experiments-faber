@@ -19,6 +19,8 @@ pub struct Config {
     /// One SearXNG instance to search through. Set it and every run gets the
     /// `search` tool; leave it unset and no run does.
     pub searxng_url: Option<String>,
+    /// Parallel Search API key. Used when no named SearXNG instance is set.
+    pub parallel_api_key: Option<String>,
     /// Search the public SearXNG network instead of one named instance.
     /// Ignored when `searxng_url` is set — an instance the operator named is
     /// a more specific answer than a pool discovered at boot.
@@ -61,6 +63,9 @@ impl Config {
                 })
                 .unwrap_or_default(),
             searxng_url: env::var("SEARXNG_URL")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+            parallel_api_key: env::var("PARALLEL_API_KEY")
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
             search_public_network: env::var("SEARCH_PUBLIC_NETWORK")

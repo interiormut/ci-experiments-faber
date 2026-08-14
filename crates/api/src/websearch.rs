@@ -13,7 +13,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use search::{SearchEngine, public, searxng};
+use search::{SearchEngine, parallel, public, searxng};
 
 use crate::config::Config;
 
@@ -51,6 +51,23 @@ pub async fn build_engine(config: &Config) -> Option<Arc<dyn SearchEngine>> {
             }
             Err(error) => {
                 tracing::error!(%url, %error, "could not build a search client; search is disabled");
+                None
+            }
+        };
+    }
+
+    if let Some(api_key) = &config.parallel_api_key {
+        let mut settings = parallel::Config::new(api_key);
+        if let Some(proxy) = &config.search_proxy {
+            settings = settings.with_proxy(proxy.clone());
+        }
+        return match parallel::Parallel::new(settings) {
+            Ok(engine) => {
+                tracing::info!("search: Parallel");
+                Some(Arc::new(engine))
+            }
+            Err(error) => {
+                tracing::error!(%error, "could not build Parallel search client; search is disabled");
                 None
             }
         };

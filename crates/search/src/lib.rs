@@ -1,13 +1,14 @@
 //! Web search for Faber's core.
 //!
 //! One trait — [`SearchEngine`] — turns a provider-neutral [`Query`] into
-//! [`Results`], and two providers implement it:
+//! [`Results`], and providers implement it:
 //!
 //! - [`searxng::SearxNg`] talks to **one** SearXNG instance you name. Bring
 //!   your own, or point it at an instance you trust.
 //! - [`public::PublicSearxNg`] talks to the **public instance network**,
 //!   discovered from `searx.space`, spreading queries across many instances so
 //!   no one of them is leaned on.
+//! - [`parallel::Parallel`] talks to Parallel's hosted search API.
 //!
 //! Deliberately absent, as in [`llm`](../llm/index.html):
 //!
@@ -75,6 +76,7 @@ mod endpoint;
 mod engine;
 mod error;
 mod http;
+pub mod parallel;
 pub mod public;
 pub mod searxng;
 mod types;
