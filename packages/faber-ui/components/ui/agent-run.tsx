@@ -38,13 +38,14 @@ import { cn } from "@/lib/utils"
  * arguments and output live behind its header, on the same machinery
  * ({@link useCollapsibleBody}).
  *
- * Rows do not animate themselves. {@link AgentRun} owns a coordinator
- * that batches every row mounted in the same commit into ONE animation: each
- * row becomes a linear slice of a single eased master value, so the ease
- * spans the whole chain and the tip crosses row boundaries at full speed —
- * one continuous draw, not N reveals in a row (or worse, in parallel). Rows
- * that stream in later form their own batch, queued behind whatever is still
- * drawing.
+ * Rows do not animate themselves. {@link AgentRun} owns a coordinator that
+ * gives the whole turn ONE tip travelling down ONE chain: each row is a
+ * consecutive slice of a single animation, so the tip crosses row boundaries at
+ * full speed — one continuous draw, not N reveals in a row (or worse, in
+ * parallel). A row that streams in while the tip is still moving is appended to
+ * that chain rather than queued behind it, which is what keeps a burst of tool
+ * calls from crawling in one by one just because their stream events landed in
+ * separate React commits.
  */
 
 export type AgentStepState = "pending" | "running" | "success" | "error"
@@ -99,37 +100,73 @@ const DRAW_EASE = [0.4, 0, 0.2, 1] as const
 // `duration-300` on the content columns below). That growth extends the line
 // above down into the new row's slot, pushing the new row — node included —
 // downward. A node that starts drawing during that window visibly drifts down.
-// So the coordinator holds a streamed batch for exactly this long: the line
-// finishes extending into place, THEN the reveal plays. (The initial batch has
-// no row above it flipping, so it starts immediately.) Keep this in lockstep
-// with the `duration-300` classes — if one changes, change the other.
+// So a streamed row's slice never BEGINS before this long after it mounted: the
+// line finishes extending into place, THEN the tip arrives. Usually the row's
+// place in the chain already satisfies that and costs nothing extra — it only
+// buys real time when the tip would otherwise reach the new row immediately.
+// (The initial batch has no row above it flipping, so it starts at once.) Keep
+// this in lockstep with the `duration-300` classes — change one, change the other.
 const PUSH_SETTLE = 0.3
 
+// The longest the tip may take to draw whatever is in front of it, in seconds.
+// A chain is measured in row durations, and ten parallel tool calls make a chain
+// ten rows long — nine seconds of drawing for results that all landed at once,
+// which reads as a queue no matter how evenly it is paced. So a chain longer
+// than this is not drawn slower, it is drawn FASTER: the tip's speed is scaled
+// so the whole undrawn remainder fits in this budget. One or two rows are under
+// it and keep their natural pace; a burst sweeps through. Every absorb
+// recomputes it, so the tip accelerates as the backlog grows and relaxes as it
+// drains.
+const MAX_DRAW = 1.2
+
 /**
- * The reveal coordinator. Rows enroll on mount; every enrollment from the same
- * commit is flushed (via microtask) as one batch. A batch plays as a SINGLE
- * `animate` call — total duration is the sum of the rows', eased once with
- * {@link DRAW_EASE} — and each row's progress is a linear slice of it. That is
- * what makes a message + tool call read as one stroke: there is literally one
- * easing window, so the tip crosses from a row's trail into the next row's
- * lead without decelerating. Batches are queued end to end (`busyUntil`), so
- * rows streaming in while a draw is still running wait their turn instead of
- * animating in parallel.
+ * The reveal coordinator: ONE tip travelling down ONE chain, at one speed.
+ *
+ * Rows enroll on mount and every enrollment from the same commit is gathered
+ * (via microtask) into a batch. The batch is laid out as a chain — each row a
+ * consecutive slice as long as its own duration — and one `animate` call moves a
+ * tip along it, so a message plus its tool calls read as a single stroke rather
+ * than N reveals in a row (or worse, in parallel).
+ *
+ * The part that matters for a streamed run: a row that enrolls while the tip is
+ * still moving is APPENDED to the chain in flight, not queued behind it. A
+ * consumer applies one stream event per React commit, so tool calls that arrive
+ * together still mount milliseconds apart, in separate commits — and queueing
+ * turned those milliseconds into a full reveal duration of dead time each,
+ * making a burst of calls crawl in one at a time. Appending makes the gap
+ * between commits irrelevant: the tip simply has further to go.
+ *
+ * Which is why only a chain starting from idle is eased ({@link DRAW_EASE}); a
+ * chain that has absorbed a row continues LINEAR, at the same one-slice-per-
+ * second the ease averages. A chain that may grow at any moment cannot honestly
+ * ease out — re-easing from the tip's position on every absorb would drop the
+ * velocity to zero at each seam, which is the stutter this whole arrangement
+ * exists to avoid.
  */
 function useRevealCoordinator(reduce: boolean) {
   type Entry = { progress: MotionValue<number>; duration: number; cancelled: boolean }
+  type Row = { entry: Entry; start: number }
+  type Chain = {
+    rows: Row[]
+    /** Chain length, in seconds of travel. */
+    total: number
+    /** How far the tip has travelled — the point an absorb resumes from. */
+    pos: number
+    /** Timestamp (performance.now ms) the tip starts moving; may be in the future. */
+    startAt: number
+    controls?: ReturnType<typeof animate>
+  }
   const coord = React.useRef<{
     pending: Entry[]
     scheduled: boolean
-    /** Timestamp (performance.now ms) when the current chain finishes drawing. */
-    busyUntil: number
+    /** The chain currently being drawn, if any. Absorbs late enrollments. */
+    chain: Chain | null
     hasPlayed: boolean
-    active: Set<{ stop: () => void }>
-  }>({ pending: [], scheduled: false, busyUntil: 0, hasPlayed: false, active: new Set() })
+  }>({ pending: [], scheduled: false, chain: null, hasPlayed: false })
 
   React.useEffect(() => {
-    const { active } = coord.current
-    return () => active.forEach((controls) => controls.stop())
+    const c = coord.current
+    return () => c.chain?.controls?.stop()
   }, [])
 
   const enroll = React.useCallback(
@@ -147,36 +184,60 @@ function useRevealCoordinator(reduce: boolean) {
           c.pending = []
           if (batch.length === 0) return
 
-          const total = batch.reduce((sum, e) => sum + e.duration, 0)
-          let at = 0
-          const rows = batch.map((e) => {
-            const start = at
-            at += e.duration
-            return { entry: e, start }
-          })
-
           const now = performance.now()
-          const settle = c.hasPlayed ? PUSH_SETTLE * 1000 : 0
-          const startAt = Math.max(now + settle, c.busyUntil)
-          c.busyUntil = startAt + total * 1000
+          const live = c.chain
+          // A chain waiting out a delay has not moved yet; the rest of that wait
+          // still has to be served, and it counts toward the appended rows'
+          // PUSH_SETTLE just as travel time does.
+          const delay = live ? Math.max(0, live.startAt - now) / 1000 : c.hasPlayed ? PUSH_SETTLE : 0
+          const from = live ? live.pos : 0
+          const rows: Row[] = live ? live.rows.slice() : []
+          const end = live ? live.total : 0
+          // How fast the tip travels, in chain units per second — 1 unless the
+          // backlog exceeds MAX_DRAW. Computed before the rows are placed so the
+          // settle below can be expressed as the distance the tip covers in that
+          // time; a gap inserted there only makes the final chain marginally
+          // longer than this assumed, which the budget absorbs.
+          const speed = Math.max(
+            1,
+            (end + batch.reduce((sum, e) => sum + e.duration, 0) - from) / MAX_DRAW
+          )
+          // Where the appended run of rows begins: the end of the chain, held
+          // back only if the tip would otherwise reach it before the row above
+          // has finished growing its padding (see PUSH_SETTLE).
+          let at = live ? Math.max(end, from + Math.max(0, PUSH_SETTLE - delay) * speed) : 0
+          for (const e of batch) {
+            rows.push({ entry: e, start: at })
+            at += e.duration
+          }
+          const total = at
+
+          live?.controls?.stop()
+          const next: Chain = { rows, total, pos: from, startAt: now + delay * 1000 }
+          c.chain = next
           c.hasPlayed = true
 
-          const controls = animate(0, 1, {
-            duration: total,
-            delay: (startAt - now) / 1000,
-            ease: DRAW_EASE,
-            onUpdate: (v) => {
-              const t = v * total
-              for (const r of rows) {
+          next.controls = animate(from, total, {
+            duration: (total - from) / speed,
+            delay,
+            // Continuations must not re-ease: see the note above.
+            ease: live ? "linear" : DRAW_EASE,
+            onUpdate: (t) => {
+              next.pos = t
+              for (const r of next.rows) {
                 if (r.entry.cancelled) continue
-                r.entry.progress.set(
-                  Math.min(1, Math.max(0, (t - r.start) / r.entry.duration))
-                )
+                const v = Math.min(1, Math.max(0, (t - r.start) / r.entry.duration))
+                // Never let a row's progress run backwards: a sealed ring latches
+                // on `progress >= HALF_END` (see useCloseRing) and would unseal.
+                if (v > r.entry.progress.get()) r.entry.progress.set(v)
               }
             },
           })
-          c.active.add(controls)
-          controls.then(() => c.active.delete(controls))
+          // A superseded chain's controls may or may not resolve on stop, so the
+          // identity check is what decides whether the timeline is idle again.
+          next.controls.then(() => {
+            if (c.chain === next) c.chain = null
+          })
         })
       }
       return () => {
@@ -370,10 +431,13 @@ function useCloseRing(
       return
     }
     const seal = () => animate(close, terminal ? 1 : 0, { duration: 0.5, ease: DRAW_EASE })
-    // On a fresh mount that is already resolved, hold the second half until this
-    // row's first half has actually drawn — the coordinator may queue the row
-    // well after mount — so the whole ring reads as one continuous clockwise sweep.
-    if (firstRun.current && terminal && progress.get() < HALF_END) {
+    // Hold the second half until this row's first half has actually drawn — the
+    // tip may still be working its way down the chain toward this node, and a
+    // call that resolves before it arrives (a fast tool, or one that mounted
+    // already resolved) would otherwise seal a ring the line has not reached,
+    // popping a circle out ahead of the stroke. Waiting keeps the whole ring one
+    // continuous clockwise sweep however early the result lands.
+    if (terminal && progress.get() < HALF_END) {
       firstRun.current = false
       let controls: ReturnType<typeof animate> | undefined
       const unsub = progress.on("change", (v) => {
@@ -660,7 +724,7 @@ type AgentRunProps = {
    * in afterwards still reveal normally either way.
    */
   revealOnMount?: boolean
-  /** Outer node diameter in pixels. Defaults to 40. */
+  /** Outer node diameter in pixels. Defaults to 64 (4rem) — a deliberately spacious node. */
   nodeSize?: number
   /** Stroke width of the line and the node ring, in pixels. */
   lineWidth?: number
@@ -694,8 +758,8 @@ export function AgentRun({
   onThinkingModeChange,
   onToolOpenChange,
   revealOnMount = true,
-  nodeSize = 40,
-  lineWidth = 1.5,
+  nodeSize = 64,
+  lineWidth = 2,
   className,
 }: AgentRunProps) {
   const prefersReduced = useReducedMotion()

@@ -62,7 +62,15 @@ export function TurnView({ turn, isLast = false }: { turn: Turn; isLast?: boolea
           `thread-rows` styles nothing — it is how autoscroll finds the rows of
           a run, which it aims at one at a time. See `useCenteredTail`. */}
       {turn.items.length > 0 ? (
-        <AgentRun className="thread-rows" revealOnMount={!restored}>
+        <AgentRun
+          className="thread-rows"
+          revealOnMount={!restored}
+          // Tighter than the registry default (64/2) — see git history for
+          // "tighten agent run ring". Overridden here, not in the registry
+          // file, so a future `agent-run` sync can't silently drop it.
+          nodeSize={40}
+          lineWidth={1.5}
+        >
           {turn.items.map((item) => {
             if (item.kind === "message") {
               return (
