@@ -29,7 +29,7 @@ export default function SessionPage() {
 }
 
 function SessionThread({ sessionId }: { sessionId: Uuid }) {
-  const { models, modelsLoaded, selectedModel, selectModel } = useAppShell()
+  const { models, modelsLoaded, selectedModel, selectModel, updateSessionTitle } = useAppShell()
 
   // Fork/multi-thread support is out of scope — this page always follows the
   // session's root thread.
@@ -96,8 +96,12 @@ function SessionThread({ sessionId }: { sessionId: Uuid }) {
     [environments],
   )
 
+  const handleSessionTitle = React.useCallback(
+    (title: string) => updateSessionTitle(sessionId, title),
+    [sessionId, updateSessionTitle],
+  )
   const { turns, loading, error, isRunning, runningRunId, streamedChars } =
-    useSessionTranscript(sessionId, threadId)
+    useSessionTranscript(sessionId, threadId, handleSessionTitle)
 
   // What autoscroll counts as something new: a turn, or a row inside one —
   // reasoning starting, a tool being called, the reply beginning. Not the

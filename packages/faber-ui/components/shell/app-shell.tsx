@@ -27,6 +27,7 @@ type AppShellContextValue = {
   createError: string | null
   createSession: () => Promise<CreatedSession | null>
   renameSession: (id: Uuid, title: string) => Promise<Session>
+  updateSessionTitle: (id: Uuid, title: string) => void
   deleteSession: (id: Uuid) => Promise<void>
   addModel: (body: CreateModelRequest) => Promise<ModelConfig>
   editModel: (id: Uuid, patch: UpdateModelRequest) => Promise<ModelConfig>
@@ -130,6 +131,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return updated
   }, [])
 
+  const updateSessionTitle = React.useCallback((id: Uuid, title: string) => {
+    setSessions((prev) => prev.map((session) => (session.id === id ? { ...session, title } : session)))
+  }, [])
+
   const deleteSession = React.useCallback(
     async (id: Uuid): Promise<void> => {
       await faber.deleteSession(id)
@@ -171,6 +176,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       createError,
       createSession,
       renameSession,
+      updateSessionTitle,
       deleteSession,
       addModel,
       editModel,
@@ -186,6 +192,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       createError,
       createSession,
       renameSession,
+      updateSessionTitle,
       deleteSession,
       addModel,
       editModel,

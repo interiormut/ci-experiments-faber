@@ -40,6 +40,7 @@ use crate::{
         exchange::NewExchange,
         model_config::{ModelConfig, Wire},
         now_epoch,
+        session::UpdateSession,
         spine::NewSpine,
         transcript::NewTranscript,
     },
@@ -539,6 +540,54 @@ async fn execute(
         toolbox.add(harness::Web::definitions(), web.invoker());
     }
 
+    let mut functions = harness::FunctionRegistry::new();
+    let db = state.db.clone();
+    functions.register("session.get_title", {
+        let db = db.clone();
+        move |_input| {
+            let db = db.clone();
+            Box::pin(async move {
+                let mut conn = db.get().await.map_err(|error| error.to_string())?;
+                let title = crate::schema::session::table
+                    .filter(crate::schema::session::id.eq(session_id))
+                    .select(crate::schema::session::title)
+                    .first::<Option<String>>(&mut conn)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(title.map_or(serde_json::Value::Null, serde_json::Value::String))
+            })
+        }
+    });
+    functions.register("session.set_title", move |input| {
+        let db = db.clone();
+        Box::pin(async move {
+            let title = input
+                .as_str()
+                .ok_or_else(|| "session.set_title expects a string".to_owned())?
+                .trim()
+                .to_owned();
+            if title.is_empty() {
+                return Err("title cannot be empty".into());
+            }
+            if title.chars().count() > 200 {
+                return Err("title must be 200 characters or fewer".into());
+            }
+
+            let mut conn = db.get().await.map_err(|error| error.to_string())?;
+            diesel::update(
+                crate::schema::session::table.filter(crate::schema::session::id.eq(session_id)),
+            )
+            .set(UpdateSession {
+                title: Some(Some(title.as_str())),
+                closed_at: None,
+            })
+            .execute(&mut conn)
+            .await
+            .map_err(|error| error.to_string())?;
+            Ok(serde_json::Value::Null)
+        })
+    });
+
     let grant = Grant {
         client,
         model: config.wire_id.clone(),
@@ -554,6 +603,7 @@ async fn execute(
         tools: toolbox.definitions(),
         tool_invoker: Some(toolbox.invoker()),
         commit_granted: true,
+        functions,
         // Granted like everything else here: a run that was handed no
         // interrupt is one nobody can stop, and the harness sees a stop only
         // as a call of its own failing.
@@ -636,8 +686,8 @@ async fn execute(
             sender,
             run_id,
             &mut seq,
-            kind,
-            event,
+            kind.clone(),
+            event.clone(),
             folded.persist_raw,
         )
         .await?;

@@ -24,11 +24,66 @@
 /// loop with no bound is a loop that can spend a user's budget forever on a
 /// command that keeps failing the same way.
 const MAX_STEPS = 64;
+async function generateTitle(ctx, input) {
+  const history = ctx.history.read();
+  if (history.length > 0) return null;
+
+  if (!ctx.functions.available.includes("session.get_title")) return null;
+
+  try {
+    const currentTitle = await ctx.functions.invoke("session.get_title", null);
+    if (currentTitle !== null) return null;
+
+    const call = ctx.llm.stream({
+      messages: [
+        {
+          role: "system",
+          content: [
+            {
+              type: "text",
+              text: "Generate a concise title for the user's prompt. Reply with only the title, with no quotes or explanation.",
+            },
+          ],
+        },
+        ...input,
+      ],
+      tools: [],
+      maxTokens: 64,
+    });
+
+    for await (const _event of call) {
+      // Drain the hidden title stream.
+    }
+    const completion = await call.completion;
+    const title = (completion.message.content ?? [])
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("")
+      .trim();
+
+    if (title) {
+      // The initial check can become stale while the hidden title request runs.
+      // Do not replace a title another run or the user set in the meantime.
+      const latestTitle = await ctx.functions.invoke("session.get_title", null);
+      if (latestTitle !== null) return null;
+      await ctx.functions.invoke("session.set_title", title);
+      return title;
+    }
+  } catch {
+    // Title generation is best effort and must not affect the main response.
+  }
+  return null;
+}
 
 export default {
   async *execute(ctx, input) {
     const messages = [...ctx.history.read(), ...input];
     let call = null;
+
+    // Start title generation in parallel. It must not delay the first visible
+    // model event, but the promise is awaited after the response so the
+    // isolate stays alive long enough to persist the title.
+    const titlePromise = generateTitle(ctx, input);
 
     for (let step = 0; step < MAX_STEPS; step += 1) {
       call = ctx.llm.stream({ messages });
@@ -83,6 +138,11 @@ export default {
     // what was sent and exactly what came back (proposal.md §6.1).
     if (call !== null) {
       await ctx.commit(call);
+    }
+
+    const title = await titlePromise;
+    if (title !== null) {
+      yield { type: "session_title", title };
     }
   },
 };

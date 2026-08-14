@@ -41,10 +41,11 @@ export type SessionTranscriptState = {
   streamedChars: number
 }
 
-async function loadHistory(threadId: Uuid): Promise<{ store: TranscriptStore; resume: StreamQuery }> {
+async function loadHistory(threadId: Uuid): Promise<{ store: TranscriptStore; resume: StreamQuery; title: string | null }> {
   const runs = await faber.listRuns(threadId)
   let store = createStore()
   let resume: StreamQuery = {}
+  let title: string | null = null
 
   for (const run of runs) {
     let events: TranscriptEvent[] = []
@@ -63,6 +64,13 @@ async function loadHistory(threadId: Uuid): Promise<{ store: TranscriptStore; re
       store,
       events.map((event) => fromTranscriptEvent(run.id, event)),
     )
+    for (const event of events) {
+      if (event.kind !== "session_title") continue
+      const payload = event.payload
+      if (typeof payload === "object" && payload !== null && "title" in payload && typeof payload.title === "string") {
+        title = payload.title
+      }
+    }
     // Terminal SSE markers are intentionally live-only. On reload, the run
     // row's completion timestamp is the durable equivalent of `run_end`.
     if (run.completed_at !== null) {
@@ -79,7 +87,7 @@ async function loadHistory(threadId: Uuid): Promise<{ store: TranscriptStore; re
     }
   }
 
-  return { store, resume }
+  return { store, resume, title }
 }
 
 /**
@@ -99,6 +107,7 @@ async function loadHistory(threadId: Uuid): Promise<{ store: TranscriptStore; re
 export function useSessionTranscript(
   sessionId: Uuid | null,
   threadId: Uuid | null,
+  onSessionTitle?: (title: string) => void,
 ): SessionTranscriptState {
   const [store, setStore] = React.useState<TranscriptStore>(() => createStore())
   const [loading, setLoading] = React.useState(true)
@@ -111,16 +120,20 @@ export function useSessionTranscript(
     const controller = new AbortController()
 
     async function run() {
-      const { store: history, resume } = await loadHistory(threadId!)
+      const initial = await loadHistory(threadId!)
       if (cancelled) return
-      setStore(history)
+      if (initial.title !== null) onSessionTitle?.(initial.title)
+      setStore(initial.store)
       setLoading(false)
 
-      let cursor = resume
+      let cursor = initial.resume
       while (!cancelled) {
         try {
           for await (const raw of faber.streamSession(sessionId!, cursor, controller.signal)) {
             if (cancelled) return
+            if (raw.kind === "session_title" && typeof raw.payload === "object" && raw.payload !== null && "title" in raw.payload && typeof raw.payload.title === "string") {
+              onSessionTitle?.(raw.payload.title)
+            }
             setStore((prev) => applyEvent(prev, fromStreamEvent(raw)))
           }
           return // the generator returned — an intentional close (abort)
@@ -130,6 +143,7 @@ export function useSessionTranscript(
           if (cancelled) return
           const refreshed = await loadHistory(threadId!)
           if (cancelled) return
+          if (refreshed.title !== null) onSessionTitle?.(refreshed.title)
           setStore(refreshed.store)
           cursor = refreshed.resume
         }
@@ -146,7 +160,7 @@ export function useSessionTranscript(
       cancelled = true
       controller.abort()
     }
-  }, [sessionId, threadId])
+  }, [sessionId, threadId, onSessionTitle])
 
   const turns = React.useMemo(() => turnsOf(store), [store])
   // The newest, because that is the one a stop means: a session cannot start a

@@ -47,6 +47,12 @@ pub enum OpError {
 
     #[error("commit was not granted to this harness")]
     CommitNotGranted,
+
+    #[error("unknown harness function `{name}`")]
+    UnknownFunction { name: String },
+
+    #[error("harness function `{name}` failed: {message}")]
+    FunctionFailed { name: String, message: String },
 }
 
 impl JsErrorClass for OpError {
@@ -58,6 +64,8 @@ impl JsErrorClass for OpError {
             OpError::UnknownTool { .. } => "RangeError",
             OpError::ToolDispatchFailed { .. } => "Error",
             OpError::CommitNotGranted => "Error",
+            OpError::UnknownFunction { .. } => "RangeError",
+            OpError::FunctionFailed { .. } => "Error",
         })
     }
 

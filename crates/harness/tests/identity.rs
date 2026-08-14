@@ -59,6 +59,29 @@ fn identity_harness_end_to_end_matches_the_script() {
 }
 
 #[test]
+fn dynamic_functions_are_available_to_the_harness() {
+    let client = Arc::new(Scripted::new(text_reply("ok")));
+    let mut grant = grant(client);
+    grant
+        .functions
+        .register("test.echo", |input| Box::pin(async move { Ok(input) }));
+    let source = r#"
+      export default {
+        async *execute(ctx) {
+          yield { type: "function_result", value: await ctx.functions.invoke("test.echo", { value: 1 }) };
+        }
+      };
+    "#;
+
+    let mut run = HarnessRun::start(source.to_owned(), Vec::new(), grant, Seed::default());
+    let events = drain_transcript(&mut run);
+    support::finished(run, "dynamic function harness must finish cleanly");
+
+    assert_eq!(events[0]["type"], "function_result");
+    assert_eq!(events[0]["value"]["value"], 1);
+}
+
+#[test]
 fn a_recording_client_renders_real_provider_bytes_not_a_fixture() {
     // `Recording` (unlike `Scripted`) delegates rendering to the real
     // Anthropic wire module, so the bytes it captures are the provider's own

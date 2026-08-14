@@ -416,7 +416,7 @@ export interface SendMessageResponse {
 /**
  * One event off `streamSession`. `kind` is the harness event's own `type` for
  * model output, plus three the API adds: `input` (the user's own turn) and the
- * terminal `run_end` / `run_error`.
+ * terminal `run_end` / `run_error`, and session metadata such as `session_title`.
  *
  * The terminal markers are live-only — they are stream control, not something
  * the harness yielded, so they are never persisted. A client that connects

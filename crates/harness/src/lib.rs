@@ -16,6 +16,7 @@ mod validate;
 
 pub use interrupt::{Interrupt, Interrupter, interrupt};
 pub use runtime::{HarnessRun, RunError, RunOutcome, Terminator};
+pub use state::FunctionRegistry;
 pub use state::{Baseline, Grant, Seed};
 pub use tools::{Surface, Toolbox, web::Web};
 

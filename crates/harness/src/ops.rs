@@ -75,6 +75,33 @@ pub fn op_tools_available(state: &mut OpState) -> Vec<ToolDef> {
 
 #[op2]
 #[serde]
+pub fn op_functions_available(state: &mut OpState) -> Vec<String> {
+    let harness = shared(state);
+    harness.borrow().grant.functions.names()
+}
+
+#[op2]
+#[serde]
+pub async fn op_function_invoke(
+    state: Rc<RefCell<OpState>>,
+    #[string] name: String,
+    #[serde] input: serde_json::Value,
+) -> Result<serde_json::Value, OpError> {
+    let harness = shared_async(&state).await;
+    let function = harness
+        .borrow()
+        .grant
+        .functions
+        .get(&name)
+        .ok_or_else(|| OpError::UnknownFunction { name: name.clone() })?;
+
+    function(input)
+        .await
+        .map_err(|message| OpError::FunctionFailed { name, message })
+}
+
+#[op2]
+#[serde]
 pub async fn op_tool_invoke(
     state: Rc<RefCell<OpState>>,
     #[string] name: String,
@@ -682,6 +709,8 @@ deno_core::extension!(
     ops = [
         op_capabilities,
         op_tools_available,
+        op_functions_available,
+        op_function_invoke,
         op_tool_invoke,
         op_history_read,
         op_committed_request,

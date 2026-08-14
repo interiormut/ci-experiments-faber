@@ -64,6 +64,7 @@ function llmStream(request) {
 export function buildContext() {
   const capabilities = ops.op_capabilities();
   const available = deepFreeze(ops.op_tools_available());
+  const functions = deepFreeze(ops.op_functions_available());
 
   const ctx = {
     llm: { stream: llmStream },
@@ -84,6 +85,13 @@ export function buildContext() {
       read: () => deepFreeze(ops.op_history_read()),
     },
     committedRequest: () => deepFreeze(ops.op_committed_request()),
+    functions: {
+      available: functions,
+      invoke: (name, input) => {
+        if (!functions.includes(name)) return undefined;
+        return ops.op_function_invoke(name, input);
+      },
+    },
   };
 
   // Attached only when granted — an absent `commit` is a move the loop

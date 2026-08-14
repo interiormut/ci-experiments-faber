@@ -33,6 +33,7 @@ async fn main() {
         tools: Vec::new(),
         tool_invoker: None,
         commit_granted: true,
+        functions: harness::FunctionRegistry::new(),
         // Nothing here can ask this run to stop — the example runs it to
         // completion or not at all.
         interrupt: None,

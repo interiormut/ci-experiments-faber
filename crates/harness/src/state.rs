@@ -170,6 +170,41 @@ pub type ToolInvoker = Arc<
         + Sync,
 >;
 
+pub type DynamicFunction = Arc<
+    dyn Fn(serde_json::Value) -> BoxFuture<'static, Result<serde_json::Value, String>>
+        + Send
+        + Sync,
+>;
+
+#[derive(Clone, Default)]
+pub struct FunctionRegistry {
+    functions: Arc<HashMap<String, DynamicFunction>>,
+}
+
+impl FunctionRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register<F>(&mut self, name: impl Into<String>, function: F)
+    where
+        F: Fn(serde_json::Value) -> BoxFuture<'static, Result<serde_json::Value, String>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        Arc::make_mut(&mut self.functions).insert(name.into(), Arc::new(function));
+    }
+
+    pub(crate) fn get(&self, name: &str) -> Option<DynamicFunction> {
+        self.functions.get(name).cloned()
+    }
+
+    pub(crate) fn names(&self) -> Vec<String> {
+        self.functions.keys().cloned().collect()
+    }
+}
+
 /// What this harness run was granted — the entire perimeter (`abstract.md`
 /// §4's "no ambient authority"). Whatever isn't set here, `ext/context.js`
 /// never attaches to `ctx`.
@@ -186,6 +221,7 @@ pub struct Grant {
     pub tools: Vec<llm::ToolDef>,
     pub tool_invoker: Option<ToolInvoker>,
     pub commit_granted: bool,
+    pub functions: FunctionRegistry,
     /// How a stop asked for from outside reaches this run
     /// ([`crate::interrupt`]). Here rather than alongside the run handle
     /// because the grant is the one thing built on the caller's thread and
