@@ -17,7 +17,7 @@ mod validate;
 pub use interrupt::{Interrupt, Interrupter, interrupt};
 pub use runtime::{HarnessRun, RunError, RunOutcome, Terminator};
 pub use state::{Baseline, Grant, Seed};
-pub use tools::Surface;
+pub use tools::{Surface, Toolbox, web::Web};
 
 /// The bare harness: input straight to the model, appended to history.
 /// Commits nothing, so it does not advance the lineage.

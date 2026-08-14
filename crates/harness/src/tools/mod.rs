@@ -25,10 +25,18 @@
 //! The registry is read-only here on purpose. Bindings are established by the
 //! consumer before the run and appended as events; nothing the model calls can
 //! add one, so this side never needs to mutate it.
+//!
+//! Not everything a run can be granted is a projection of the environment,
+//! though. [`web`] is web search, which runs against no target and has no root,
+//! and [`Toolbox`] is how several such surfaces reach one grant: each keeps its
+//! own schema, validation, and rendering, and a call is routed to whichever
+//! published the name.
 
 pub mod render;
 pub mod schema;
+pub mod web;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -302,6 +310,77 @@ impl Surface {
                 "`{other}` is not an operation; use add, update, delete, or move"
             )),
         }
+    }
+}
+
+/// Several projections, granted as one.
+///
+/// [`Grant`](crate::Grant) takes one tool list and one dispatcher, because a
+/// run has one tool surface however many capabilities went into it. This is
+/// where they are put together: each projection contributes its definitions and
+/// its own dispatcher, and a call is routed by name to the one that published
+/// it. Nothing here inspects a call — routing is the whole of it, so a
+/// projection keeps its own validation, its own rendering, and its own idea of
+/// what an error is.
+///
+/// Order is the order things were added, and it is load-bearing for the same
+/// reason [`schema::definitions`] fixes its own: the tool array sits near the
+/// top of the request and everything after it is cached against it. Append a
+/// capability; do not thread it in among the ones already there.
+#[derive(Default)]
+pub struct Toolbox {
+    definitions: Vec<llm::ToolDef>,
+    routes: HashMap<String, ToolInvoker>,
+}
+
+impl Toolbox {
+    pub fn new() -> Self {
+        Toolbox::default()
+    }
+
+    /// Adds one projection's tools, dispatched by its own invoker.
+    ///
+    /// Panics on a duplicate tool name. Both sides of that collision are
+    /// constants, so it is a wiring mistake that shows up on the first run
+    /// rather than a condition a deployment can fall into — and the quiet
+    /// alternatives (last wins, first wins) route calls to a surface the
+    /// author did not mean, which is not something a transcript would reveal.
+    pub fn add(&mut self, definitions: Vec<llm::ToolDef>, invoker: ToolInvoker) -> &mut Self {
+        for definition in definitions {
+            let name = definition.name.clone();
+            if self
+                .routes
+                .insert(name.clone(), Arc::clone(&invoker))
+                .is_some()
+            {
+                panic!("`{name}` is published by two tool surfaces at once");
+            }
+            self.definitions.push(definition);
+        }
+        self
+    }
+
+    /// What the model is told it has.
+    pub fn definitions(&self) -> Vec<llm::ToolDef> {
+        self.definitions.clone()
+    }
+
+    /// What runs a call.
+    pub fn invoker(&self) -> ToolInvoker {
+        let routes = Arc::new(self.routes.clone());
+        Arc::new(move |name: String, input| {
+            let routes = Arc::clone(&routes);
+            async move {
+                match routes.get(&name) {
+                    Some(invoker) => invoker(name, input).await,
+                    // The dispatch-failed channel, reached only by a name no
+                    // surface published: a fact about the grant, not about any
+                    // capability behind it.
+                    None => Err(format!("`{name}` is not a granted tool")),
+                }
+            }
+            .boxed()
+        })
     }
 }
 
@@ -610,6 +689,63 @@ mod tests {
                 .iter()
                 .any(|tool| { matches!(tool.name.as_str(), "bind" | "unbind" | "discover") })
         );
+    }
+
+    /// The environment surface and the web surface are separate projections
+    /// that share one grant, so the names they publish have to stay disjoint —
+    /// and a call has to reach the one that published it.
+    #[tokio::test]
+    async fn a_toolbox_routes_each_call_to_the_surface_that_published_it() {
+        let dir = TempDir::new("toolbox");
+        let surface = Arc::new(bound_surface(&dir.0).await);
+        let web = Arc::new(web::Web::new(Arc::new(NoEngine)));
+
+        let mut toolbox = Toolbox::new();
+        toolbox.add(Surface::definitions(), Arc::clone(&surface).invoker());
+        toolbox.add(web::Web::definitions(), web.invoker());
+
+        let names: Vec<String> = toolbox
+            .definitions()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert_eq!(names.first().map(String::as_str), Some("targets"));
+        assert_eq!(names.last().map(String::as_str), Some("search"));
+
+        let invoker = toolbox.invoker();
+        let listed = invoker("targets".to_owned(), json!({}))
+            .await
+            .expect("a granted tool");
+        assert!(listed.content.contains("build"));
+
+        // Reached the web surface, which had no engine to ask — a fault, not
+        // an environment result and not an unknown tool.
+        let searched = invoker("search".to_owned(), json!({ "query": "rust" }))
+            .await
+            .expect("a granted tool");
+        assert!(searched.is_error);
+        assert!(searched.content.contains("search unavailable"));
+
+        // And a name nobody published is a fact about the grant.
+        let unknown = invoker("teleport".to_owned(), json!({})).await;
+        assert!(unknown.is_err());
+    }
+
+    /// An engine that can never answer, which is all this test needs from one.
+    struct NoEngine;
+
+    #[async_trait::async_trait]
+    impl search::SearchEngine for NoEngine {
+        async fn search(&self, _query: &search::Query) -> search::Result<search::Results> {
+            Err(search::Error::NoInstance {
+                considered: 0,
+                verified: 0,
+            })
+        }
+
+        fn provider(&self) -> &str {
+            "none"
+        }
     }
 
     #[tokio::test]

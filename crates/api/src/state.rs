@@ -36,6 +36,11 @@ pub struct AppState {
     pub auth: Arc<dyn surge::AuthProvider>,
     /// Envelope encryption master key. Loaded at boot; absent key panics before serving traffic.
     pub master_key: Arc<MasterKey>,
+    /// The web search engine every run shares, when one is configured. Built
+    /// once at boot (`crate::search`) rather than per run: the public provider
+    /// discovers and probes instances, and that belongs to the process, not to
+    /// a user's turn. `None` is a service where no run is granted `search`.
+    pub search: Option<Arc<dyn search::SearchEngine>>,
     /// Live harness runs, keyed by session — what the SSE endpoint subscribes
     /// to. In-process, so it only reaches subscribers on the instance that
     /// owns the run.

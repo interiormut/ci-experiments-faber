@@ -20,6 +20,7 @@ mod routes;
 mod run;
 mod schema;
 mod state;
+mod websearch;
 
 use state::{AppState, MasterKey};
 
@@ -88,12 +89,15 @@ async fn main() {
         maintenance_interval: None,
     });
 
+    let search = websearch::build_engine(&config).await;
+
     let state = AppState {
         db,
         config: config.clone(),
         http,
         auth,
         master_key,
+        search,
         runs: Default::default(),
         interrupts: Default::default(),
     };

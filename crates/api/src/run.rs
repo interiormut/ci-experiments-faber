@@ -524,6 +524,21 @@ async fn execute(
 
     let surface = Arc::new(harness::Surface::new(Arc::new(bound.registry), blobs));
 
+    // Two projections, one grant. The environment surface is always here; the
+    // web surface only when this service was given an engine, because an
+    // ungranted tool is absent rather than present and refusing. Unlike the
+    // bindings, that cannot change mid-run, so the prefix stays constant for
+    // the whole of it either way.
+    let mut toolbox = harness::Toolbox::new();
+    toolbox.add(
+        harness::Surface::definitions(),
+        Arc::clone(&surface).invoker(),
+    );
+    if let Some(engine) = &state.search {
+        let web = Arc::new(harness::Web::new(Arc::clone(engine)));
+        toolbox.add(harness::Web::definitions(), web.invoker());
+    }
+
     let grant = Grant {
         client,
         model: config.wire_id.clone(),
@@ -536,8 +551,8 @@ async fn execute(
         // by being handed it. An ungranted tool is simply absent from `ctx` —
         // control by subtraction — so a session with no environments still
         // runs, with a loop that has fewer moves.
-        tools: harness::Surface::definitions(),
-        tool_invoker: Some(Arc::clone(&surface).invoker()),
+        tools: toolbox.definitions(),
+        tool_invoker: Some(toolbox.invoker()),
         commit_granted: true,
         // Granted like everything else here: a run that was handed no
         // interrupt is one nobody can stop, and the harness sees a stop only

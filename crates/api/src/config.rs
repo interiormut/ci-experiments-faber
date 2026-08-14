@@ -16,6 +16,18 @@ pub struct Config {
     pub surge_session_ttl: Duration,
     pub api_port: u16,
     pub cors_origins: Vec<String>,
+    /// One SearXNG instance to search through. Set it and every run gets the
+    /// `search` tool; leave it unset and no run does.
+    pub searxng_url: Option<String>,
+    /// Search the public SearXNG network instead of one named instance.
+    /// Ignored when `searxng_url` is set — an instance the operator named is
+    /// a more specific answer than a pool discovered at boot.
+    pub search_public_network: bool,
+    /// Outbound proxy for search traffic, and for search traffic only. Passed
+    /// explicitly because the search crate refuses to read `HTTPS_PROXY` from
+    /// the process: this is a multi-user service, and nothing about one user's
+    /// run may be decided by the host's ambient configuration.
+    pub search_proxy: Option<String>,
 }
 
 impl Config {
@@ -48,6 +60,15 @@ impl Config {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default(),
+            searxng_url: env::var("SEARXNG_URL")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+            search_public_network: env::var("SEARCH_PUBLIC_NETWORK")
+                .map(|value| value == "true")
+                .unwrap_or(false),
+            search_proxy: env::var("SEARCH_PROXY")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
         }
     }
 }
