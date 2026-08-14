@@ -79,7 +79,15 @@ async fn main() {
         cookie_domain: config.surge_cookie_domain.clone(),
         session_ttl: config.surge_session_ttl,
         auth_ui_origin: config.surge_auth_ui_origin.clone(),
-        session_cors_origins: vec![],
+        // The frontend is served from its own origin, not the auth UI's, so it has
+        // to be named here. Left empty, the session zone (`whoami`, `logout`,
+        // factors) falls back to allowing `auth_ui_origin` alone — the frontend's
+        // `whoami` then fails CORS, which the client cannot tell apart from an
+        // unreachable perimeter, and every load resolves to signed-out.
+        //
+        // Reuses `cors_origins` because it answers the same question this zone
+        // asks: which browser origins are this API's own frontends.
+        session_cors_origins: config.cors_origins.clone(),
         rate_limiter: None,
         return_origins: None,
         registration: None,

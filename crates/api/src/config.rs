@@ -9,8 +9,12 @@ pub struct Config {
     /// which talks to no server. `build_auth_provider` enforces that.
     pub surge_service_token: Option<String>,
     pub surge_cookie_domain: String,
-    /// Origin serving the auth UI. The browser perimeter redirects here to start a
-    /// login flow, and it is the sole allowed origin for credential entry.
+    /// Origin serving the auth UI, used purely to build a CORS zone: under the
+    /// remote provider it is the sole allowed origin for the credential-entry
+    /// routes. It produces no redirect on this hop — upstream owns the handoff to
+    /// the auth UI, and answers `GET /v1/login` with its own redirect. Faber's
+    /// deployment does not exercise that zone either, since the auth UI posts
+    /// credentials straight to surge-server rather than back through this proxy.
     pub surge_auth_ui_origin: String,
     /// Session lifetime advertised by the proxied perimeter. Matches upstream's.
     pub surge_session_ttl: Duration,
