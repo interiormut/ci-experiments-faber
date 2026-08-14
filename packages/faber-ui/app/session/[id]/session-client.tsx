@@ -1,7 +1,6 @@
 "use client"
 
 import * as React from "react"
-import { useParams } from "next/navigation"
 
 import {
   faber,
@@ -18,14 +17,13 @@ import { useSessionTranscript } from "@/lib/thread/use-session-transcript"
 import { useStickToBottom } from "@/lib/thread/use-stick-to-bottom"
 import { useCenteredTail } from "@/lib/thread/use-centered-tail"
 
-export default function SessionPage() {
-  const params = useParams<{ id: string }>()
-  const sessionId = params.id as Uuid
+export default function SessionClient({ sessionId }: { sessionId: string }) {
+  const id = sessionId as Uuid
 
   // Keyed on the session id so navigating between threads remounts this
   // subtree — a fresh set of `useState` defaults rather than an effect that
   // resets state mid-life.
-  return <SessionThread key={sessionId} sessionId={sessionId} />
+  return <SessionThread key={id} sessionId={id} />
 }
 
 function SessionThread({ sessionId }: { sessionId: Uuid }) {

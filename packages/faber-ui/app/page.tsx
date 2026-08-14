@@ -1,14 +1,20 @@
 "use client"
 
 import * as React from "react"
-import { useRouter } from "next/navigation"
+import { usePathname, useRouter } from "next/navigation"
 
 import { faber, FaberError } from "@/lib/api"
 import { useAppShell } from "@/components/shell/app-shell"
 import { PromptBox } from "@/components/thread/prompt-box"
 import { ModelPicker } from "@/components/thread/model-picker"
+import SessionClient from "./session/[id]/session-client"
 
 export default function Home() {
+  const pathname = usePathname()
+  const sessionId = pathname.startsWith("/session/") ? pathname.slice("/session/".length) : ""
+
+  if (sessionId) return <SessionClient sessionId={sessionId} />
+
   const router = useRouter()
   const { models, modelsLoaded, selectedModel, selectModel, createSession } = useAppShell()
   const [sendError, setSendError] = React.useState<string | null>(null)

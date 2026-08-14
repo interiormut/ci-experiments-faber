@@ -17,6 +17,7 @@
  */
 
 import { FaberClient } from "./client"
+import { getRuntimeApiUrl } from "@/lib/runtime-config"
 
 export { FaberClient, type FaberClientOptions } from "./client"
 export { FaberError, errorFromResponse } from "./errors"
@@ -28,7 +29,7 @@ export type * from "./types"
  * `NEXT_PUBLIC_FABER_API_URL` when the two are split (as in local dev, where
  * the API listens on its own port).
  */
-const BASE_URL = process.env.NEXT_PUBLIC_FABER_API_URL ?? ""
+const BASE_URL = getRuntimeApiUrl()
 
 /** Shared client. Construct a `FaberClient` directly to point somewhere else. */
 export const faber = new FaberClient({ baseUrl: BASE_URL })
