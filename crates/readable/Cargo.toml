@@ -1,0 +1,20 @@
+[package]
+name = "readable"
+version = "0.1.0"
+edition = "2024"
+
+# A leaf crate, and a pure one: bytes in, document out. No `llm`, no
+# `harness`, no `environment`, and — deliberately — no HTTP client. See the
+# module docs for why fetching is somebody else's crate.
+[dependencies]
+# The DOM. `dom_query` is `dom_smoothie`'s own parser, so cleaning, extraction,
+# and metadata all share one parse of one tree rather than three of three.
+dom_query = "0.28"
+dom_smoothie = "0.18"
+encoding_rs = "0.8"
+htmd = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tracing = "0.1"
+url = "2"
