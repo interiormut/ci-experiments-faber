@@ -4,6 +4,7 @@ import type { ReactNode } from "react"
 
 import { FaberLogo } from "@/components/ui/logos"
 import { AuthGate, SurgeAuthProvider } from "@/components/ui/surge-auth"
+import { AUTH_MODE } from "@/lib/env"
 
 /**
  * The Surge `/v1` perimeter, which the API always mounts under `/api/surge` on
@@ -15,13 +16,13 @@ const BASE_URL = `${API_URL}/api/surge`
 
 /**
  * Everything below this renders only for a signed-in identity; the sign-in
- * flow runs inline, over the app's own ambient backdrop.
+ * flow uses the configured inline or redirect mode.
  */
 export function AppAuth({ children }: { children: ReactNode }) {
   return (
     <SurgeAuthProvider
       baseUrl={BASE_URL}
-      mode="inline"
+      mode={AUTH_MODE}
       mark={<FaberLogo size={44} aria-hidden />}
     >
       <AuthGate>{children}</AuthGate>
