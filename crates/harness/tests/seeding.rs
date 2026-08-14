@@ -55,7 +55,7 @@ fn a_run_outcome_seeds_the_next_run_with_what_it_committed() {
         Seed::default(),
     );
     let _ = drain_transcript(&mut run1);
-    let outcome1 = run1.join().expect("run one must finish cleanly");
+    let outcome1 = support::finished(run1, "run one must finish cleanly");
 
     assert_eq!(
         turns_as_text(
@@ -87,7 +87,7 @@ fn a_run_outcome_seeds_the_next_run_with_what_it_committed() {
         outcome1.committed,
     );
     let _ = drain_transcript(&mut run2);
-    run2.join().expect("run two must finish cleanly");
+    support::finished(run2, "run two must finish cleanly");
 
     let sent = client2.requests_seen();
     assert_eq!(sent.len(), 1);
@@ -118,7 +118,7 @@ fn a_run_that_never_commits_reports_no_position() {
         Seed::default(),
     );
     let _ = drain_transcript(&mut run);
-    let outcome = run.join().expect("run must finish cleanly");
+    let outcome = support::finished(run, "run must finish cleanly");
 
     assert!(outcome.committed.messages.is_empty());
     assert!(outcome.committed_frame.is_none());
@@ -138,7 +138,7 @@ fn the_frame_log_records_the_bytes_that_were_sent() {
         Seed::default(),
     );
     let _ = drain_transcript(&mut run);
-    let outcome = run.join().expect("run must finish cleanly");
+    let outcome = support::finished(run, "run must finish cleanly");
 
     let model_frame = outcome
         .frames

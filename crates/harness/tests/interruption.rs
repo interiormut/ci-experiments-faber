@@ -302,7 +302,12 @@ export default {
         let mut run = run;
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async { while run.transcript.recv().await.is_some() {} });
-        let _ = tx.send(run.join().is_err());
+        let _ = tx.send(
+            run.join()
+                .expect("a killed run still returns its frame log")
+                .error
+                .is_some(),
+        );
     });
 
     std::thread::sleep(Duration::from_millis(200));
@@ -313,6 +318,6 @@ export default {
         .expect("terminating the isolate must end the run");
     assert!(
         ended_in_error,
-        "a killed run yields no outcome — `crates/api` recovers its text instead"
+        "a killed run must retain its terminal error alongside the frame log"
     );
 }

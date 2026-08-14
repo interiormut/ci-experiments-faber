@@ -42,12 +42,19 @@ pub struct RunOutcome {
     pub committed: Seed,
     /// The model frame whose commit produced [`Self::committed`], so a caller
     /// writing a spine can point it at the matching exchange. `None` when the
-    /// harness never called `commit` — there is then no position to record.
+    /// harness never called `commit` — there is then no position to record. A
+    /// caller may also clear it to say the same thing about a run it does not
+    /// want the lineage advanced from, which is what `crates/api` does with a
+    /// run that ended in error.
     pub committed_frame: Option<FrameId>,
+    /// The top-level harness error, if execution stopped before the module
+    /// completed. The frame log is recorded regardless and stays worth
+    /// persisting — it is the only account of what reached the provider.
+    pub error: Option<RunError>,
 }
 
 /// A running (or finished) harness. `transcript` streams live; the frame log
-/// and any run-level error are only available after [`HarnessRun::join`].
+/// and any run-level error are available together after [`HarnessRun::join`].
 pub struct HarnessRun {
     pub transcript: UnboundedReceiver<serde_json::Value>,
     isolate_handle: Option<deno_core::v8::IsolateHandle>,
@@ -141,8 +148,6 @@ impl HarnessRun {
                     evaluated.await?;
                     Ok(())
                 });
-                result?;
-
                 let mut frames = Vec::new();
                 while let Ok(frame) = frames_rx.try_recv() {
                     frames.push(frame);
@@ -171,6 +176,7 @@ impl HarnessRun {
                     frames,
                     committed,
                     committed_frame,
+                    error: result.err(),
                 })
             })
             .expect("spawning the harness thread must not fail");
@@ -209,10 +215,14 @@ impl HarnessRun {
     /// error that ended it (a thrown/rejected top-level error, an op
     /// rejection that propagated, or termination).
     ///
-    /// A run that ends in `Err` yields no [`RunOutcome`] at all, so a failed
-    /// run records no exchanges and moves no lineage — deliberately: a
-    /// lineage assembled from a run that did not finish is exactly the
-    /// truncation `incomplete_completion` exists to keep out of history.
+    /// `Err` is reserved for a run that left nothing behind at all — the
+    /// harness thread panicked, or it failed before the isolate existed. A run
+    /// whose *module* failed returns `Ok`, carrying its frame log and lineage
+    /// alongside the terminal error in [`RunOutcome::error`]: those frames are
+    /// the record of what was actually sent to the provider, and the failing
+    /// path is where that record is worth the most. Callers must check
+    /// `error` — persisting the frames while refusing to advance lineage from
+    /// a run that did not finish is the intended shape.
     pub fn join(self) -> Result<RunOutcome, RunError> {
         self.thread.join().map_err(|_| RunError::ThreadPanicked)?
     }

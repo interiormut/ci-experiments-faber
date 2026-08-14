@@ -80,7 +80,7 @@ fn the_shipped_harness_runs_a_granted_tool_without_defining_one() {
         Seed::default(),
     );
     let events = drain_transcript(&mut run);
-    run.join().expect("run must finish");
+    support::finished(run, "run must finish");
 
     let call = events
         .iter()
@@ -133,7 +133,7 @@ fn a_command_that_exits_nonzero_comes_back_as_a_result_the_model_can_act_on() {
         Seed::default(),
     );
     let events = drain_transcript(&mut run);
-    run.join().expect("run must finish");
+    support::finished(run, "run must finish");
 
     let result = events
         .iter()
@@ -169,7 +169,7 @@ fn a_call_against_an_unbound_label_is_denied_rather_than_answered_empty() {
         Seed::default(),
     );
     let events = drain_transcript(&mut run);
-    run.join().expect("run must finish");
+    support::finished(run, "run must finish");
 
     let result = events
         .iter()
@@ -205,7 +205,7 @@ fn the_tool_loop_commits_the_whole_exchange_and_not_just_its_last_turn() {
         Seed::default(),
     );
     let _ = drain_transcript(&mut run);
-    let outcome = run.join().expect("run must finish");
+    let outcome = support::finished(run, "run must finish");
 
     // Only the last call is committed, and that is enough: each call carries
     // every earlier turn by value, so the last one's turn list is the whole

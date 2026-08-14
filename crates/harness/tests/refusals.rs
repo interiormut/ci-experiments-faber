@@ -30,8 +30,10 @@ fn run(harness_source: &str, client: Arc<dyn llm::ModelClient>) -> serde_json::V
         Seed::default(),
     );
     let mut events = drain_transcript(&mut run);
-    run.join()
-        .expect("the harness itself must not error — every refusal here is caught in JS");
+    support::finished(
+        run,
+        "the harness itself must not error — every refusal here is caught in JS",
+    );
     assert_eq!(
         events.len(),
         1,
@@ -182,7 +184,7 @@ fn scaffold_mismatch_on_reordered_tools() {
     );
     let mut run = HarnessRun::start(source.to_string(), input("hi"), g, Seed::default());
     let mut events = drain_transcript(&mut run);
-    run.join().expect("the refusal is caught in JS");
+    support::finished(run, "the refusal is caught in JS");
     let raw = events.remove(0)["raw"].clone();
     assert_eq!(raw["kind"], "scaffold_mismatch");
 }

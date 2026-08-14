@@ -26,7 +26,7 @@ fn identity_harness_end_to_end_matches_the_script() {
     );
 
     let events = drain_transcript(&mut run);
-    let frames = run.join().expect("run must finish cleanly").frames;
+    let frames = support::finished(run, "run must finish cleanly").frames;
 
     assert!(
         !events.is_empty(),
@@ -73,7 +73,7 @@ fn a_recording_client_renders_real_provider_bytes_not_a_fixture() {
         Seed::default(),
     );
     let _ = drain_transcript(&mut run);
-    run.join().expect("run must finish cleanly");
+    support::finished(run, "run must finish cleanly");
 
     let rendered = client.rendered();
     assert_eq!(rendered.len(), 1);
@@ -105,7 +105,7 @@ fn the_fold_invariant_holds_for_a_completed_model_frame() {
         Seed::default(),
     );
     let transcript = drain_transcript(&mut run);
-    let frames = run.join().expect("run must finish cleanly").frames;
+    let frames = support::finished(run, "run must finish cleanly").frames;
 
     let frame_id = frames
         .iter()
@@ -153,7 +153,7 @@ fn turn_one_has_no_committed_history_and_still_produces_valid_messages() {
         Seed::default(),
     );
     let _ = drain_transcript(&mut run);
-    run.join().expect("turn 1 must not require a prior commit");
+    support::finished(run, "turn 1 must not require a prior commit");
 
     let requests = client.requests_seen();
     assert_eq!(requests.len(), 1);
@@ -186,7 +186,7 @@ export default {
         Seed::default(),
     );
     let events = drain_transcript(&mut run);
-    run.join().expect("commit must be callable when granted");
+    support::finished(run, "commit must be callable when granted");
 
     assert_eq!(events.len(), 1);
     // The committed lineage covers the user turn plus the assistant's reply.
@@ -213,8 +213,10 @@ export default {
         Seed::default(),
     );
     let events = drain_transcript(&mut run);
-    run.join()
-        .expect("a harness that never calls commit must still finish cleanly");
+    support::finished(
+        run,
+        "a harness that never calls commit must still finish cleanly",
+    );
 
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["raw"]["commitIsFunction"], false);
@@ -259,7 +261,7 @@ export default {
 
     let mut run = HarnessRun::start(TOOL_HARNESS.to_string(), input("hi"), g, Seed::default());
     let events = drain_transcript(&mut run);
-    run.join().expect("run must finish");
+    support::finished(run, "run must finish");
 
     // Axis 1: a granted tool that ran and returned successfully.
     assert_eq!(events[0]["type"], "tool_result");
@@ -296,8 +298,7 @@ export default {
         Seed::default(),
     );
     let events = drain_transcript(&mut run);
-    run.join()
-        .expect("racing a call's own completion must not crash the run");
+    support::finished(run, "racing a call's own completion must not crash the run");
 
     assert_eq!(events.len(), 1);
     // Whichever side loses the race gets a real rejection (not `undefined`,

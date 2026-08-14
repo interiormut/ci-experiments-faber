@@ -636,8 +636,9 @@ async fn execute(
         }
     }
 
-    // Before the join, not after: a harness that ends in error never reaches
-    // `record_history`, and the text it did stream is still what the user saw.
+    // Before the join, not after: the text a harness streamed is what the user
+    // saw, and it belongs in the transcript at the position it arrived —
+    // whether or not the run goes on to end in error.
     if let Some(message) = compactor.finish() {
         publish(
             state,
@@ -660,24 +661,52 @@ async fn execute(
     // for as long as the grace period.
     watchdog.abort();
 
-    let outcome = joined
+    let mut outcome = joined
         .map_err(|error| {
             tracing::error!(%run_id, error = %error, "harness join task panicked");
             AppError::Internal
         })?
-        .map_err(|error| {
-            // A stopped run almost always arrives here: the refused call
-            // propagates out of a harness that did not catch it, which is the
-            // expected shape of a stop and not a fault to page anyone about.
-            if interrupt.raised() {
-                tracing::info!(%run_id, error = %error, "harness run ended at a stop");
-            } else {
-                tracing::error!(%run_id, error = %error, "harness run ended in error");
+        .map_err(|error| AppError::Harness(error.to_string()))?;
+
+    let error = outcome.error.as_ref().map(ToString::to_string);
+
+    if let Some(error) = &error {
+        if interrupt.raised() {
+            tracing::info!(%run_id, error = %error, "harness run ended at a stop");
+        } else {
+            tracing::error!(%run_id, error = %error, "harness run ended in error");
+        }
+
+        // The frame log is kept for diagnosis — a failed harness still recorded
+        // the exact provider exchange for every call it opened, and that is
+        // precisely the path where those bytes are worth having. The *lineage*
+        // is not advanced with it: a run that ends in error hands the thread's
+        // position to `record_recovery_history`, which is the sole writer for
+        // that path. Dropping the frame here is what keeps the two from each
+        // claiming a `seq` for one run.
+        outcome.committed_frame = None;
+    }
+
+    let committed = record_history(&state.db, run_id, thread_id, started_at, outcome)
+        .await
+        .inspect_err(|history_error| {
+            // Logged against the harness error rather than replacing it: the
+            // run's own cause is the more useful of the two, and it is about to
+            // be swallowed by this `?`.
+            if let Some(error) = &error {
+                tracing::error!(
+                    %run_id,
+                    error = %error,
+                    history_error = %history_error,
+                    "the frame log of a failed run could not be persisted"
+                );
             }
-            AppError::Harness(error.to_string())
         })?;
 
-    record_history(&state.db, run_id, thread_id, started_at, outcome).await
+    match error {
+        Some(error) => Err(AppError::Harness(error)),
+        None => Ok(committed),
+    }
 }
 
 /// A transcript-only message from the session, in the shape a client already

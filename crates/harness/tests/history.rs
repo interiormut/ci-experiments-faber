@@ -81,7 +81,7 @@ export default {
         Seed::default(),
     );
     let _ = drain_transcript(&mut run1);
-    run1.join().expect("run one must finish cleanly");
+    support::finished(run1, "run one must finish cleanly");
 
     let run1_rendered = client1.rendered();
     assert_eq!(run1_rendered.len(), 1);
@@ -125,7 +125,7 @@ export default {
         seed("anthropic", "test-model", committed),
     );
     let _ = drain_transcript(&mut run2);
-    run2.join().expect("run two must finish cleanly");
+    support::finished(run2, "run two must finish cleanly");
 
     let run2_rendered = client2.rendered();
     assert_eq!(run2_rendered.len(), 1);
@@ -192,8 +192,7 @@ export default {
         Seed::default(),
     );
     let events = drain_transcript(&mut run);
-    run.join()
-        .expect("a faithful round trip must not be refused");
+    support::finished(run, "a faithful round trip must not be refused");
 
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["raw"]["ok"], true);
@@ -265,7 +264,7 @@ export default {
         Seed::default(),
     );
     let _ = drain_transcript(&mut run);
-    run.join().expect("run must finish");
+    support::finished(run, "run must finish");
 
     let requests = client.requests_seen();
     assert_eq!(requests.len(), 5);
@@ -332,7 +331,7 @@ export default {
         Seed::default(),
     );
     let events = drain_transcript(&mut run);
-    run.join().expect("run must finish");
+    support::finished(run, "run must finish");
 
     assert_eq!(events.len(), 1);
     let raw = &events[0]["raw"];
@@ -387,7 +386,7 @@ export default {
         Seed::default(),
     );
     let events = drain_transcript(&mut run);
-    run.join().expect("run must finish");
+    support::finished(run, "run must finish");
 
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["raw"]["historyArrayMutationThrew"], true);
@@ -421,7 +420,7 @@ export default {
             Seed::default(),
         );
         let _ = drain_transcript(&mut run);
-        let frames = run.join().expect("run must finish cleanly").frames;
+        let frames = support::finished(run, "run must finish cleanly").frames;
         assert_usage_matches_the_fold(&frames);
     }
 
@@ -435,10 +434,7 @@ export default {
             Seed::default(),
         );
         let _ = drain_transcript(&mut run);
-        let frames = run
-            .join()
-            .expect("run must finish even though the call failed")
-            .frames;
+        let frames = support::finished(run, "run must finish even though the call failed").frames;
         assert_usage_matches_the_fold(&frames);
     }
 }

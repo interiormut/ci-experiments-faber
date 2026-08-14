@@ -309,6 +309,23 @@ pub fn drain_transcript(run: &mut HarnessRun) -> Vec<serde_json::Value> {
     })
 }
 
+/// Joins a run that is expected to finish on its own terms, failing the test
+/// with `why` if it did not.
+///
+/// `join` returns `Ok` for a run whose module threw — the error rides along in
+/// [`RunOutcome::error`] so a failed run's frames survive for diagnosis. That
+/// makes a bare `join().expect(..)` assert almost nothing, so every test that
+/// means "this run finished cleanly" says it through here instead.
+pub fn finished(run: HarnessRun, why: &str) -> RunOutcome {
+    let outcome = run.join().unwrap_or_else(|error| {
+        panic!("{why} — the run produced no outcome at all: {error}");
+    });
+    if let Some(error) = &outcome.error {
+        panic!("{why} — the harness ended in error: {error}");
+    }
+    outcome
+}
+
 /// Like draining and joining a run in sequence, except a run that never
 /// finishes fails this test with a clear message instead of hanging the
 /// whole suite. For a test whose entire point is proving a specific op
@@ -325,8 +342,16 @@ pub fn drain_and_join_with_timeout(
         let _ = tx.send((events, outcome));
     });
     match rx.recv_timeout(timeout) {
-        Ok((events, Ok(outcome))) => (events, outcome),
-        Ok((_, Err(error))) => panic!("run failed: {error}"),
+        Ok((events, Ok(outcome))) => {
+            // `join` reports a failed *module* through the outcome, not through
+            // `Err` — without this, a run that threw would reach the caller's
+            // assertions looking exactly like one that finished.
+            if let Some(error) = &outcome.error {
+                panic!("run failed: {error}");
+            }
+            (events, outcome)
+        }
+        Ok((_, Err(error))) => panic!("run failed before it could produce an outcome: {error}"),
         Err(_) => panic!(
             "run did not finish within {timeout:?} — this looks like a hang, not a slow test"
         ),
