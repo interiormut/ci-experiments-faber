@@ -15,9 +15,7 @@
 
 use std::fmt::Write as _;
 
-use environment::{
-    Blobs, Chunk, Denial, Entry, EntryKind, Exit, Fault, Listing, Manifest, Outcome, Span, Stat,
-};
+use environment::{Blobs, Chunk, Denial, Exit, Fault, Manifest, Outcome, Span, Stat};
 
 /// A failure, with its class named.
 ///
@@ -156,8 +154,8 @@ pub fn read(target: &str, path: &str, span: &Span, blobs: &dyn Blobs) -> String 
     out
 }
 
-/// What a write or an edit left behind.
-pub fn stat(target: &str, stat: &Stat) -> String {
+/// What one operation left behind.
+fn stat(target: &str, stat: &Stat) -> String {
     format!("{target}:{} — {} bytes", stat.path, stat.size)
 }
 
@@ -175,42 +173,6 @@ pub fn stats(target: &str, applied: &[Stat]) -> String {
         let _ = writeln!(out, "  {}", stat(target, entry));
     }
     out
-}
-
-/// A directory listing.
-pub fn listing(target: &str, path: &str, listing: &Listing) -> String {
-    let mut out = format!("{target}:{path}\n");
-
-    if listing.entries.is_empty() && !listing.truncated {
-        // A real negative answer, and it has to read as one — distinct from a
-        // rejected glob and from a directory that is not there.
-        out.push_str("(empty: this directory exists and has no matching entries)");
-        return out;
-    }
-
-    for entry in &listing.entries {
-        let _ = writeln!(out, "  {}", listed(entry));
-    }
-    if listing.truncated {
-        out.push_str(
-            "\nTRUNCATED — the listing hit its cap and there are more entries. \
-             Narrow it with a glob rather than treating this as the whole directory.",
-        );
-    }
-    out
-}
-
-fn listed(entry: &Entry) -> String {
-    let kind = match entry.kind {
-        EntryKind::Dir => "dir ",
-        EntryKind::File => "file",
-        EntryKind::Symlink => "link",
-        EntryKind::Other => "othr",
-    };
-    match entry.size {
-        Some(size) => format!("{kind} {} ({size} bytes)", entry.path),
-        None => format!("{kind} {}", entry.path),
-    }
 }
 
 /// Every bound environment at once.
@@ -344,20 +306,6 @@ mod tests {
             truncated: false,
         };
         assert!(captured(&lost, &blobs).contains("could not be read back"));
-    }
-
-    #[test]
-    fn an_empty_listing_reads_as_a_real_negative_answer() {
-        let text = listing(
-            "build",
-            "/work",
-            &Listing {
-                entries: Vec::new(),
-                truncated: false,
-            },
-        );
-        assert!(text.contains("empty"));
-        assert!(!text.contains("TRUNCATED"));
     }
 
     #[test]

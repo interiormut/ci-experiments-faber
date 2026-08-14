@@ -107,10 +107,7 @@ impl Surface {
             "stdin" => self.stdin(target.as_ref(), &input).await,
             "signal" => self.signal(target.as_ref(), &input).await,
             "read" => self.read(target.as_ref(), &input).await,
-            "write" => self.write(target.as_ref(), &input).await,
-            "edit" => self.edit(target.as_ref(), &input).await,
             "patch" => self.patch(target.as_ref(), &input).await,
-            "list" => self.list(target.as_ref(), &input).await,
             other => Err(format!(
                 "`{other}` is not one of this surface's tools; `targets` lists what is bound"
             )),
@@ -251,22 +248,8 @@ impl Surface {
         ))
     }
 
-    async fn write(&self, target: &dyn Target, input: &Value) -> Result<String, String> {
-        let where_ = path(target, &string(input, "path")?)?;
-        let content = string(input, "content")?;
-        let stat = target
-            .write(&where_, &Blob::from(content.into_bytes()))
-            .await
-            .map_err(fault)?;
-        Ok(render::stat(target.manifest().label.as_str(), &stat))
-    }
-
-    async fn edit(&self, target: &dyn Target, input: &Value) -> Result<String, String> {
-        let replace = self.replace(target, input)?;
-        let stats = target.edit(&Edit::Replace(replace)).await.map_err(fault)?;
-        Ok(render::stats(target.manifest().label.as_str(), &stats))
-    }
-
+    /// A single replacement, which reaches the target only as one op of a
+    /// patch: `patch` is the whole mutation surface.
     fn replace(&self, target: &dyn Target, input: &Value) -> Result<Replace, String> {
         Ok(Replace {
             path: path(target, &string(input, "path")?)?,
@@ -319,17 +302,6 @@ impl Surface {
                 "`{other}` is not an operation; use add, update, delete, or move"
             )),
         }
-    }
-
-    async fn list(&self, target: &dyn Target, input: &Value) -> Result<String, String> {
-        let where_ = path(target, &string(input, "path")?)?;
-        let glob = optional_string(input, "glob")?;
-        let listing = target.list(&where_, glob.as_deref()).await.map_err(fault)?;
-        Ok(render::listing(
-            target.manifest().label.as_str(),
-            where_.as_str(),
-            &listing,
-        ))
     }
 }
 
@@ -537,15 +509,20 @@ mod tests {
         assert!(result.content.contains("path_escape"));
     }
 
+    /// The round trip that used to need `write`, `edit`, and `list`: one
+    /// patch, one read, and the shell for the directory.
     #[tokio::test]
-    async fn a_written_file_reads_back_through_the_same_surface() {
+    async fn a_patched_file_reads_back_through_the_same_surface() {
         let dir = TempDir::new("roundtrip");
         let surface = bound_surface(&dir.0).await;
 
         let written = surface
             .invoke(
-                "write",
-                json!({ "target": "build", "path": "/notes.txt", "content": "one\ntwo\n" }),
+                "patch",
+                json!({
+                    "target": "build",
+                    "ops": [{ "op": "add", "path": "/notes.txt", "content": "one\ntwo\n" }],
+                }),
             )
             .await;
         assert!(!written.is_error, "{}", written.content);
@@ -559,52 +536,47 @@ mod tests {
 
         let edited = surface
             .invoke(
-                "edit",
-                json!({ "target": "build", "path": "/notes.txt", "old": "two", "new": "three" }),
+                "patch",
+                json!({
+                    "target": "build",
+                    "ops": [{
+                        "op": "update", "path": "/notes.txt",
+                        "old": "two", "new": "three",
+                    }],
+                }),
             )
             .await;
         assert!(!edited.is_error, "{}", edited.content);
 
+        // What `list` used to answer, from the verb that stayed.
         let listed = surface
-            .invoke(
-                "list",
-                json!({ "target": "build", "path": "/", "glob": "*.txt" }),
-            )
+            .invoke("exec", json!({ "target": "build", "command": "ls" }))
             .await;
         assert!(!listed.is_error, "{}", listed.content);
         assert!(listed.content.contains("notes.txt"));
     }
 
     #[tokio::test]
-    async fn a_rejected_glob_is_never_reported_as_an_empty_directory() {
-        let dir = TempDir::new("bad-glob");
-        let surface = bound_surface(&dir.0).await;
-        let result = surface
-            .invoke(
-                "list",
-                json!({ "target": "build", "path": "/", "glob": "src/*" }),
-            )
-            .await;
-        assert!(result.is_error);
-        assert!(result.content.contains("bad_pattern"));
-        assert!(!result.content.contains("empty"));
-    }
-
-    #[tokio::test]
-    async fn an_ambiguous_edit_is_refused_rather_than_guessed_at() {
+    async fn an_ambiguous_update_is_refused_rather_than_guessed_at() {
         let dir = TempDir::new("ambiguous");
         let surface = bound_surface(&dir.0).await;
         surface
             .invoke(
-                "write",
-                json!({ "target": "build", "path": "/twice.txt", "content": "a\na\n" }),
+                "patch",
+                json!({
+                    "target": "build",
+                    "ops": [{ "op": "add", "path": "/twice.txt", "content": "a\na\n" }],
+                }),
             )
             .await;
 
         let refused = surface
             .invoke(
-                "edit",
-                json!({ "target": "build", "path": "/twice.txt", "old": "a", "new": "b" }),
+                "patch",
+                json!({
+                    "target": "build",
+                    "ops": [{ "op": "update", "path": "/twice.txt", "old": "a", "new": "b" }],
+                }),
             )
             .await;
         assert!(refused.is_error);
@@ -612,10 +584,13 @@ mod tests {
 
         let deliberate = surface
             .invoke(
-                "edit",
+                "patch",
                 json!({
-                    "target": "build", "path": "/twice.txt",
-                    "old": "a", "new": "b", "all": true
+                    "target": "build",
+                    "ops": [{
+                        "op": "update", "path": "/twice.txt",
+                        "old": "a", "new": "b", "all": true,
+                    }],
                 }),
             )
             .await;

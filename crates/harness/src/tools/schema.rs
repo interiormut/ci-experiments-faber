@@ -1,6 +1,6 @@
 //! The tool definitions, as bytes in the prefix.
 //!
-//! Two properties this file exists to hold still.
+//! Three properties this file exists to hold still.
 //!
 //! **The schema is a constant.** It is not built from the bindings, not
 //! filtered by what any target can do, and not rebuilt when a target is bound
@@ -19,6 +19,16 @@
 //! and the failures that produces are the destructive ones: an `rm -rf`, a
 //! migration, a service restart on the wrong host. An omitted required
 //! parameter is a validation error the model repairs in one turn.
+//!
+//! **A description says what the model must know before it calls; the result
+//! says what happened.** Every sentence here is prefix rent paid on every
+//! request of every session, and a sentence describing the *shape of the
+//! answer* is rent paid for something [`render`](super::render) already says on
+//! the one turn it matters. So: no restating that a nonzero exit is a result,
+//! that a truncated listing says so, that a refusal is deterministic. What
+//! stays is what cannot be recovered from a result the model has not received
+//! yet — that `cwd` does not persist, that a patch is not atomic, that `old`
+//! must be unique.
 
 use serde_json::{Value, json};
 
@@ -27,10 +37,25 @@ use serde_json::{Value, json};
 fn target_property() -> Value {
     json!({
         "type": "string",
-        "description": "The label of the bound environment to run against. \
-                        Required. There is no default and no current target: \
-                        call `targets` to see what is bound.",
+        "description": "The bound environment to run against. Call `targets` to list them.",
     })
+}
+
+/// Where a file lives, or where a command runs.
+///
+/// Factored out rather than repeated: nine verbatim copies of this sentence
+/// were a quarter of all the description bytes in this file. The example is
+/// the instruction — `/src/main.rs` shows the root is not repeated, so saying
+/// so as well buys nothing.
+fn path_property(extra: &str) -> Value {
+    let mut description = "Absolute path inside the environment root, \
+                           e.g. `/src/main.rs`."
+        .to_owned();
+    if !extra.is_empty() {
+        description.push(' ');
+        description.push_str(extra);
+    }
+    json!({ "type": "string", "description": description })
 }
 
 fn tool(name: &str, description: &str, mut properties: Value, required: &[&str]) -> llm::ToolDef {
@@ -55,7 +80,16 @@ fn tool(name: &str, description: &str, mut properties: Value, required: &[&str])
 /// The whole surface, in a fixed order.
 ///
 /// Order is load-bearing: a reordered tool array hashes differently and reads
-/// as a changed prefix, so this list is appended to and never rearranged.
+/// as a changed prefix, so this list is appended to and never rearranged. A
+/// tool may still be *removed* at a release boundary — that invalidates the
+/// prefix once, the way any prompt change does, and leaves the order of what
+/// remains intact.
+///
+/// It is deliberately short. A verb that a shell command does as well belongs
+/// in the shell: `ls` needs no `list` tool, and a whole-file write is a patch
+/// with one `add` op. What is here is what the shell cannot do (a handle on a
+/// running process), what it does worse (a read that tells missing, empty, and
+/// past-the-end apart), and the one mutation verb.
 pub fn definitions() -> Vec<llm::ToolDef> {
     vec![
         targets(),
@@ -65,10 +99,7 @@ pub fn definitions() -> Vec<llm::ToolDef> {
         stdin(),
         signal(),
         read(),
-        write(),
-        edit(),
         patch(),
-        list(),
     ]
 }
 
@@ -77,11 +108,9 @@ pub fn definitions() -> Vec<llm::ToolDef> {
 fn targets() -> llm::ToolDef {
     llm::ToolDef {
         name: "targets".to_owned(),
-        description: "List the bound environments and what each one is: os, arch, shell, \
-                      root, which verbs it answers, which tools were found on it, whether \
-                      it can reach the network, and whether its root is enforced by a \
-                      container or only by this API. Enumerates what is bound — never \
-                      what exists on the machine."
+        description: "List the bound environments: os, arch, shell, root, which verbs each \
+                      answers, which tools were found on it, whether it can reach the network, \
+                      and whether its root is container-enforced."
             .to_owned(),
         input_schema: json!({
             "type": "object",
@@ -94,37 +123,26 @@ fn targets() -> llm::ToolDef {
 fn exec() -> llm::ToolDef {
     tool(
         "exec",
-        "Run a shell command in an environment and wait for it to finish.\n\n\
-         A nonzero exit code is a result, not a failure: the command ran and told you \
-         something. Only a refused or unreachable environment is an error. A command that \
-         hits its timeout is also a result — it ran, it did not stop, and what it printed \
-         first is returned.\n\n\
-         `cwd` is per call and never persists. `cd` inside the command string affects that \
-         command only; the next call starts from `cwd` or the root again. Large output is \
-         also written to a file inside the environment, and the result names the path so \
-         you can grep it rather than re-read it.",
+        "Run a shell command in an environment and wait for it to finish.\n\
+         - Always set `cwd`; it applies to this call only and never persists. Do not use \
+         `cd` unless necessary.\n\
+         - Large output is also written to a file inside the environment, and the result \
+         names the path.",
         json!({
             "command": {
                 "type": "string",
                 "description": "The command line, run through the environment's shell.",
             },
-            "cwd": {
-                "type": "string",
-                "description": "Absolute virtual path inside the environment's root. Do not \
-                                 prefix it with the root shown by `targets` (for example, use \
-                                 `/src/main.rs`, not `/workspace/src/main.rs`). Defaults to the \
-                                 root. Applies to this call only.",
-            },
+            "cwd": path_property("Defaults to the root."),
             "timeout_ms": {
                 "type": "integer",
-                "description": "How long to wait before killing the command and returning \
+                "description": "Milliseconds to wait before killing the command and returning \
                                 what it produced. Defaults to 120000.",
                 "minimum": 1,
             },
             "env": {
                 "type": "object",
-                "description": "Extra environment variables for this call, layered over \
-                                the environment's own.",
+                "description": "Extra environment variables for this call.",
                 "additionalProperties": { "type": "string" },
             },
             "stdin": {
@@ -139,27 +157,20 @@ fn exec() -> llm::ToolDef {
 fn start() -> llm::ToolDef {
     tool(
         "start",
-        "Start a command without waiting for it, and return a handle. Read what it has \
-         produced with `output`, write to it with `stdin`, and stop it with `signal`. \
-         Handles live as long as the connection to the environment does; if the machine \
-         goes away the handle goes with it and the work has to be restarted.",
+        "Start a command without waiting for it and return a process handle for `output`, \
+         `stdin`, and `signal`. Handles live only as long as the connection to the \
+         environment.",
         json!({
             "command": { "type": "string" },
-            "cwd": {
-                "type": "string",
-                "description": "Absolute virtual path inside the environment's root. Do not \
-                                 prefix it with the root shown by `targets` (for example, use \
-                                 `/src/main.rs`, not `/workspace/src/main.rs`). Defaults to the \
-                                 root.",
-            },
+            "cwd": path_property("Defaults to the root."),
             "env": {
                 "type": "object",
                 "additionalProperties": { "type": "string" },
             },
             "stdin": {
                 "type": "string",
-                "description": "Written to stdin before the process is handed back. \
-                                Unlike `exec`, stdin stays open.",
+                "description": "Written to stdin before the handle is returned. Unlike \
+                                `exec`, stdin stays open.",
             },
         }),
         &["command"],
@@ -169,9 +180,8 @@ fn start() -> llm::ToolDef {
 fn output() -> llm::ToolDef {
     tool(
         "output",
-        "Read what a started process has produced since a cursor, and get back the cursor \
-         to resume from. A process that is still running says so; once it has ended, the \
-         result carries how it ended and further reads only drain what is left.",
+        "Read what a started process has produced since a byte offset, and get back the \
+         offset to resume from.",
         json!({
             "process": {
                 "type": "integer",
@@ -196,15 +206,13 @@ fn output() -> llm::ToolDef {
 fn stdin() -> llm::ToolDef {
     tool(
         "stdin",
-        "Write to a started process's stdin — answer a prompt, drive a REPL. Not every \
-         environment offers this, and one that does not says so in `targets` rather than \
-         swallowing the write.",
+        "Write to a started process's stdin.",
         json!({
             "process": { "type": "integer", "minimum": 0 },
             "data": {
                 "type": "string",
-                "description": "Written as-is. Include the trailing newline yourself if \
-                                the process is waiting for one.",
+                "description": "Written as-is. Include the trailing newline yourself if the \
+                                process is waiting for one.",
             },
         }),
         &["process", "data"],
@@ -214,8 +222,7 @@ fn stdin() -> llm::ToolDef {
 fn signal() -> llm::ToolDef {
     tool(
         "signal",
-        "Send a signal to a started process. Process lifecycle only — there is no verb \
-         here that starts, stops, or removes an environment itself.",
+        "Send a signal to a started process.",
         json!({
             "process": { "type": "integer", "minimum": 0 },
             "signal": {
@@ -230,16 +237,9 @@ fn signal() -> llm::ToolDef {
 fn read() -> llm::ToolDef {
     tool(
         "read",
-        "Read a file, or a window of lines from one. A missing file, a window past the end \
-         of the file, and a file that is genuinely empty are three different answers and \
-         never look alike. A result that was cut short says so.",
+        "Read a file, or a window of lines from one.",
         json!({
-            "path": {
-                "type": "string",
-                "description": "Absolute virtual path inside the environment's root. Do not \
-                                prefix it with the root shown by `targets` (for example, use \
-                                `/src/main.rs`, not `/workspace/src/main.rs`).",
-            },
+            "path": path_property(""),
             "offset": {
                 "type": "integer",
                 "description": "0-based first line. Requires `limit`.",
@@ -255,60 +255,20 @@ fn read() -> llm::ToolDef {
     )
 }
 
-fn write() -> llm::ToolDef {
-    tool(
-        "write",
-        "Write a file whole, creating it if it does not exist and replacing it if it does. \
-         To change part of a file, use `edit` — rewriting a large file to change one line \
-         is slower, loses anything you had not read, and is harder to review.",
-        json!({
-            "path": {
-                "type": "string",
-                "description": "Absolute virtual path inside the environment's root. Do not \
-                                prefix it with the root shown by `targets` (for example, use \
-                                `/src/main.rs`, not `/workspace/src/main.rs`).",
-            },
-            "content": { "type": "string" },
-        }),
-        &["path", "content"],
-    )
-}
-
-fn edit() -> llm::ToolDef {
-    tool(
-        "edit",
-        "Replace exact text in a file. The anchor must appear exactly once, or the edit is \
-         refused rather than guessed at — pass `all` to replace every occurrence \
-         deliberately. A refusal is about the request, so change the anchor rather than \
-         retrying it.",
-        json!({
-            "path": {
-                "type": "string",
-                "description": "Absolute virtual path inside the environment's root. Do not \
-                                prefix it with the root shown by `targets` (for example, use \
-                                `/src/main.rs`, not `/workspace/src/main.rs`).",
-            },
-            "old": {
-                "type": "string",
-                "description": "Text to find. Must match exactly, whitespace included.",
-            },
-            "new": { "type": "string" },
-            "all": {
-                "type": "boolean",
-                "description": "Replace every occurrence. Without it, more than one match \
-                                is a refusal.",
-            },
-        }),
-        &["path", "old", "new"],
-    )
-}
-
+/// The only way to change a file.
+///
+/// One mutation verb rather than three. `write` was `add` under another name,
+/// and `edit` was a single-op patch — three names for one operation cost more
+/// in prefix and in "which one do I use" than the ceremony of an `ops` array
+/// costs at the call site.
 fn patch() -> llm::ToolDef {
     tool(
         "patch",
-        "Apply a set of file operations — create, replace-in-file, delete, rename — as one \
-         request. Operations run in order and are NOT atomic: if one fails, the ones before \
-         it stay applied, and the result says exactly which those were.",
+        "Change files: create, replace text in, delete, and rename them. Operations run in \
+         order and are NOT atomic: if one fails, the ones before it stay applied.\n\
+         - `add` writes a whole file, creating or replacing it.\n\
+         - `update` replaces `old` with `new`. `old` must match exactly, whitespace \
+         included, and must appear exactly once unless `all` is set.",
         json!({
             "ops": {
                 "type": "array",
@@ -320,26 +280,13 @@ fn patch() -> llm::ToolDef {
                             "type": "string",
                             "enum": ["add", "update", "delete", "move"],
                         },
-                        "path": {
-                            "type": "string",
-                            "description": "Absolute virtual path inside the environment's root; \
-                                            do not prefix it with the root shown by `targets`. \
-                                            For add, update, and delete.",
-                        },
+                        "path": path_property("For add, update, and delete."),
                         "content": { "type": "string", "description": "For add." },
                         "old": { "type": "string", "description": "For update." },
                         "new": { "type": "string", "description": "For update." },
                         "all": { "type": "boolean", "description": "For update." },
-                        "from": {
-                            "type": "string",
-                            "description": "Absolute virtual source path; do not prefix it with \
-                                            the root shown by `targets`. For move.",
-                        },
-                        "to": {
-                            "type": "string",
-                            "description": "Absolute virtual destination path; do not prefix it \
-                                            with the root shown by `targets`. For move.",
-                        },
+                        "from": path_property("The source. For move."),
+                        "to": path_property("The destination. For move."),
                     },
                     "required": ["op"],
                     "additionalProperties": false,
@@ -347,30 +294,6 @@ fn patch() -> llm::ToolDef {
             },
         }),
         &["ops"],
-    )
-}
-
-fn list() -> llm::ToolDef {
-    tool(
-        "list",
-        "List one directory, optionally filtered by a glob over the entry names. \
-         Non-recursive: a glob matches names in that directory and cannot contain `/`. \
-         A pattern the matcher rejects is reported as a rejected pattern, never as an \
-         empty directory. A listing that hit the cap says so — narrow it rather than \
-         reading it as complete.",
-        json!({
-            "path": {
-                "type": "string",
-                "description": "Absolute virtual path inside the environment's root. Do not \
-                                prefix it with the root shown by `targets` (for example, use \
-                                `/src/main.rs`, not `/workspace/src/main.rs`).",
-            },
-            "glob": {
-                "type": "string",
-                "description": "Shell-style: `*`, `?`, `[abc]`, `[!abc]`.",
-            },
-        }),
-        &["path"],
     )
 }
 
@@ -408,5 +331,30 @@ mod tests {
         // gives `definitions` a parameter.
         assert_eq!(definitions().len(), definitions().len());
         assert!(definitions().iter().any(|tool| tool.name == "exec"));
+    }
+
+    /// The surface is what the shell cannot do or does worse. A verb that is
+    /// `ls`, or a whole-file write that is one `add` op, does not come back.
+    #[test]
+    fn nothing_here_duplicates_a_shell_command_or_another_tool() {
+        let names: Vec<String> = definitions().into_iter().map(|tool| tool.name).collect();
+        for gone in ["list", "write", "edit", "glob", "grep", "find"] {
+            assert!(!names.iter().any(|name| name == gone), "`{gone}` is back");
+        }
+    }
+
+    /// Descriptions are prefix rent. This is a ceiling on the bill, not a
+    /// style rule: it catches the drift back toward explaining the *result*
+    /// in the *schema*, which is where the last kilobyte went.
+    #[test]
+    fn no_description_grows_back_into_an_essay() {
+        for tool in definitions() {
+            assert!(
+                tool.description.len() < 400,
+                "`{}`: {} chars — say it in the result instead",
+                tool.name,
+                tool.description.len()
+            );
+        }
     }
 }
