@@ -241,7 +241,14 @@ fn validate_transport_config(
     transport: Transport,
     ssh_address: Option<&str>,
     ssh_host_key: Option<&str>,
+    allow_local_hosts: bool,
 ) -> Result<(), AppError> {
+    if transport == Transport::Local && !allow_local_hosts {
+        return Err(AppError::BadRequest(
+            "local hosts are disabled by FABER_ALLOW_LOCAL_HOSTS".into(),
+        ));
+    }
+
     match transport {
         Transport::Ssh if ssh_address.is_none_or(str::is_empty) => Err(AppError::BadRequest(
             "ssh_address is required when transport is 'ssh'".into(),
@@ -384,7 +391,12 @@ async fn create(
 
     let ssh_address = trimmed(input.ssh_address.as_deref());
     let ssh_host_key = trimmed(input.ssh_host_key.as_deref());
-    validate_transport_config(input.transport, ssh_address, ssh_host_key)?;
+    validate_transport_config(
+        input.transport,
+        ssh_address,
+        ssh_host_key,
+        state.config.allow_local_hosts,
+    )?;
 
     let host_root = trimmed(input.root_path.as_deref());
     if let Some(root) = host_root {
@@ -523,6 +535,7 @@ async fn update(
         effective_transport,
         effective_ssh_address,
         submitted_host_key,
+        state.config.allow_local_hosts || current.transport == Transport::Local.as_str(),
     )?;
 
     let effective_exec_mode = input.exec_mode.unwrap_or_else(|| {
@@ -1246,19 +1259,26 @@ mod tests {
     fn a_local_host_may_not_carry_ssh_configuration() {
         // Mirrors the DB checks, so a mismatch comes back naming the field
         // rather than as an opaque constraint violation.
-        assert!(validate_transport_config(Transport::Local, None, None).is_ok());
-        assert!(validate_transport_config(Transport::Local, Some("a@b:22"), None).is_err());
-        assert!(validate_transport_config(Transport::Local, None, Some("SHA256:x")).is_err());
+        assert!(validate_transport_config(Transport::Local, None, None, true).is_ok());
+        assert!(validate_transport_config(Transport::Local, Some("a@b:22"), None, true).is_err());
+        assert!(validate_transport_config(Transport::Local, None, Some("SHA256:x"), true).is_err());
+    }
+
+    #[test]
+    fn local_hosts_can_be_disabled_by_configuration() {
+        assert!(validate_transport_config(Transport::Local, None, None, false).is_err());
+        assert!(validate_transport_config(Transport::Ssh, Some("a@b:22"), None, false).is_ok());
     }
 
     #[test]
     fn an_ssh_host_needs_an_address_but_not_yet_a_host_key() {
-        assert!(validate_transport_config(Transport::Ssh, None, None).is_err());
+        assert!(validate_transport_config(Transport::Ssh, None, None, true).is_err());
         // No host key is the normal state before first contact: the connection
         // records what it saw, and everything after verifies against it.
-        assert!(validate_transport_config(Transport::Ssh, Some("a@b:22"), None).is_ok());
+        assert!(validate_transport_config(Transport::Ssh, Some("a@b:22"), None, true).is_ok());
         assert!(
-            validate_transport_config(Transport::Ssh, Some("a@b:22"), Some("SHA256:x")).is_ok()
+            validate_transport_config(Transport::Ssh, Some("a@b:22"), Some("SHA256:x"), true)
+                .is_ok()
         );
     }
 
@@ -1278,6 +1298,6 @@ mod tests {
         // nothing" two states that look different and behave the same.
         assert_eq!(trimmed(Some("  ")), None);
         assert_eq!(trimmed(Some(" SHA256:x ")), Some("SHA256:x"));
-        assert!(validate_transport_config(Transport::Local, Some(""), Some("")).is_ok());
+        assert!(validate_transport_config(Transport::Local, Some(""), Some(""), true).is_ok());
     }
 }

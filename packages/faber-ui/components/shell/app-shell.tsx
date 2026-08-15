@@ -8,6 +8,7 @@ import {
   FaberError,
   type CreateModelRequest,
   type CreatedSession,
+  type FaberConfig,
   type ModelConfig,
   type Session,
   type UpdateModelRequest,
@@ -16,6 +17,7 @@ import {
 import { AppSidebar, sessionNavKey } from "@/components/shell/app-sidebar"
 
 type AppShellContextValue = {
+  config: FaberConfig | null
   sessions: Session[]
   sessionsLoading: boolean
   models: ModelConfig[]
@@ -69,6 +71,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [sessionsLoading, setSessionsLoading] = React.useState(true)
   const [models, setModels] = React.useState<ModelConfig[]>([])
   const [modelsLoaded, setModelsLoaded] = React.useState(false)
+  const [config, setConfig] = React.useState<FaberConfig | null>(null)
   const [creatingSession, setCreatingSession] = React.useState(false)
   const [createError, setCreateError] = React.useState<string | null>(null)
 
@@ -103,6 +106,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       .catch(() => {})
       .finally(() => {
         if (!cancelled) setModelsLoaded(true)
+      })
+
+    void faber
+      .config()
+      .then((value) => {
+        if (!cancelled) setConfig(value)
       })
 
     return () => {
@@ -166,6 +175,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const value = React.useMemo<AppShellContextValue>(
     () => ({
+       config,
       sessions,
       sessionsLoading,
       models,
@@ -183,6 +193,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       removeModel,
     }),
     [
+      config,
       sessions,
       sessionsLoading,
       models,

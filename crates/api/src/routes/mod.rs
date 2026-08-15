@@ -27,6 +27,7 @@ use crate::{
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/health", get(|| async { Json(json!({ "ok": true })) }))
+        .route("/api/config", get(config))
         .route("/api/me", get(me))
         .route("/api/logout", post(logout))
         .merge(credentials::router())
@@ -44,6 +45,17 @@ pub fn router() -> Router<AppState> {
 /// a denial-of-service surface the moment a session accumulates history.
 const DEFAULT_LIMIT: i64 = 100;
 const MAX_LIMIT: i64 = 500;
+
+#[derive(Debug, Serialize)]
+struct ConfigResponse {
+    allow_local_hosts: bool,
+}
+
+async fn config(State(state): State<AppState>) -> Json<ConfigResponse> {
+    Json(ConfigResponse {
+        allow_local_hosts: state.config.allow_local_hosts,
+    })
+}
 
 pub(crate) fn clamp_limit(requested: Option<i64>) -> i64 {
     requested.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
@@ -97,11 +109,22 @@ fn me_response(user: &User) -> MeResponse {
 
 #[cfg(test)]
 mod tests {
+    use super::ConfigResponse;
+
     /// Axum validates path syntax when the route is registered, not when the crate is
     /// compiled — a v0.7-style `:id` capture type-checks and then panics at boot. Building
     /// the router here moves that failure into `cargo test`.
     #[test]
     fn router_builds() {
         let _ = super::router();
+    }
+
+    #[test]
+    fn config_response_exposes_only_the_local_host_policy() {
+        let value = serde_json::to_value(ConfigResponse {
+            allow_local_hosts: false,
+        })
+        .unwrap();
+        assert_eq!(value, serde_json::json!({ "allow_local_hosts": false }));
     }
 }

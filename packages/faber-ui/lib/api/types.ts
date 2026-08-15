@@ -114,6 +114,11 @@ export interface UpdateModelRequest {
 // Execution environments
 // ---------------------------------------------------------------------------
 
+/** Public server configuration used to shape frontend host controls. */
+export interface FaberConfig {
+  allow_local_hosts: boolean
+}
+
 /** How faber reaches the machine. */
 export type Transport = "local" | "ssh"
 

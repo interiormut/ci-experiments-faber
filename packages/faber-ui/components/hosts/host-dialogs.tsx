@@ -18,6 +18,7 @@ import {
   type UpdateImageRequest,
   type Uuid,
 } from "@/lib/api"
+import { useAppShell } from "@/components/shell/app-shell"
 import { Button } from "@/components/ui/button"
 import { AnimatedField } from "@/components/ui/animated-field"
 import {
@@ -126,13 +127,17 @@ export function HostFormDialog({
   )
   const [submitting, setSubmitting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
+  const { config } = useAppShell()
+  const allowLocalHosts = config?.allow_local_hosts ?? true
+  const transport =
+    !editing && !allowLocalHosts && form.transport === "local" ? "ssh" : form.transport
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault()
     setSubmitting(true)
     setError(null)
     try {
-      const body = requestFromHostForm(form)
+      const body = requestFromHostForm({ ...form, transport })
       if (editing) await onUpdate(editing.id, body)
       else await onCreate(body)
       onOpenChange(false)
@@ -167,18 +172,18 @@ export function HostFormDialog({
           >
             <select
               id="host-transport"
-              value={form.transport}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, transport: e.target.value as Transport }))
-              }
+               value={transport}
+              onChange={(e) => setForm((f) => ({ ...f, transport: e.target.value as Transport }))}
               className={SELECT_CLASS}
             >
-              <option value="local">local — this machine</option>
+              <option value="local" disabled={!allowLocalHosts && !editing}>
+                local — this machine{!allowLocalHosts && !editing ? " (disabled)" : ""}
+              </option>
               <option value="ssh">ssh — a remote machine</option>
             </select>
           </Field>
 
-          {form.transport === "ssh" ? (
+           {transport === "ssh" ? (
             <>
               <AnimatedField
                 id="host-ssh-address"

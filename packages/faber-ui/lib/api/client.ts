@@ -9,6 +9,7 @@ import type {
   CreateThreadRequest,
   CreatedSession,
   Credential,
+  FaberConfig,
   Host,
   HostContainer,
   HostProbe,
@@ -144,6 +145,11 @@ export class FaberClient {
   // -------------------------------------------------------------------------
   // Execution environments
   // -------------------------------------------------------------------------
+
+  /** Public server configuration needed before rendering host controls. */
+  async config(): Promise<FaberConfig> {
+    return this.request("GET", "/api/config")
+  }
 
   /**
    * Every host the caller registered, each with its active container

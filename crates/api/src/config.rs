@@ -20,6 +20,9 @@ pub struct Config {
     pub surge_session_ttl: Duration,
     pub api_port: u16,
     pub cors_origins: Vec<String>,
+    /// Whether users may register hosts reached through the API process itself.
+    /// Existing local hosts are left intact when this is disabled.
+    pub allow_local_hosts: bool,
     /// One SearXNG instance to search through. Set it and every run gets the
     /// `search` tool; leave it unset and no run does.
     pub searxng_url: Option<String>,
@@ -66,6 +69,9 @@ impl Config {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default(),
+            allow_local_hosts: env::var("FABER_ALLOW_LOCAL_HOSTS")
+                .map(|value| value.trim() != "false")
+                .unwrap_or(true),
             searxng_url: env::var("SEARXNG_URL")
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
