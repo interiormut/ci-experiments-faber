@@ -48,7 +48,11 @@ pub struct ModelConfig {
 }
 
 /// The key under `capabilities` that carries the reasoning-history policy.
-pub const REASONING_HISTORY_KEY: &str = "reasoning_history";
+pub(crate) const REASONING_HISTORY_KEY: &str = "reasoning_history";
+
+/// The key under `params` that carries per-endpoint request tweaks — see
+/// [`llm::AdvancedOptions`].
+pub(crate) const ADVANCED_KEY: &str = "advanced";
 
 impl ModelConfig {
     /// How much of a replayed assistant turn's reasoning this model wants back.
@@ -56,11 +60,42 @@ impl ModelConfig {
     /// `None` means the row says nothing and the wire's own default applies —
     /// which is also the answer for a row written before this setting existed.
     /// The value is validated when the row is written (see `routes::models`),
-    /// so anything unreadable here is a row that went around the API, and
-    /// falling back to the wire default beats refusing to run.
+    /// so a row this can't parse went around the API, and [`Capabilities`]'s
+    /// own field falls back to `None` for exactly that case rather than
+    /// taking the rest of the row down with it — see [`lenient`].
     pub fn reasoning_history(&self) -> Option<llm::ReasoningHistory> {
-        parse_reasoning_history(self.capabilities.get(REASONING_HISTORY_KEY)?).ok()?
+        serde_json::from_value::<Capabilities>(self.capabilities.clone())
+            .ok()?
+            .reasoning_history
     }
+
+    /// Per-endpoint request tweaks this model wants applied to every call.
+    ///
+    /// Defaults to the no-op value when the row says nothing, and — like
+    /// [`Self::reasoning_history`] — when it says something the write path
+    /// would have rejected: a row that went around the API should degrade,
+    /// not fail the run.
+    pub fn advanced_options(&self) -> llm::AdvancedOptions {
+        serde_json::from_value::<ModelParams>(self.params.clone())
+            .map(|params| params.advanced)
+            .unwrap_or_default()
+    }
+}
+
+/// Deserializes `T`, defaulting instead of failing the surrounding struct's
+/// parse when this one field doesn't fit. Used only on the fields whose
+/// write path validates them strictly (see `parse_reasoning_history`,
+/// `parse_advanced_options`) — a row that went around that validation should
+/// degrade on that field alone, not drag every other field on the row down
+/// with it (`other_capabilities_are_left_alone`, `other_params_are_left_alone`
+/// below).
+fn lenient<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 /// Reads a `capabilities.reasoning_history` value, naming what is wrong with
@@ -74,6 +109,20 @@ pub fn parse_reasoning_history(value: &Value) -> Result<Option<llm::ReasoningHis
         .map_err(|_| {
             format!("{REASONING_HISTORY_KEY} must be one of \"full\", \"text\", or \"omitted\"")
         })
+}
+
+/// Reads a `params.advanced` value, naming what is wrong with it rather than
+/// falling back — the write path wants the complaint.
+pub fn parse_advanced_options(value: &Value) -> Result<llm::AdvancedOptions, String> {
+    if value.is_null() {
+        return Ok(llm::AdvancedOptions::default());
+    }
+    serde_json::from_value(value.clone()).map_err(|_| {
+        format!(
+            "{ADVANCED_KEY} must be an object with an optional \"reasoning_split\" boolean and \
+             an optional \"extra\" object"
+        )
+    })
 }
 
 #[derive(Insertable)]
@@ -112,12 +161,20 @@ pub struct ModelParams {
     pub max_output_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<Value>,
+    /// See [`ModelConfig::advanced_options`] — that reader is the one the run
+    /// path uses, since it has to answer for a row that carries nothing here.
+    #[serde(default, deserialize_with = "lenient")]
+    pub advanced: llm::AdvancedOptions,
     #[serde(flatten)]
     pub passthrough: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Capabilities {
+    /// Unenforced today — no route validates it and nothing reads it — so a
+    /// row with no opinion on it must still parse; hence the default rather
+    /// than a required field.
+    #[serde(default)]
     pub context_window: u32,
     #[serde(default)]
     pub tools: bool,
@@ -127,7 +184,7 @@ pub struct Capabilities {
     pub vision: bool,
     /// See [`ModelConfig::reasoning_history`] — that reader is the one the run
     /// path uses, since it has to answer for a row that carries nothing here.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub reasoning_history: Option<llm::ReasoningHistory>,
 }
 
@@ -137,6 +194,10 @@ mod tests {
     use serde_json::json;
 
     fn config(capabilities: Value) -> ModelConfig {
+        config_with(json!({}), capabilities)
+    }
+
+    fn config_with(params: Value, capabilities: Value) -> ModelConfig {
         ModelConfig {
             id: Uuid::nil(),
             user_id: Uuid::nil(),
@@ -146,7 +207,7 @@ mod tests {
             wire_id: "claude-opus-5".into(),
             family: None,
             credential_id: None,
-            params: json!({}),
+            params,
             capabilities,
             created_at: Utc::now(),
         }
@@ -193,5 +254,56 @@ mod tests {
             Some(llm::ReasoningHistory::Text)
         );
         assert_eq!(config.capabilities["context_window"], json!(200000));
+    }
+
+    #[test]
+    fn a_row_that_says_nothing_gets_the_no_op_advanced_options() {
+        assert_eq!(
+            config_with(json!({}), json!({})).advanced_options(),
+            llm::AdvancedOptions::default()
+        );
+    }
+
+    #[test]
+    fn advanced_options_reach_the_run_as_written() {
+        let config = config_with(
+            json!({ ADVANCED_KEY: { "reasoning_split": true, "extra": { "top_k": 5 } } }),
+            json!({}),
+        );
+        assert_eq!(
+            config.advanced_options(),
+            llm::AdvancedOptions {
+                reasoning_split: true,
+                extra: serde_json::json!({ "top_k": 5 }).as_object().unwrap().clone(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_row_written_around_the_api_falls_back_to_the_no_op_value() {
+        // The write path refuses a non-object `advanced`; a row carrying one
+        // anyway came from somewhere else, and a no-op beats failing the run.
+        let config = config_with(json!({ ADVANCED_KEY: "yes please" }), json!({}));
+        assert_eq!(config.advanced_options(), llm::AdvancedOptions::default());
+    }
+
+    #[test]
+    fn the_write_path_gets_told_what_is_wrong_with_advanced_options() {
+        assert!(parse_advanced_options(&json!("yes please")).is_err());
+        assert!(parse_advanced_options(&json!({ "reasoning_split": "yes" })).is_err());
+        assert_eq!(
+            parse_advanced_options(&json!(null)),
+            Ok(llm::AdvancedOptions::default())
+        );
+    }
+
+    #[test]
+    fn other_params_are_left_alone() {
+        let config = config_with(
+            json!({"temperature": 0.5, ADVANCED_KEY: { "reasoning_split": true }}),
+            json!({}),
+        );
+        assert!(config.advanced_options().reasoning_split);
+        assert_eq!(config.params["temperature"], json!(0.5));
     }
 }

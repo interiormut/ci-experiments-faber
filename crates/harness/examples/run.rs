@@ -30,6 +30,7 @@ async fn main() {
         client: Arc::new(client),
         model: llm::anthropic::DEFAULT_MODEL.to_string(),
         reasoning_history: None,
+        advanced_options: llm::AdvancedOptions::default(),
         tools: Vec::new(),
         tool_invoker: None,
         commit_granted: true,

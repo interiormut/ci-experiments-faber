@@ -305,6 +305,64 @@ export default {
     assert_eq!(requests[4].sampling.temperature, Some(0.5));
 }
 
+/// A model's advanced options (`llm::AdvancedOptions`, granted rather than
+/// requested — same reasoning as `reasoning_history`) are a floor under every
+/// call: present with nothing else asked for, and still present — merged, not
+/// replaced — when a call supplies its own `extra`.
+#[test]
+fn advanced_options_from_the_grant_underlie_every_calls_extra() {
+    const TWO_CALLS: &str = r#"
+export default {
+  execute: async function* (ctx, input) {
+    const a = ctx.llm.stream({ messages: [...ctx.history.read(), ...input] });
+    for await (const e of a) {}
+    await ctx.commit(a);
+
+    const b = ctx.llm.stream({
+      extra: { vendorFlag: true },
+      messages: [...ctx.history.read(), ...input],
+    });
+    for await (const e of b) {}
+
+    yield { type: "unknown", raw: { ok: true } };
+  }
+};
+"#;
+
+    let client = Arc::new(Scripted::sequence(vec![text_reply("a"), text_reply("b")]));
+    let mut g = grant(client.clone());
+    g.advanced_options = llm::AdvancedOptions {
+        reasoning_split: true,
+        extra: serde_json::json!({ "top_k": 5 })
+            .as_object()
+            .unwrap()
+            .clone(),
+    };
+    let mut run = HarnessRun::start(TWO_CALLS.to_string(), input("hi"), g, Seed::default());
+    let _ = drain_transcript(&mut run);
+    support::finished(run, "run must finish");
+
+    let requests = client.requests_seen();
+    assert_eq!(requests.len(), 2);
+
+    assert_eq!(
+        requests[0].extra.get("reasoning_split"),
+        Some(&serde_json::json!(true))
+    );
+    assert_eq!(requests[0].extra.get("top_k"), Some(&serde_json::json!(5)));
+
+    // The call's own `extra` adds a key rather than wiping the grant's floor.
+    assert_eq!(
+        requests[1].extra.get("reasoning_split"),
+        Some(&serde_json::json!(true))
+    );
+    assert_eq!(requests[1].extra.get("top_k"), Some(&serde_json::json!(5)));
+    assert_eq!(
+        requests[1].extra.get("vendorFlag"),
+        Some(&serde_json::json!(true))
+    );
+}
+
 /// T5: before anything is committed, `committedRequest()` is exactly the
 /// granted tool set and nothing else.
 #[test]

@@ -15,8 +15,8 @@ use crate::{
     auth::AuthUser,
     error::{ApiResult, AppError},
     models::model_config::{
-        ModelConfig, NewModelConfig, REASONING_HISTORY_KEY, UpdateModelConfig, Wire,
-        parse_reasoning_history,
+        ADVANCED_KEY, ModelConfig, NewModelConfig, REASONING_HISTORY_KEY, UpdateModelConfig, Wire,
+        parse_advanced_options, parse_reasoning_history,
     },
     routes::deserialize_optional_field,
     schema::{credentials, models},
@@ -100,6 +100,16 @@ fn validate_capabilities(capabilities: &Value) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Rejects a `params.advanced` blob the run path could not make sense of —
+/// same reasoning as [`validate_capabilities`].
+fn validate_params(params: &Value) -> Result<(), AppError> {
+    let Some(value) = params.get(ADVANCED_KEY) else {
+        return Ok(());
+    };
+    parse_advanced_options(value).map_err(AppError::BadRequest)?;
+    Ok(())
+}
+
 fn validate_alias(alias: &str) -> Result<(), AppError> {
     if alias.is_empty() {
         return Err(AppError::BadRequest("alias is required".into()));
@@ -128,6 +138,7 @@ async fn create(
     }
 
     validate_capabilities(&input.capabilities)?;
+    validate_params(&input.params)?;
 
     let wire_str = input.wire.as_str();
 
@@ -218,6 +229,9 @@ async fn update(
 
     if let Some(capabilities) = &input.capabilities {
         validate_capabilities(capabilities)?;
+    }
+    if let Some(params) = &input.params {
+        validate_params(params)?;
     }
 
     let mut conn = state.db.get().await?;

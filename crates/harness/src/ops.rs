@@ -270,7 +270,15 @@ pub fn op_llm_stream_open(
     llm_request.reasoning_history = harness.grant.reasoning_history;
     llm_request.sampling = sampling.unwrap_or_default();
     llm_request.stop_sequences = stop_sequences.clone().unwrap_or_default();
-    llm_request.extra = extra.clone().unwrap_or_default();
+    // The grant's advanced options are a floor, not a baseline field: they
+    // must apply to every call for this model, even the first one where a
+    // workflow's own `extra` overrides an unrelated key entirely (`or_else`
+    // above, not a merge).
+    llm_request.extra = {
+        let mut merged = harness.grant.advanced_options.as_extra();
+        merged.extend(extra.clone().unwrap_or_default());
+        merged
+    };
 
     let rendered = harness
         .grant

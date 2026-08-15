@@ -215,6 +215,40 @@ pub enum ReasoningHistory {
     Omitted,
 }
 
+/// Per-endpoint request tweaks a model config wants applied to every call it
+/// makes — a property of what's behind the `base_url`, not of the wire, so it
+/// sits beside [`ReasoningHistory`] as something the caller resolves rather
+/// than something a workflow decides per call.
+///
+/// `Default` is the no-op value: nothing here changes the request.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AdvancedOptions {
+    /// Some OpenAI-wire endpoints (MiniMax among them) mix reasoning into
+    /// `content` deltas unless told otherwise. Setting this sends
+    /// `reasoning_split: true` in the request body, which switches those
+    /// endpoints to the `reasoning_content` delta every wire already parses.
+    #[serde(default)]
+    pub reasoning_split: bool,
+    /// Merged into the request body verbatim, beneath whatever a call's own
+    /// [`Request::extra`] supplies — for endpoint quirks this crate has no
+    /// dedicated field for.
+    #[serde(default)]
+    pub extra: serde_json::Map<String, Value>,
+}
+
+impl AdvancedOptions {
+    /// The floor a call's own `extra` is layered over — see
+    /// `Request::extra`'s "modelled fields win" rule, which this predates.
+    pub fn as_extra(&self) -> serde_json::Map<String, Value> {
+        let mut map = self.extra.clone();
+        if self.reasoning_split {
+            map.entry("reasoning_split".to_string())
+                .or_insert(Value::Bool(true));
+        }
+        map
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThinkingDisplay {

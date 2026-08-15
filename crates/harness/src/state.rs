@@ -218,6 +218,11 @@ pub struct Grant {
     /// rather than in the [`Baseline`] a workflow can override. `None` leaves
     /// it to the wire's default.
     pub reasoning_history: Option<llm::ReasoningHistory>,
+    /// Per-endpoint request tweaks (`llm::AdvancedOptions`), applied as a
+    /// floor beneath every call's own `extra` — see `op_llm_stream_open`.
+    /// Granted for the same reason as `reasoning_history`: a fact about the
+    /// endpoint behind `model`, not a per-call decision.
+    pub advanced_options: llm::AdvancedOptions,
     pub tools: Vec<llm::ToolDef>,
     pub tool_invoker: Option<ToolInvoker>,
     pub commit_granted: bool,

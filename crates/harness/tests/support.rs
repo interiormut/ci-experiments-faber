@@ -279,6 +279,7 @@ pub fn grant(client: Arc<dyn ModelClient>) -> Grant {
         client,
         model: "test-model".into(),
         reasoning_history: None,
+        advanced_options: llm::AdvancedOptions::default(),
         tools: Vec::new(),
         tool_invoker: None,
         commit_granted: true,
