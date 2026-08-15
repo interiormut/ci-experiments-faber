@@ -21,14 +21,22 @@ FROM chef AS cacher
 
 COPY --from=planner /app/recipe.json recipe.json
 
-RUN cargo chef cook --release --locked --recipe-path recipe.json
+RUN --mount=type=cache,id=faber-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=faber-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=faber-api-target,target=/app/target,sharing=locked \
+    cargo chef cook --release --locked --recipe-path recipe.json
 
 FROM cacher AS builder
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 
-RUN cargo build --release --locked -p api
+RUN --mount=type=cache,id=faber-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=faber-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=faber-api-target,target=/app/target,sharing=locked \
+    cargo build --release --locked -p api \
+    && mkdir -p /out \
+    && cp target/release/api /out/faber-api
 
 FROM debian:bookworm-slim AS runner
 
@@ -41,7 +49,7 @@ WORKDIR /app
 
 ENV API_PORT=3001
 
-COPY --from=builder /app/target/release/api /usr/local/bin/faber-api
+COPY --from=builder /out/faber-api /usr/local/bin/faber-api
 
 USER faber
 
