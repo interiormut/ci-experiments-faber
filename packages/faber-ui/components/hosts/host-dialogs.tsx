@@ -24,16 +24,19 @@ import { useAppShell } from "@/components/shell/app-shell"
 import { Button } from "@/components/ui/button"
 import { AnimatedField } from "@/components/ui/animated-field"
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
   Dialog,
   DialogContent,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/responsive-dialog"
-
-/** Matches the `<select>` styling the models page established. */
-const SELECT_CLASS =
-  "w-full rounded-lg border border-border bg-card px-3 py-2.5 text-[15px] text-foreground outline-none transition-colors hover:border-foreground/20 focus:border-primary focus:ring-4 focus:ring-primary/10"
 
 function Field({
   id,
@@ -184,17 +187,20 @@ export function HostFormDialog({
             label="Transport"
             hint="How faber reaches the machine."
           >
-            <select
-              id="host-transport"
-               value={transport}
-              onChange={(e) => setForm((f) => ({ ...f, transport: e.target.value as Transport }))}
-              className={SELECT_CLASS}
+            <Select
+              value={transport}
+              onValueChange={(value) => setForm((f) => ({ ...f, transport: value as Transport }))}
             >
-              <option value="local" disabled={!allowLocalHosts && !editing}>
-                local — this machine{!allowLocalHosts && !editing ? " (disabled)" : ""}
-              </option>
-              <option value="ssh">ssh — a remote machine</option>
-            </select>
+              <SelectTrigger id="host-transport">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="local" disabled={!allowLocalHosts && !editing}>
+                  local — this machine{!allowLocalHosts && !editing ? " (disabled)" : ""}
+                </SelectItem>
+                <SelectItem value="ssh">ssh — a remote machine</SelectItem>
+              </SelectContent>
+            </Select>
           </Field>
 
            {transport === "ssh" ? (
@@ -212,22 +218,21 @@ export function HostFormDialog({
                 label="SSH key"
                 hint="Select an SSH private-key credential."
               >
-                <select
-                  id="host-ssh-key-ref"
+                <Select
                   value={form.ssh_key_ref}
-                  onChange={(event) =>
-                    setForm((f) => ({ ...f, ssh_key_ref: event.target.value }))
-                  }
-                  className={SELECT_CLASS}
-                  required
+                  onValueChange={(value) => setForm((f) => ({ ...f, ssh_key_ref: value }))}
                 >
-                  <option value="">Select a credential</option>
-                  {credentials.map((credential) => (
-                    <option key={credential.id} value={credential.id}>
-                      {credential.label} ····{credential.last_four}
-                    </option>
-                  ))}
-                </select>
+                   <SelectTrigger id="host-ssh-key-ref" aria-required="true">
+                     <SelectValue placeholder="Select a credential" />
+                   </SelectTrigger>
+                   <SelectContent>
+                     {credentials.map((credential) => (
+                       <SelectItem key={credential.id} value={credential.id}>
+                         {credential.label} ····{credential.last_four}
+                       </SelectItem>
+                     ))}
+                  </SelectContent>
+                </Select>
                 {credentials.every((credential) => credential.kind !== "ssh_key") ? (
                   <p className="mt-1.5 text-xs text-muted-foreground">
                     Add an SSH private-key credential first in Credentials.
@@ -242,17 +247,20 @@ export function HostFormDialog({
             label="Execution mode"
             hint="What faber execs into once it has reached the machine. This is a choice, not a consequence of the endpoint below."
           >
-            <select
-              id="host-exec-mode"
+            <Select
               value={form.exec_mode}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, exec_mode: e.target.value as ExecMode }))
+              onValueChange={(value) =>
+                setForm((f) => ({ ...f, exec_mode: value as ExecMode }))
               }
-              className={SELECT_CLASS}
             >
-              <option value="direct">direct — the machine&apos;s own filesystem</option>
-              <option value="docker">docker — containers on the machine</option>
-            </select>
+              <SelectTrigger id="host-exec-mode">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="direct">direct — the machine&apos;s own filesystem</SelectItem>
+                <SelectItem value="docker">docker — containers on the machine</SelectItem>
+              </SelectContent>
+            </Select>
           </Field>
 
           {form.exec_mode === "docker" ? (
@@ -521,22 +529,21 @@ export function ContainerSpawnDialog({
               label="Image"
               hint="Saved templates. The reference is pulled on the host, not here."
             >
-              <select
-                id="spawn-image"
-                className={SELECT_CLASS}
+              <Select
                 value={form.image_id}
-                onChange={(event) => selectImage(event.target.value)}
-                required
+                onValueChange={selectImage}
               >
-                <option value="" disabled>
-                  Choose an image
-                </option>
-                {images.map((image) => (
-                  <option key={image.id} value={image.id}>
+                <SelectTrigger id="spawn-image" aria-required="true">
+                  <SelectValue placeholder="Choose an image" />
+                </SelectTrigger>
+                <SelectContent>
+                  {images.map((image) => (
+                    <SelectItem key={image.id} value={image.id}>
                     {image.name} — {image.reference}
-                  </option>
-                ))}
-              </select>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </Field>
           )}
 

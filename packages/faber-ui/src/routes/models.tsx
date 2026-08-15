@@ -25,6 +25,13 @@ import {
 } from "@/components/ui/collapsible"
 import { Textarea } from "@/components/ui/textarea"
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -449,18 +456,21 @@ function ModelFormDialog({
             <label htmlFor="model-wire" className="mb-1.5 block text-sm font-medium text-foreground/80">
               Wire<span className="ml-0.5 text-accent-foreground/70">*</span>
             </label>
-            <select
-              id="model-wire"
+            <Select
               value={form.wire}
-              onChange={(e) => setForm((f) => ({ ...f, wire: e.target.value as Wire }))}
-              className="w-full rounded-lg border border-border bg-card px-3 py-2.5 text-[15px] text-foreground outline-none transition-colors hover:border-foreground/20 focus:border-primary focus:ring-4 focus:ring-primary/10"
+              onValueChange={(value) => setForm((f) => ({ ...f, wire: value as Wire }))}
             >
-              {WIRE_OPTIONS.map((wire) => (
-                <option key={wire} value={wire}>
-                  {wire}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger id="model-wire">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {WIRE_OPTIONS.map((wire) => (
+                  <SelectItem key={wire} value={wire}>
+                    {wire}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <AnimatedField
@@ -498,23 +508,26 @@ function ModelFormDialog({
             >
               Reasoning history
             </label>
-            <select
-              id="model-reasoning"
-              value={form.reasoning_history}
-              onChange={(e) =>
+            <Select
+              value={form.reasoning_history || "default"}
+              onValueChange={(value) =>
                 setForm((f) => ({
                   ...f,
-                  reasoning_history: e.target.value as ReasoningHistory | "",
+                  reasoning_history: value === "default" ? "" : (value as ReasoningHistory),
                 }))
               }
-              className="w-full rounded-lg border border-border bg-card px-3 py-2.5 text-[15px] text-foreground outline-none transition-colors hover:border-foreground/20 focus:border-primary focus:ring-4 focus:ring-primary/10"
             >
-              {REASONING_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger id="model-reasoning">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {REASONING_OPTIONS.map((option) => (
+                  <SelectItem key={option.value || "default"} value={option.value || "default"}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <p className="mt-1.5 text-sm text-muted-foreground">
               What this model gets back when an earlier answer of its own is replayed.
               Some reject reasoning sent without its signature; others reject it entirely.
@@ -525,19 +538,24 @@ function ModelFormDialog({
             <label htmlFor="model-credential" className="mb-1.5 block text-sm font-medium text-foreground/80">
               Credential
             </label>
-            <select
-              id="model-credential"
-              value={form.credential_id}
-              onChange={(e) => setForm((f) => ({ ...f, credential_id: e.target.value as Uuid | "" }))}
-              className="w-full rounded-lg border border-border bg-card px-3 py-2.5 text-[15px] text-foreground outline-none transition-colors hover:border-foreground/20 focus:border-primary focus:ring-4 focus:ring-primary/10"
+            <Select
+              value={form.credential_id || "none"}
+              onValueChange={(value) =>
+                setForm((f) => ({ ...f, credential_id: value === "none" ? "" : (value as Uuid) }))
+              }
             >
-              <option value="">None</option>
-              {credentials.map((credential) => (
-                <option key={credential.id} value={credential.id}>
-                  {credential.label}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger id="model-credential">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">None</SelectItem>
+                {credentials.map((credential) => (
+                  <SelectItem key={credential.id} value={credential.id}>
+                    {credential.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>

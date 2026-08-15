@@ -6,6 +6,13 @@ import { faber, FaberError, type Credential, type CredentialKind } from "@/lib/a
 import { Button } from "@/components/ui/button"
 import { AnimatedField } from "@/components/ui/animated-field"
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -260,15 +267,16 @@ function CredentialFormDialog({
             <label htmlFor="credential-kind" className="mb-1.5 block text-sm font-medium text-foreground/80">
               Kind
             </label>
-            <select
-              id="credential-kind"
+            <Select
               value={kind}
-              onChange={(event) => setKind(event.target.value as CredentialKind)}
-              className="w-full rounded-lg border border-border bg-card px-3 py-2.5 text-[15px] text-foreground outline-none"
+              onValueChange={(value) => setKind(value as CredentialKind)}
             >
-              <option value="api_key">API key</option>
-              <option value="ssh_key">SSH private key</option>
-            </select>
+              <SelectTrigger id="credential-kind"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="api_key">API key</SelectItem>
+                <SelectItem value="ssh_key">SSH private key</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
 
           {kind === "ssh_key" ? (
