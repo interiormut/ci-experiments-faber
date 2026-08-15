@@ -1,6 +1,6 @@
 import * as React from "react"
 import { createFileRoute } from "@tanstack/react-router"
-import { Cpu, Pencil, Plus, Trash2 } from "lucide-react"
+import { ChevronDown, Cpu, Pencil, Plus, Trash2 } from "lucide-react"
 
 import {
   faber,
@@ -13,9 +13,17 @@ import {
   type Uuid,
   type Wire,
 } from "@/lib/api"
+import { cn } from "@/lib/utils"
 import { useAppShell } from "@/components/shell/app-shell"
 import { Button } from "@/components/ui/button"
 import { AnimatedField } from "@/components/ui/animated-field"
+import { Checkbox } from "@/components/ui/checkbox"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
+import { Textarea } from "@/components/ui/textarea"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -69,6 +77,49 @@ function withReasoning(
   return base
 }
 
+const ADVANCED_KEY = "advanced"
+
+type AdvancedOptions = {
+  reasoning_split: boolean
+  /** Merged into every request body verbatim — provider fields Faber has no
+   * dedicated setting for. */
+  extra: Record<string, unknown>
+}
+
+function advancedOf(params: unknown): AdvancedOptions {
+  const empty: AdvancedOptions = { reasoning_split: false, extra: {} }
+  if (typeof params !== "object" || params === null) return empty
+  const value = (params as Record<string, unknown>)[ADVANCED_KEY]
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return empty
+  const v = value as Record<string, unknown>
+  const extra =
+    typeof v.extra === "object" && v.extra !== null && !Array.isArray(v.extra)
+      ? (v.extra as Record<string, unknown>)
+      : {}
+  return { reasoning_split: v.reasoning_split === true, extra }
+}
+
+/**
+ * Sets the key without disturbing the rest of the blob — `params` is a
+ * free-form column this form owns only one field of.
+ */
+function withAdvanced(params: unknown, advanced: AdvancedOptions): Record<string, unknown> {
+  const base =
+    typeof params === "object" && params !== null && !Array.isArray(params)
+      ? { ...(params as Record<string, unknown>) }
+      : {}
+  const hasExtra = Object.keys(advanced.extra).length > 0
+  if (advanced.reasoning_split || hasExtra) {
+    base[ADVANCED_KEY] = {
+      ...(advanced.reasoning_split ? { reasoning_split: true } : {}),
+      ...(hasExtra ? { extra: advanced.extra } : {}),
+    }
+  } else {
+    delete base[ADVANCED_KEY]
+  }
+  return base
+}
+
 type FormState = {
   alias: string
   wire: Wire
@@ -79,6 +130,11 @@ type FormState = {
   reasoning_history: ReasoningHistory | ""
   /** Carried whole so saving one field doesn't drop the others. */
   capabilities: unknown
+  reasoning_split: boolean
+  /** Raw text so the field can hold invalid JSON mid-edit; parsed on submit. */
+  extra_text: string
+  /** Carried whole so saving one field doesn't drop the others. */
+  params: unknown
 }
 
 const EMPTY_FORM: FormState = {
@@ -90,9 +146,13 @@ const EMPTY_FORM: FormState = {
   credential_id: "",
   reasoning_history: "",
   capabilities: {},
+  reasoning_split: false,
+  extra_text: "",
+  params: {},
 }
 
 function formFromModel(model: ModelConfig): FormState {
+  const advanced = advancedOf(model.params)
   return {
     alias: model.alias,
     wire: model.wire,
@@ -102,10 +162,15 @@ function formFromModel(model: ModelConfig): FormState {
     credential_id: model.credential_id ?? "",
     reasoning_history: reasoningOf(model.capabilities),
     capabilities: model.capabilities,
+    reasoning_split: advanced.reasoning_split,
+    extra_text: Object.keys(advanced.extra).length > 0 ? JSON.stringify(advanced.extra, null, 2) : "",
+    params: model.params,
   }
 }
 
-function requestFromForm(form: FormState): CreateModelRequest {
+/** `extra` is parsed separately since it can hold invalid JSON mid-edit — see
+ * `ModelFormDialog.handleSubmit`. */
+function requestFromForm(form: FormState, extra: Record<string, unknown>): CreateModelRequest {
   return {
     alias: form.alias.trim(),
     wire: form.wire,
@@ -117,6 +182,10 @@ function requestFromForm(form: FormState): CreateModelRequest {
       form.capabilities,
       form.reasoning_history,
     ) as CreateModelRequest["capabilities"],
+    params: withAdvanced(form.params, {
+      reasoning_split: form.reasoning_split,
+      extra,
+    }) as CreateModelRequest["params"],
   }
 }
 
@@ -317,15 +386,34 @@ function ModelFormDialog({
   // The parent remounts this component (via `key`) each time the dialog
   // opens, so the lazy initializer alone is enough to seed a fresh draft.
   const [form, setForm] = React.useState<FormState>(() => (editing ? formFromModel(editing) : EMPTY_FORM))
+  const [advancedOpen, setAdvancedOpen] = React.useState(
+    () => form.reasoning_split || form.extra_text.trim().length > 0,
+  )
   const [submitting, setSubmitting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault()
-    setSubmitting(true)
     setError(null)
+
+    let extra: Record<string, unknown> = {}
+    const extraText = form.extra_text.trim()
+    if (extraText) {
+      try {
+        const parsed: unknown = JSON.parse(extraText)
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          throw new Error("must be a JSON object")
+        }
+        extra = parsed as Record<string, unknown>
+      } catch {
+        setError("Extra request fields must be valid JSON — an object like { \"top_k\": 5 }.")
+        return
+      }
+    }
+
+    setSubmitting(true)
     try {
-      const body = requestFromForm(form)
+      const body = requestFromForm(form, extra)
       if (editing) {
         await onUpdate(editing.id, body)
       } else {
@@ -451,6 +539,63 @@ function ModelFormDialog({
               ))}
             </select>
           </div>
+
+          <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+            <CollapsibleTrigger asChild>
+              <button
+                type="button"
+                className="flex w-full items-center justify-between text-sm font-medium text-foreground/80"
+              >
+                Advanced options
+                <ChevronDown
+                  className={cn("h-4 w-4 transition-transform", advancedOpen && "rotate-180")}
+                />
+              </button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="flex flex-col gap-4 pt-3">
+              <div className="flex items-start gap-2">
+                <Checkbox
+                  id="model-reasoning-split"
+                  checked={form.reasoning_split}
+                  onCheckedChange={(checked) =>
+                    setForm((f) => ({ ...f, reasoning_split: checked === true }))
+                  }
+                  className="mt-0.5"
+                />
+                <label htmlFor="model-reasoning-split" className="text-sm">
+                  <span className="font-medium text-foreground/80">
+                    Split reasoning from content
+                  </span>
+                  <p className="text-muted-foreground">
+                    Sends <code>reasoning_split: true</code> on every request. Some
+                    OpenAI-wire endpoints (MiniMax among them) mix reasoning into the
+                    answer unless told otherwise.
+                  </p>
+                </label>
+              </div>
+
+              <div className="w-full">
+                <label
+                  htmlFor="model-extra"
+                  className="mb-1.5 block text-sm font-medium text-foreground/80"
+                >
+                  Extra request fields
+                </label>
+                <Textarea
+                  id="model-extra"
+                  value={form.extra_text}
+                  onChange={(e) => setForm((f) => ({ ...f, extra_text: e.target.value }))}
+                  placeholder={'{\n  "top_k": 5\n}'}
+                  rows={4}
+                  className="font-mono text-sm"
+                />
+                <p className="mt-1.5 text-sm text-muted-foreground">
+                  Merged into every request body as JSON — for provider fields Faber
+                  has no dedicated setting for.
+                </p>
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
 
           {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
