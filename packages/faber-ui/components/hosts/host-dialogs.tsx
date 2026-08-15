@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { Laptop, Server } from "lucide-react"
 
 import {
   FaberError,
@@ -21,8 +22,14 @@ import {
   faber,
 } from "@/lib/api"
 import { useAppShell } from "@/components/shell/app-shell"
+import { ActionRow, ActionRowGroup } from "@/components/ui/action-row"
 import { Button } from "@/components/ui/button"
 import { AnimatedField } from "@/components/ui/animated-field"
+import {
+  FlowDialog,
+  FlowDialogBack,
+  FlowDialogHeading,
+} from "@/components/ui/flow-dialog"
 import {
   Select,
   SelectContent,
@@ -140,6 +147,7 @@ export function HostFormDialog({
   const [submitting, setSubmitting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const [credentials, setCredentials] = React.useState<Credential[]>([])
+  const [view, setView] = React.useState(editing ? "form" : "transport")
   const { config } = useAppShell()
   const allowLocalHosts = config?.allow_local_hosts ?? true
   const transport =
@@ -165,13 +173,54 @@ export function HostFormDialog({
     }
   }
 
+  const chooseTransport = (nextTransport: Transport) => {
+    setForm((current) => ({ ...current, transport: nextTransport }))
+    setView("form")
+  }
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+    <FlowDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      view={editing ? "form" : view}
+      title={editing ? `Edit ${editing.name}` : "Add host"}
+    >
+      {!editing && view === "transport" ? (
+        <div>
+          <FlowDialogHeading
+            title="How should faber reach this host?"
+            description="Choose the transport first. You can fill in the connection details next."
+          />
+          <ActionRowGroup>
+            <ActionRow
+              icon={<Laptop />}
+              label="Local"
+              description={`This machine${!allowLocalHosts ? " (disabled)" : ""}`}
+              chevron
+              disabled={!allowLocalHosts}
+              onSelect={() => chooseTransport("local")}
+            />
+            <ActionRow
+              icon={<Server />}
+              label="SSH"
+              description="Connect over SSH to a remote machine"
+              chevron
+              onSelect={() => chooseTransport("ssh")}
+            />
+          </ActionRowGroup>
+        </div>
+      ) : (
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-          <DialogHeader>
-            <DialogTitle>{editing ? `Edit ${editing.name}` : "Add host"}</DialogTitle>
-          </DialogHeader>
+          <FlowDialogHeading
+            title={editing ? `Edit ${editing.name}` : "Host details"}
+            description={
+              editing
+                ? undefined
+                : transport === "ssh"
+                  ? "Connect to this host over SSH."
+                  : "Run faber directly on this machine."
+            }
+          />
 
           <AnimatedField
             id="host-name"
@@ -182,26 +231,26 @@ export function HostFormDialog({
             required
           />
 
-          <Field
-            id="host-transport"
-            label="Transport"
-            hint="How faber reaches the machine."
-          >
-            <Select
-              value={transport}
-              onValueChange={(value) => setForm((f) => ({ ...f, transport: value as Transport }))}
+          {editing ? (
+            <Field
+              id="host-transport"
+              label="Transport"
+              hint="How faber reaches the machine."
             >
-              <SelectTrigger id="host-transport">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="local" disabled={!allowLocalHosts && !editing}>
-                  local — this machine{!allowLocalHosts && !editing ? " (disabled)" : ""}
-                </SelectItem>
-                <SelectItem value="ssh">ssh — a remote machine</SelectItem>
-              </SelectContent>
-            </Select>
-          </Field>
+              <Select
+                value={transport}
+                onValueChange={(value) => setForm((f) => ({ ...f, transport: value as Transport }))}
+              >
+                <SelectTrigger id="host-transport">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="local">local — this machine</SelectItem>
+                  <SelectItem value="ssh">ssh — a remote machine</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+          ) : null}
 
            {transport === "ssh" ? (
             <>
@@ -297,14 +346,23 @@ export function HostFormDialog({
 
           {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
-          <DialogFooter>
-            <Button type="submit" loading={submitting} loadingText={editing ? "Saving" : "Adding"}>
-              {editing ? "Save" : "Add host"}
-            </Button>
-          </DialogFooter>
+          <div
+            className={
+              !editing
+                ? "flex items-center justify-between [&>div]:mt-0 [&>div]:items-start"
+                : undefined
+            }
+          >
+            {!editing ? <FlowDialogBack onClick={() => setView("transport")} /> : null}
+            <DialogFooter>
+              <Button type="submit" loading={submitting} loadingText={editing ? "Saving" : "Adding"}>
+                {editing ? "Save" : "Add host"}
+              </Button>
+            </DialogFooter>
+          </div>
         </form>
-      </DialogContent>
-    </Dialog>
+      )}
+    </FlowDialog>
   )
 }
 
