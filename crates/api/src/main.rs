@@ -20,6 +20,7 @@ mod resolve;
 mod routes;
 mod run;
 mod schema;
+mod service_hosts;
 mod state;
 mod websearch;
 
@@ -111,6 +112,8 @@ async fn main() {
         interrupts: Default::default(),
         agents: Default::default(),
     };
+
+    service_hosts::spawn_expiry_sweeper(state.db.clone());
 
     let cors_origins = config
         .cors_origins

@@ -17,7 +17,9 @@
 
 use std::sync::Arc;
 
-use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, SelectableHelper};
+use diesel::{
+    BoolExpressionMethods, ExpressionMethods, OptionalExtension, QueryDsl, SelectableHelper,
+};
 use diesel_async::RunQueryDsl;
 use environment::docker::{Daemon, LocalSocket};
 use environment::ssh::forward::DOCKER_SOCKET;
@@ -225,8 +227,11 @@ pub async fn candidates(
     conn: &mut diesel_async::AsyncPgConnection,
     user_id: Uuid,
 ) -> ApiResult<Vec<Candidate>> {
+    // Hosts the user registered and hosts faber operates, together: what a
+    // user tags is a place to run, and which of the two it is does not change
+    // how they name it.
     let hosts: Vec<Host> = host::table
-        .filter(host::user_id.eq(user_id))
+        .filter(host::user_id.eq(user_id).or(host::user_id.is_null()))
         .order(host::created_at.asc())
         .select(Host::as_select())
         .load(conn)
@@ -239,6 +244,10 @@ pub async fn candidates(
     } else {
         host_container::table
             .filter(host_container::host_id.eq_any(&ids))
+            // Scoped by the container's owner, not the host's. On a shared
+            // machine the other tenants' containers are not candidates, and
+            // the container row is the only thing that knows whose is whose.
+            .filter(host_container::user_id.eq(user_id))
             .filter(host_container::unregistered_at.is_null())
             .order(host_container::created_at.asc())
             .select(HostContainer::as_select())
@@ -516,9 +525,11 @@ async fn bind_one(
     blobs: Arc<dyn Blobs>,
 ) -> ApiResult<Machine> {
     let mut conn = state.db.get().await?;
+    // A host of theirs, or one faber operates. Ownership of what runs on a
+    // service host is carried by the container below, never by the host.
     let host_row: Host = host::table
         .filter(host::id.eq(row.host_id))
-        .filter(host::user_id.eq(user_id))
+        .filter(host::user_id.eq(user_id).or(host::user_id.is_null()))
         .select(Host::as_select())
         .first(&mut conn)
         .await
@@ -535,6 +546,11 @@ async fn bind_one(
         Some(id) => Some(
             host_container::table
                 .filter(host_container::id.eq(id))
+                // The session's user must be the container's user. On an owned
+                // host this is implied by the host filter above and on a shared
+                // one nothing else implies it, so it is asserted here rather
+                // than inferred there.
+                .filter(host_container::user_id.eq(user_id))
                 .select(HostContainer::as_select())
                 .first::<HostContainer>(&mut conn)
                 .await
@@ -547,12 +563,16 @@ async fn bind_one(
                 })?,
         ),
     };
+    // Resolved before the connection goes back: the grant is a database fact
+    // and belongs to this bind, while the *usage* beside it is read from the
+    // machine every time the agent asks.
+    let allowance = crate::service_hosts::allowance(&mut conn, &host_row, user_id).await?;
     drop(conn);
 
     if let Some(container) = container {
         let daemon = reach_daemon(state, user_id, &host_row).await?;
         let root = Root::new(&container.root_path).map_err(|denial| fault(denial.into()))?;
-        return DockerTarget::bind(
+        let machine = DockerTarget::bind(
             row.label.clone(),
             daemon,
             container.container_ref.clone(),
@@ -560,7 +580,12 @@ async fn bind_one(
             blobs,
         )
         .await
-        .map_err(fault);
+        .map_err(fault)?;
+
+        return Ok(match allowance {
+            Some(allowance) => machine.with_allowance(allowance),
+            None => machine,
+        });
     }
 
     // Direct execution on the machine itself. It needs a root of its own,

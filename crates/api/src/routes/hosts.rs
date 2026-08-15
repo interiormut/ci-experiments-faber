@@ -24,7 +24,9 @@ use axum::{
     routing::{get, patch, post},
 };
 use chrono::{DateTime, Utc};
-use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, SelectableHelper};
+use diesel::{
+    BoolExpressionMethods, ExpressionMethods, OptionalExtension, QueryDsl, SelectableHelper,
+};
 use diesel_async::RunQueryDsl;
 use environment::docker::{Daemon, engine};
 use environment::{Denial, Fault};
@@ -55,6 +57,8 @@ pub fn router() -> Router<AppState> {
             post(create_container).get(list_containers),
         )
         .route("/api/hosts/{id}/containers/spawn", post(spawn_container))
+        // No host in the path: faber picks one of its own.
+        .route("/api/service-containers", post(spawn_service_container))
         .route(
             "/api/hosts/{id}/probes",
             post(record_probe).get(list_probes),
@@ -130,6 +134,49 @@ struct HostResponse {
     /// The most recent observation, or `null` if this host has never been
     /// probed. Advisory: it describes a past attempt, not present reachability.
     last_probe: Option<ProbeResponse>,
+    /// Whether faber operates this host rather than the caller. Derived from
+    /// having no owner, never from a column of its own.
+    service: bool,
+    /// The caller's limits here, on a service host only. Absent on a host they
+    /// own, where there is nobody to be limited by.
+    quota: Option<QuotaResponse>,
+}
+
+/// The caller's ceiling on a shared host. Every field null means unlimited,
+/// which is what an unconfigured host grants.
+#[derive(Serialize)]
+struct QuotaResponse {
+    cpu_millis: Option<i32>,
+    memory_bytes: Option<i64>,
+    storage_bytes: Option<i64>,
+    container_max: Option<i32>,
+    /// Whether these came from a grant made specifically to this user rather
+    /// than from the host's defaults.
+    granted: bool,
+    /// When a temporary grant lapses. Surfaced because expiry is immediate and
+    /// can shrink a limit underneath work already running.
+    expires_at: Option<DateTime<Utc>>,
+}
+
+/// The caller's resolved quota on a host, or `None` when the host is theirs.
+async fn quota_view(
+    conn: &mut diesel_async::AsyncPgConnection,
+    host: &Host,
+    user_id: Uuid,
+) -> Result<Option<QuotaResponse>, AppError> {
+    if !host.service() {
+        return Ok(None);
+    }
+
+    let resolved = crate::service_hosts::resolve_quota(conn, host, user_id).await?;
+    Ok(Some(QuotaResponse {
+        cpu_millis: resolved.quota.cpu_millis,
+        memory_bytes: resolved.quota.memory_bytes,
+        storage_bytes: resolved.quota.storage_bytes,
+        container_max: resolved.quota.container_max,
+        granted: resolved.overridden,
+        expires_at: resolved.expires_at,
+    }))
 }
 
 #[derive(Serialize)]
@@ -201,6 +248,7 @@ fn host_response(
     h: &Host,
     containers: Vec<ContainerResponse>,
     last_probe: Option<ProbeResponse>,
+    quota: Option<QuotaResponse>,
 ) -> HostResponse {
     HostResponse {
         id: h.id,
@@ -216,6 +264,8 @@ fn host_response(
         disabled_at: h.disabled_at,
         containers,
         last_probe,
+        service: h.service(),
+        quota,
     }
 }
 
@@ -250,25 +300,19 @@ fn validate_transport_config(
     }
 
     match transport {
-        Transport::Ssh if ssh_address.is_none_or(str::is_empty) => {
-            Err(AppError::BadRequest(
-                "ssh_address is required when transport is 'ssh'".into(),
-            ))
-        }
+        Transport::Ssh if ssh_address.is_none_or(str::is_empty) => Err(AppError::BadRequest(
+            "ssh_address is required when transport is 'ssh'".into(),
+        )),
         Transport::Ssh => validate_ssh_address(ssh_address.expect("checked above")),
         // Agent mode carries no ssh_address (R14 — faber never dials it) and
         // no ssh_host_key (the daemon's key is pinned in `agent_credential`
         // at enrollment, not learned here).
-        Transport::Local | Transport::Agent if ssh_address.is_some_and(|a| !a.is_empty()) => {
-            Err(AppError::BadRequest(
-                "ssh_address is only valid when transport is 'ssh'".into(),
-            ))
-        }
-        Transport::Local | Transport::Agent if ssh_host_key.is_some_and(|k| !k.is_empty()) => {
-            Err(AppError::BadRequest(
-                "ssh_host_key is only valid when transport is 'ssh'".into(),
-            ))
-        }
+        Transport::Local | Transport::Agent if ssh_address.is_some_and(|a| !a.is_empty()) => Err(
+            AppError::BadRequest("ssh_address is only valid when transport is 'ssh'".into()),
+        ),
+        Transport::Local | Transport::Agent if ssh_host_key.is_some_and(|k| !k.is_empty()) => Err(
+            AppError::BadRequest("ssh_host_key is only valid when transport is 'ssh'".into()),
+        ),
         _ => Ok(()),
     }
 }
@@ -374,9 +418,14 @@ async fn validate_ssh_credential(
 // Loading
 // ---------------------------------------------------------------------------
 
-/// Loads a host the caller owns, or `NotFound`. Ownership is checked on the
-/// host for every nested route: containers and probes carry no `user_id` of
-/// their own, so the host is the only place authorization can happen.
+/// Loads a host the caller owns, or `NotFound`.
+///
+/// Every route that *writes* — renaming, disabling, deleting, registering a
+/// container, recording a probe — goes through here and nothing else. A
+/// service host has no owner, `user_id = $me` never matches NULL, and so
+/// "users cannot edit the shared host" is a property of this one filter rather
+/// than a rule spread across handlers. Widening this function would hand every
+/// user a `PATCH` on the machine everyone shares.
 async fn owned_host(
     conn: &mut diesel_async::AsyncPgConnection,
     user_id: Uuid,
@@ -393,9 +442,37 @@ async fn owned_host(
         .ok_or(AppError::NotFound)
 }
 
-/// Active registrations for a set of hosts, oldest first.
+/// Loads a host the caller may *see*: one of theirs, or a service host.
+///
+/// The read counterpart to [`owned_host`], and deliberately a separate
+/// function rather than a flag on it. A read path that forgets to use this one
+/// hides the service host, which is a failure in the safe direction; a write
+/// path that reaches for it by mistake is a visible, reviewable change.
+async fn visible_host(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user_id: Uuid,
+    id: Uuid,
+) -> Result<Host, AppError> {
+    host::table
+        .filter(host::id.eq(id))
+        .filter(host::user_id.eq(user_id).or(host::user_id.is_null()))
+        .select(Host::as_select())
+        .first(conn)
+        .await
+        .optional()
+        .map_err(|err| AppError::db(err, "hosts.load_visible"))?
+        .ok_or(AppError::NotFound)
+}
+
+/// The caller's active registrations on a set of hosts, oldest first.
+///
+/// Scoped by the *container's* owner rather than the host's. On a host the
+/// caller owns the two are the same row's worth of information; on a shared
+/// one only the container knows, which is why `host_container` carries a
+/// `user_id` at all.
 async fn containers_for(
     conn: &mut diesel_async::AsyncPgConnection,
+    user_id: Uuid,
     host_ids: &[Uuid],
 ) -> Result<Vec<HostContainer>, AppError> {
     if host_ids.is_empty() {
@@ -403,6 +480,7 @@ async fn containers_for(
     }
     host_container::table
         .filter(host_container::host_id.eq_any(host_ids))
+        .filter(host_container::user_id.eq(user_id))
         .filter(host_container::unregistered_at.is_null())
         .order(host_container::created_at.asc())
         .select(HostContainer::as_select())
@@ -474,7 +552,9 @@ async fn create(
 
     let new_host = NewHost {
         id: Uuid::now_v7(),
-        user_id: user.id,
+        // Always owned: a service host has no owner, and this route is a user
+        // asking for one of theirs.
+        user_id: Some(user.id),
         name,
         transport: input.transport.as_str(),
         exec_mode: input.exec_mode.as_str(),
@@ -501,7 +581,8 @@ async fn create(
     // Freshly created: no registrations and nothing observed yet.
     Ok((
         StatusCode::CREATED,
-        Json(host_response(&inserted, Vec::new(), None)),
+        // Freshly created and owned, so no quota applies.
+        Json(host_response(&inserted, Vec::new(), None, None)),
     ))
 }
 
@@ -511,8 +592,15 @@ async fn list(
 ) -> ApiResult<Json<Vec<HostResponse>>> {
     let mut conn = state.db.get().await?;
 
+    // Owned hosts and the shared ones together, under one namespace: what a
+    // user picks is a place to run, and which of the two it is shows in the
+    // response rather than in which call they had to make.
     let hosts: Vec<Host> = host::table
-        .filter(host::user_id.eq(user.id))
+        .filter(host::user_id.eq(user.id).or(host::user_id.is_null()))
+        // A drained service host is left out: `disabled_at` means no new
+        // launches, and unlike one of their own there is nothing the user
+        // could do about it if they saw it.
+        .filter(host::user_id.is_not_null().or(host::disabled_at.is_null()))
         .order(host::created_at.asc())
         .select(Host::as_select())
         .load(&mut conn)
@@ -520,28 +608,27 @@ async fn list(
         .map_err(|err| AppError::db(err, "hosts.list"))?;
 
     let ids: Vec<Uuid> = hosts.iter().map(|h| h.id).collect();
-    let containers = containers_for(&mut conn, &ids).await?;
+    let containers = containers_for(&mut conn, user.id, &ids).await?;
     let probes = latest_probes(&mut conn, &ids).await?;
 
-    Ok(Json(
-        hosts
-            .iter()
-            .map(|h| {
-                host_response(
-                    h,
-                    containers
-                        .iter()
-                        .filter(|c| c.host_id == h.id)
-                        .map(container_response)
-                        .collect(),
-                    probes
-                        .iter()
-                        .find(|p| p.host_id == h.id)
-                        .map(probe_response),
-                )
-            })
-            .collect(),
-    ))
+    let mut responses = Vec::with_capacity(hosts.len());
+    for h in &hosts {
+        responses.push(host_response(
+            h,
+            containers
+                .iter()
+                .filter(|c| c.host_id == h.id)
+                .map(container_response)
+                .collect(),
+            probes
+                .iter()
+                .find(|p| p.host_id == h.id)
+                .map(probe_response),
+            quota_view(&mut conn, h, user.id).await?,
+        ));
+    }
+
+    Ok(Json(responses))
 }
 
 async fn fetch(
@@ -550,15 +637,17 @@ async fn fetch(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<HostResponse>> {
     let mut conn = state.db.get().await?;
-    let found = owned_host(&mut conn, user.id, id).await?;
+    let found = visible_host(&mut conn, user.id, id).await?;
 
-    let containers = containers_for(&mut conn, &[found.id]).await?;
+    let containers = containers_for(&mut conn, user.id, &[found.id]).await?;
     let probe = latest_probe(&mut conn, found.id).await?;
+    let quota = quota_view(&mut conn, &found, user.id).await?;
 
     Ok(Json(host_response(
         &found,
         containers.iter().map(container_response).collect(),
         probe.as_ref().map(probe_response),
+        quota,
     )))
 }
 
@@ -693,13 +782,15 @@ async fn update(
         other => AppError::db(other, "hosts.update"),
     })?;
 
-    let containers = containers_for(&mut conn, &[updated.id]).await?;
+    let containers = containers_for(&mut conn, user.id, &[updated.id]).await?;
     let probe = latest_probe(&mut conn, updated.id).await?;
 
+    // Owned by definition — this route refuses anything else — so no quota.
     Ok(Json(host_response(
         &updated,
         containers.iter().map(container_response).collect(),
         probe.as_ref().map(probe_response),
+        None,
     )))
 }
 
@@ -784,6 +875,11 @@ async fn create_container(
     }
 
     let mut conn = state.db.get().await?;
+    // `owned_host`, so a service host is a 404 here rather than a 403:
+    // registration asserts that faber may reach a ref the *user* made, and on
+    // a machine faber operates that ref is either someone else's container or
+    // one faber created and already knows about. Containers on a service host
+    // arrive through `spawn` and nowhere else.
     let parent = owned_host(&mut conn, user.id, host_id).await?;
 
     if parent.exec_mode != ExecMode::Docker.as_str() {
@@ -795,6 +891,9 @@ async fn create_container(
     let new_container = NewHostContainer {
         id: Uuid::now_v7(),
         host_id: parent.id,
+        // The registrar owns it. On a shared host the owner cannot be derived
+        // from the host, so it is recorded here.
+        user_id: user.id,
         container_ref,
         name: trimmed(input.name.as_deref()),
         root_path,
@@ -910,30 +1009,44 @@ fn validate_container_name(name: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Creates a container on the host and registers it as one faber manages.
+/// Resolves a spawn request's template and root path against the host it is
+/// aimed at.
 ///
-/// The registration is written *after* the container exists, and the container
-/// is removed again if the registration fails — because the alternative is a
-/// container running on a user's machine that faber created and has no record
-/// of, which nobody can attribute and nobody dares delete.
-async fn spawn_container(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(host_id): Path<Uuid>,
-    Json(input): Json<SpawnContainerRequest>,
-) -> ApiResult<(StatusCode, Json<ContainerResponse>)> {
-    let mut conn = state.db.get().await?;
-    let parent = owned_host(&mut conn, user.id, host_id).await?;
-
-    let template: Image = image::table
+/// The image rule runs one way only. A **service host takes service images and
+/// nothing else**: letting a user name an arbitrary reference on faber's
+/// machine is arbitrary code plus unbounded pull bandwidth plus image layers
+/// sitting outside every project quota. A host the user owns takes either —
+/// a curated template is still a template, and refusing it on their own
+/// machine would be a narrowing nobody asked for. The rule spans two tables,
+/// so it cannot be a CHECK and lives here.
+async fn resolve_template(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user_id: Uuid,
+    parent: &Host,
+    input: &SpawnContainerRequest,
+) -> Result<(Image, String), AppError> {
+    let mut lookup = image::table
         .filter(image::id.eq(input.image_id))
-        .filter(image::user_id.eq(user.id))
+        .into_boxed();
+    lookup = if parent.service() {
+        lookup.filter(image::user_id.is_null())
+    } else {
+        lookup.filter(image::user_id.eq(user_id).or(image::user_id.is_null()))
+    };
+
+    let template: Image = lookup
         .select(Image::as_select())
-        .first(&mut conn)
+        .first(conn)
         .await
         .optional()
         .map_err(|err| AppError::db(err, "hosts.containers.spawn.load_image"))?
-        .ok_or_else(|| AppError::BadRequest("no such image".into()))?;
+        .ok_or_else(|| {
+            AppError::BadRequest(if parent.service() {
+                "no such image; this host runs faber's own images only".to_owned()
+            } else {
+                "no such image".to_owned()
+            })
+        })?;
 
     let root_path = match trimmed(input.root_path.as_deref()) {
         Some(path) => path.to_owned(),
@@ -941,6 +1054,60 @@ async fn spawn_container(
     };
     if !root_path.starts_with('/') {
         return Err(AppError::BadRequest("root_path must be absolute".into()));
+    }
+
+    Ok((template, root_path))
+}
+
+/// Creates a container on a service host, letting faber choose which one.
+///
+/// The counterpart to naming a host: a user who has no machine of their own
+/// wants somewhere to run, not a placement decision. Placement goes through
+/// the [`select_host`](crate::service_hosts::select_host) seam, so the day
+/// there is more than one service host this route does not change.
+async fn spawn_service_container(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Json(input): Json<SpawnContainerRequest>,
+) -> ApiResult<(StatusCode, Json<ContainerResponse>)> {
+    let mut conn = state.db.get().await?;
+    let parent = crate::service_hosts::select_host(&mut conn, user.id)
+        .await?
+        // Not `HostAtCapacity`: no host is *configured*, which is a deployment
+        // fact rather than a full machine, and nothing frees up by waiting.
+        .ok_or_else(|| AppError::BadRequest("faber provides no shared host here".into()))?;
+
+    let (template, root_path) = resolve_template(&mut conn, user.id, &parent, &input).await?;
+    drop(conn);
+    spawn_on_service_host(&state, user.id, &parent, &template, &root_path, input).await
+}
+
+/// Creates a container on the host and registers it as one faber manages.
+///
+/// On a host the user owns the registration is written *after* the container
+/// exists, and the container is removed again if the registration fails —
+/// because the alternative is a container running on a user's machine that
+/// faber created and has no record of, which nobody can attribute and nobody
+/// dares delete. On a service host the ordering reverses, for the reason
+/// [`spawn_on_service_host`] gives.
+async fn spawn_container(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(host_id): Path<Uuid>,
+    Json(input): Json<SpawnContainerRequest>,
+) -> ApiResult<(StatusCode, Json<ContainerResponse>)> {
+    let mut conn = state.db.get().await?;
+    let parent = visible_host(&mut conn, user.id, host_id).await?;
+
+    // A service host accepts only service images. Letting a user name an
+    // arbitrary reference on faber's machine is arbitrary code plus unbounded
+    // pull bandwidth plus image layers that sit outside every project quota —
+    // a hole in the storage model on day one. The rule spans two tables, so it
+    // cannot be a CHECK and lives here.
+    let (template, root_path) = resolve_template(&mut conn, user.id, &parent, &input).await?;
+
+    if parent.service() {
+        return spawn_on_service_host(&state, user.id, &parent, &template, &root_path, input).await;
     }
 
     let mounts: Vec<MountRequest> = match input.mounts {
@@ -988,6 +1155,10 @@ async fn spawn_container(
         working_dir: &root_path,
         mounts: &engine_mounts,
         labels: &labels,
+        // A host the user owns. There is nobody here to be confined from, and
+        // narrowing what they asked for on their own machine is not faber's
+        // call to make.
+        confinement: None,
     };
 
     let created =
@@ -1023,6 +1194,7 @@ async fn spawn_container(
     let new_container = NewHostContainer {
         id: Uuid::now_v7(),
         host_id: parent.id,
+        user_id: user.id,
         container_ref: &created,
         name: Some(&name),
         root_path: &root_path,
@@ -1045,6 +1217,198 @@ async fn spawn_container(
     };
 
     Ok((StatusCode::CREATED, Json(container_response(&inserted))))
+}
+
+/// Creates a container for one tenant on a machine faber operates.
+///
+/// The ordering is the opposite of the owned-host path above, and the swap is
+/// deliberate. There, the container is created first and registered after, so
+/// a container never exists that faber has no record of. Here, the row has to
+/// exist *before* the admission lock releases — otherwise two concurrent
+/// launches both see `count < max` and both pass — so the row precedes the
+/// container and a launch that fails on the machine tombstones it. That is why
+/// `container_ref` is a name faber chooses up front rather than the id the
+/// daemon hands back: the row has to name something before the daemon has been
+/// asked anything.
+///
+/// The residue of a failure here is a tombstoned row, which is visible and
+/// costs nothing. The residue of the other ordering would be an unattributable
+/// container running on the machine everyone shares.
+async fn spawn_on_service_host(
+    state: &AppState,
+    user_id: Uuid,
+    parent: &Host,
+    template: &Image,
+    root_path: &str,
+    input: SpawnContainerRequest,
+) -> ApiResult<(StatusCode, Json<ContainerResponse>)> {
+    // `disabled_at` is the drain marker: no new launches, and containers
+    // already running are left alone. Checked here rather than left to
+    // `reach_daemon`, which refuses too — but only after admission has taken a
+    // storage reservation and written a row, so every attempt against a
+    // draining host would leave a tombstone behind.
+    if parent.disabled_at.is_some() {
+        return Err(AppError::HostAtCapacity { resource: "host" });
+    }
+
+    // Mounts are faber's to decide here. A bind source is a path on the
+    // machine faber runs, and a user naming one would be choosing which of
+    // faber's directories to read — the mounts below are the whole of what a
+    // tenant gets, and both of them are inside their own quota'd tree.
+    if input.mounts.is_some() {
+        return Err(AppError::BadRequest(
+            "mounts cannot be chosen on a shared host; your work and scratch \
+             directories are mounted for you"
+                .into(),
+        ));
+    }
+
+    let name = match trimmed(input.name.as_deref()) {
+        Some(name) => name.to_owned(),
+        None => format!("faber-{}", Uuid::now_v7().simple()),
+    };
+    validate_container_name(&name)?;
+
+    let command = match input.command {
+        Some(ref command) if !command.is_empty() => command.clone(),
+        _ => idle_command(),
+    };
+    let env: Vec<(String, String)> = input.env.unwrap_or_default().into_iter().collect();
+    let labels = vec![
+        (MANAGED_LABEL.to_owned(), "true".to_owned()),
+        ("dev.faber.image".to_owned(), template.name.clone()),
+    ];
+
+    let mut conn = state.db.get().await?;
+    // Everything the database decides, decided at once under the (host, user)
+    // lock: the count check, the storage reservation, and the row itself.
+    let admitted = crate::service_hosts::admit(
+        &mut conn,
+        parent,
+        user_id,
+        &name,
+        &name,
+        root_path,
+        template.id,
+    )
+    .await?;
+
+    // Outside the transaction from here: everything below touches the machine,
+    // and a transaction held open across a docker pull is a connection held
+    // open across a docker pull.
+    let launched = launch_on_machine(
+        state, user_id, parent, template, &admitted, &name, root_path, &command, &env, &labels,
+    )
+    .await;
+
+    if let Err(error) = launched {
+        crate::service_hosts::withdraw(&mut conn, admitted.container_id).await;
+        return Err(error);
+    }
+
+    let row: HostContainer = host_container::table
+        .filter(host_container::id.eq(admitted.container_id))
+        .select(HostContainer::as_select())
+        .first(&mut conn)
+        .await
+        .map_err(|err| AppError::db(err, "hosts.containers.spawn.reload"))?;
+
+    Ok((StatusCode::CREATED, Json(container_response(&row))))
+}
+
+/// The machine half of a service-host launch.
+#[allow(clippy::too_many_arguments)]
+async fn launch_on_machine(
+    state: &AppState,
+    user_id: Uuid,
+    parent: &Host,
+    template: &Image,
+    admitted: &crate::service_hosts::Admitted,
+    name: &str,
+    root_path: &str,
+    command: &[String],
+    env: &[(String, String)],
+    labels: &[(String, String)],
+) -> ApiResult<()> {
+    // A floor check, and the first thing that runs on the machine: refusing
+    // cleanly beats letting the launch succeed and having the kernel pick a
+    // victim somewhere unrelated a minute later.
+    crate::service_hosts::check_memory_floor().await?;
+
+    // Idempotent, and repeated on every launch by design — this is the repair
+    // path for a limit that drifted, which is why there is no reconciler.
+    crate::service_hosts::apply(parent, admitted.subject, &admitted.quota).await?;
+
+    let paths = crate::service_hosts::user_paths(parent, admitted.subject)?;
+    let engine_mounts: Vec<engine::Mount> = crate::service_hosts::mounts(&paths, root_path)
+        .into_iter()
+        .map(|(source, target)| engine::Mount {
+            source,
+            target,
+            read_only: false,
+        })
+        .collect();
+
+    let slice = environment::tenancy::slice_name(admitted.subject);
+    let subject = format!("{}:{}", admitted.subject, admitted.subject);
+    let create = engine::Create {
+        name: Some(name),
+        image: &template.reference,
+        cmd: command,
+        env,
+        working_dir: root_path,
+        mounts: &engine_mounts,
+        labels,
+        confinement: Some(engine::Confinement {
+            cgroup_parent: &slice,
+            user: &subject,
+            read_only_root: true,
+            // Sized against the memory grant, because tmpfs charges the memory
+            // cgroup: a quarter of the grant is room to work without letting
+            // `/tmp` be the whole of it.
+            tmp_bytes: admitted.quota.memory_bytes.map(|bytes| bytes / 4),
+            storage_bytes: Some(crate::service_hosts::CONTAINER_LAYER_BYTES),
+        }),
+    };
+
+    let daemon = crate::environments::reach_daemon(state, user_id, parent).await?;
+    let created =
+        match with_timeout(DAEMON_TIMEOUT, engine::container_create(&daemon, &create)).await {
+            Ok(id) => id,
+            Err(Fault::Denied(Denial::NotFound { .. })) => {
+                // A pull on a shared host is faber's own bandwidth against
+                // faber's own images, which is exactly why only service images
+                // are allowed here.
+                with_timeout(
+                    PULL_TIMEOUT,
+                    engine::image_pull(&daemon, &template.reference),
+                )
+                .await
+                .map_err(crate::environments::fault)?;
+                with_timeout(DAEMON_TIMEOUT, engine::container_create(&daemon, &create))
+                    .await
+                    .map_err(crate::environments::fault)?
+            }
+            Err(other) => return Err(crate::environments::fault(other)),
+        };
+
+    if let Err(error) =
+        with_timeout(DAEMON_TIMEOUT, engine::container_start(&daemon, &created)).await
+    {
+        remove_created(&daemon, &created).await;
+        return Err(crate::environments::fault(error));
+    }
+
+    // Written again now the slice certainly exists. Before the first container
+    // is placed in it, systemd may have nothing to set properties on; after,
+    // it always does. The write is idempotent, so paying for it twice buys the
+    // guarantee that the limits are on the slice the container is actually in.
+    if let Err(error) = crate::service_hosts::apply(parent, admitted.subject, &admitted.quota).await
+    {
+        tracing::warn!(%error, subject = admitted.subject, "could not reapply limits after start");
+    }
+
+    Ok(())
 }
 
 /// Undoes a half-finished spawn.
@@ -1083,10 +1447,13 @@ async fn list_containers(
     Query(query): Query<ListContainersQuery>,
 ) -> ApiResult<Json<Vec<ContainerResponse>>> {
     let mut conn = state.db.get().await?;
-    let parent = owned_host(&mut conn, user.id, host_id).await?;
+    let parent = visible_host(&mut conn, user.id, host_id).await?;
 
     let mut statement = host_container::table
         .filter(host_container::host_id.eq(parent.id))
+        // The caller's own, never the host's. On a shared machine the other
+        // tenants' containers are not theirs to see.
+        .filter(host_container::user_id.eq(user.id))
         .into_boxed();
 
     if !query.include_unregistered {
@@ -1104,15 +1471,20 @@ async fn list_containers(
 }
 
 /// Loads a container whose host the caller owns, or `NotFound`.
+/// Loads a container the caller owns, or `NotFound`.
+///
+/// Authorized on the container rather than through its host. The join through
+/// `host.user_id` used to be equivalent and is not any more: on a service host
+/// it matches nobody, so every user would lose their own containers, and on a
+/// shared host it is the container row that knows whose the container is.
 async fn owned_container(
     conn: &mut diesel_async::AsyncPgConnection,
     user_id: Uuid,
     id: Uuid,
 ) -> Result<HostContainer, AppError> {
     let row: Option<HostContainer> = host_container::table
-        .inner_join(host::table)
         .filter(host_container::id.eq(id))
-        .filter(host::user_id.eq(user_id))
+        .filter(host_container::user_id.eq(user_id))
         .select(HostContainer::as_select())
         .first(conn)
         .await
@@ -1209,7 +1581,9 @@ async fn unregister_container(
             ));
         }
 
-        let parent = owned_host(&mut conn, user.id, current.host_id).await?;
+        // `visible_host`: the container is already known to be the caller's,
+        // and destroying it on a service host is destroying their own.
+        let parent = visible_host(&mut conn, user.id, current.host_id).await?;
         drop(conn);
 
         // Destroyed first: a registration removed before the container leaves
@@ -1317,7 +1691,11 @@ async fn list_probes(
     Query(query): Query<ListProbesQuery>,
 ) -> ApiResult<Json<Vec<ProbeResponse>>> {
     let mut conn = state.db.get().await?;
-    let parent = owned_host(&mut conn, user.id, host_id).await?;
+    // Probes on a service host are host-level and shared — an observation
+    // about the machine, not about any one tenant — so reading them is a read
+    // path and widens. Recording one stays owner-only: a user appending
+    // observations about faber's machine is not their statement to make.
+    let parent = visible_host(&mut conn, user.id, host_id).await?;
 
     let rows: Vec<HostProbe> = host_probe::table
         .filter(host_probe::host_id.eq(parent.id))

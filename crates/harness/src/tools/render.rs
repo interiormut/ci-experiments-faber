@@ -181,7 +181,17 @@ pub fn stats(target: &str, applied: &[Stat]) -> String {
 /// are the thing the model most needs to reason about — one has `cargo`, the
 /// other has a network — and it cannot notice a difference it is shown one
 /// side of at a time.
-pub fn manifests(manifests: &[&Manifest]) -> String {
+/// One target's manifest paired with what it is allowed and using, when it
+/// runs somewhere with a ceiling.
+pub struct Target<'a> {
+    pub manifest: &'a Manifest,
+    /// Read live at the moment `targets` was called, never at bind — which is
+    /// the whole point of reporting it here rather than in the manifest.
+    pub allowance: Option<environment::tenancy::AllowanceReport>,
+}
+
+pub fn manifests(targets: &[Target<'_>]) -> String {
+    let manifests: Vec<&Manifest> = targets.iter().map(|target| target.manifest).collect();
     if manifests.is_empty() {
         return "No environments are bound to this session. Nothing here can run \
                 anywhere until one is added, which is the user's to do — there is no \
@@ -190,7 +200,8 @@ pub fn manifests(manifests: &[&Manifest]) -> String {
     }
 
     let mut out = String::new();
-    for manifest in manifests {
+    for target in targets {
+        let manifest = target.manifest;
         let _ = writeln!(out, "{}", manifest.label);
         let _ = writeln!(
             out,
@@ -254,6 +265,12 @@ pub fn manifests(manifests: &[&Manifest]) -> String {
                 "  note      login shell files were not sourced, so aliases and functions \
                  from them are not available"
             );
+        }
+        if let Some(allowance) = &target.allowance {
+            // Below the frozen half deliberately: everything above was true at
+            // bind and stays true, and everything here was read a moment ago.
+            let _ = writeln!(out, "  limits    this target is shared and metered");
+            let _ = writeln!(out, "{}", allowance.render());
         }
         out.push('\n');
     }

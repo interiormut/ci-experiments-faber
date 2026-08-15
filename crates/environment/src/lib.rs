@@ -42,6 +42,7 @@ pub mod spawn;
 pub mod ssh;
 pub mod store;
 pub mod target;
+pub mod tenancy;
 
 pub use docker::DockerTarget;
 pub use exec::{Chunk, Cursor, Exec, Exit, Outcome, ProcId, Signal, Stream};

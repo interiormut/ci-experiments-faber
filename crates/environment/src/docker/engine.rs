@@ -260,6 +260,41 @@ pub struct Create<'a> {
     /// Written onto the container so the machine's owner can tell what created
     /// it without consulting Faber's database.
     pub labels: &'a [(String, String)],
+    /// How the container is boxed in on a machine shared with other tenants.
+    /// `None` on a host the user owns, where there is nobody to be confined
+    /// from and faber has no business narrowing what they asked for.
+    pub confinement: Option<Confinement<'a>>,
+}
+
+/// What a container gets on a machine faber operates for many users.
+///
+/// Every field here exists because a shared host makes the default wrong, and
+/// none of them is a substitute for the others: the parent slice is where the
+/// aggregate CPU and memory ceiling actually lives, and the two storage
+/// settings bound the write path the slice does not cover.
+#[derive(Clone, Copy, Debug)]
+pub struct Confinement<'a> {
+    /// The systemd slice this container's cgroup nests under, which is what
+    /// makes one user's limit apply across all of their containers at once
+    /// rather than per container.
+    pub cgroup_parent: &'a str,
+    /// `uid:gid` inside the container, and the same integer that owns the
+    /// user's directory outside it — so a file written here has the right
+    /// owner on the host without any mapping.
+    pub user: &'a str,
+    /// A read-only root filesystem, which pushes the ephemeral write path onto
+    /// the tmpfs below. The overlay writable layer sits outside the bind mount
+    /// and therefore outside the project quota; this is how that gap is closed.
+    pub read_only_root: bool,
+    /// Size in bytes of the tmpfs mounted at `/tmp`. tmpfs charges the memory
+    /// cgroup, so the ephemeral write path lands under the RAM limit already
+    /// in place instead of needing one of its own.
+    pub tmp_bytes: Option<i64>,
+    /// A per-container cap on the writable layer. Secondary to the project
+    /// quota, never primary: it is per container and volumes ignore it, so it
+    /// aggregates only because a count limit bounds how many containers a user
+    /// can hold.
+    pub storage_bytes: Option<i64>,
 }
 
 /// Creates a container and returns its id. Does not start it.
@@ -271,7 +306,7 @@ pub async fn container_create(
     daemon: &Arc<dyn Daemon>,
     create: &Create<'_>,
 ) -> Result<String, Fault> {
-    let body = json!({
+    let mut body = json!({
         "Image": create.image,
         "Cmd": create.cmd,
         "Env": create.env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>(),
@@ -288,6 +323,20 @@ pub async fn container_create(
             })).collect::<Vec<_>>(),
         },
     });
+
+    if let Some(confinement) = create.confinement {
+        body["User"] = Value::String(confinement.user.to_owned());
+        let host_config = &mut body["HostConfig"];
+        host_config["CgroupParent"] = Value::String(confinement.cgroup_parent.to_owned());
+        host_config["ReadonlyRootfs"] = Value::Bool(confinement.read_only_root);
+
+        if let Some(bytes) = confinement.tmp_bytes {
+            host_config["Tmpfs"] = json!({ "/tmp": format!("rw,nosuid,nodev,size={bytes}") });
+        }
+        if let Some(bytes) = confinement.storage_bytes {
+            host_config["StorageOpt"] = json!({ "size": bytes.to_string() });
+        }
+    }
 
     let target = match create.name {
         Some(name) => format!("{API}/containers/create?name={}", encode(name)),

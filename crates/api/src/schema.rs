@@ -54,7 +54,7 @@ diesel::table! {
 diesel::table! {
     host (id) {
         id -> Uuid,
-        user_id -> Uuid,
+        user_id -> Nullable<Uuid>,
         name -> Text,
         transport -> Text,
         exec_mode -> Text,
@@ -65,6 +65,11 @@ diesel::table! {
         created_at -> Timestamptz,
         disabled_at -> Nullable<Timestamptz>,
         root_path -> Nullable<Text>,
+        default_cpu_millis -> Nullable<Int4>,
+        default_memory_bytes -> Nullable<Int8>,
+        default_storage_bytes -> Nullable<Int8>,
+        default_container_max -> Nullable<Int4>,
+        user_data_root -> Nullable<Text>,
     }
 }
 
@@ -79,6 +84,42 @@ diesel::table! {
         unregistered_at -> Nullable<Timestamptz>,
         managed_at -> Nullable<Timestamptz>,
         image_id -> Nullable<Uuid>,
+        user_id -> Uuid,
+    }
+}
+
+diesel::table! {
+    host_user (id) {
+        id -> Uuid,
+        host_id -> Uuid,
+        user_id -> Uuid,
+        created_at -> Timestamptz,
+        released_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
+    host_user_quota (id) {
+        id -> Uuid,
+        host_id -> Uuid,
+        user_id -> Uuid,
+        cpu_millis -> Nullable<Int4>,
+        memory_bytes -> Nullable<Int8>,
+        storage_bytes -> Nullable<Int8>,
+        container_max -> Nullable<Int4>,
+        granted_at -> Timestamptz,
+        granted_by -> Nullable<Uuid>,
+        expires_at -> Nullable<Timestamptz>,
+        retired_at -> Nullable<Timestamptz>,
+        note -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
+    user_subject (user_id) {
+        user_id -> Uuid,
+        subject_id -> Int4,
+        created_at -> Timestamptz,
     }
 }
 
@@ -101,7 +142,7 @@ diesel::table! {
 diesel::table! {
     image (id) {
         id -> Uuid,
-        user_id -> Uuid,
+        user_id -> Nullable<Uuid>,
         name -> Text,
         reference -> Text,
         default_mounts -> Nullable<Jsonb>,
@@ -252,6 +293,12 @@ diesel::joinable!(exchange -> run (run_id));
 diesel::joinable!(host -> users (user_id));
 diesel::joinable!(host_container -> host (host_id));
 diesel::joinable!(host_container -> image (image_id));
+diesel::joinable!(host_container -> users (user_id));
+diesel::joinable!(host_user -> host (host_id));
+diesel::joinable!(host_user -> users (user_id));
+diesel::joinable!(host_user_quota -> host (host_id));
+diesel::joinable!(host_user_quota -> users (user_id));
+diesel::joinable!(user_subject -> users (user_id));
 diesel::joinable!(host_probe -> host (host_id));
 diesel::joinable!(host_probe -> host_container (container_id));
 diesel::joinable!(image -> users (user_id));
@@ -281,6 +328,8 @@ diesel::allow_tables_to_appear_in_same_query!(
     host,
     host_container,
     host_probe,
+    host_user,
+    host_user_quota,
     image,
     models,
     run,
@@ -291,6 +340,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     spine,
     thread,
     transcript,
+    user_subject,
     users,
     workspace,
     workspace_member,
