@@ -1,3 +1,5 @@
+/// <reference path="types.d.ts" />
+
 // Identity, plus a commit and a tool loop — what a multi-turn conversation
 // with an environment needs.
 //
