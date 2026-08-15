@@ -1,4 +1,5 @@
 use std::env;
+use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Clone, Debug)]
@@ -23,6 +24,22 @@ pub struct Config {
     /// Whether users may register hosts reached through the API process itself.
     /// Existing local hosts are left intact when this is disabled.
     pub allow_local_hosts: bool,
+    /// This API's own externally reachable base URL — what a machine *out
+    /// there* dials to get here. Nothing else in this struct answers that:
+    /// `surge_url` points at the auth service, and `cors_origins` names
+    /// browsers allowed to call in, neither of which is where an agent
+    /// daemon on someone else's infrastructure should send its traffic.
+    ///
+    /// Only agent enrollment needs it, and only to hand a copy-pasteable
+    /// install command to a machine faber cannot see. Unset is not an error
+    /// at boot — every other route works without it — but it makes that one
+    /// command unservable, which is why it is an `Option` rather than a
+    /// default that would be silently wrong.
+    pub public_url: Option<String>,
+    /// Where the agent daemon binaries served to enrolling hosts live, one
+    /// file per architecture. The image bakes them in; a dev checkout has
+    /// them wherever cargo put them.
+    pub agent_binary_dir: PathBuf,
     /// One SearXNG instance to search through. Set it and every run gets the
     /// `search` tool; leave it unset and no run does.
     pub searxng_url: Option<String>,
@@ -72,6 +89,17 @@ impl Config {
             allow_local_hosts: env::var("FABER_ALLOW_LOCAL_HOSTS")
                 .map(|value| value.trim() != "false")
                 .unwrap_or(true),
+            public_url: env::var("FABER_PUBLIC_URL")
+                .ok()
+                .map(|value| value.trim().trim_end_matches('/').to_owned())
+                .filter(|value| !value.is_empty()),
+            // The image copies the binaries here; a dev checkout falls back
+            // to cargo's release directory, so `cargo run` can serve an
+            // installer script built from a local `cargo build --release -p
+            // faber-agent` without any further setup.
+            agent_binary_dir: env::var("FABER_AGENT_BINARY_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("target/release")),
             searxng_url: env::var("SEARXNG_URL")
                 .ok()
                 .filter(|value| !value.trim().is_empty()),

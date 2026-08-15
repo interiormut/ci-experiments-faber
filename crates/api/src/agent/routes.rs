@@ -46,6 +46,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/hosts/{id}/agent/enroll", post(enroll))
         .route("/api/agent/enroll", post(exchange))
         .route("/api/agent/connect", get(connect))
+        .merge(super::install::router())
 }
 
 /// How long a bootstrap token stays redeemable. Long enough to copy a
@@ -68,10 +69,15 @@ struct EnrollResponse {
     /// One-time; never stored or shown again after the daemon exchanges it.
     token: String,
     expires_at: chrono::DateTime<Utc>,
-    /// A copy-pasteable install command, mirroring the pattern of Cloudflare
-    /// Tunnel or Tailscale. `<faber-api-url>` is left for the operator to
-    /// fill in — this endpoint does not know what's reachable from the
-    /// target machine.
+    /// A copy-pasteable one-liner, mirroring the pattern of Cloudflare
+    /// Tunnel or Tailscale: it fetches the installer script from this API,
+    /// which downloads the daemon binary this API serves and hands it the
+    /// token below.
+    ///
+    /// The token appears in the target's shell history and, briefly, its
+    /// process list. That is the accepted cost of the pattern — the same one
+    /// Tailscale and Cloudflare take — and it is bounded by the token being
+    /// single-use and valid for an hour.
     install_command: String,
 }
 
@@ -96,6 +102,12 @@ async fn enroll(
             "this host's transport is not 'agent'".into(),
         ));
     }
+
+    // Before the token is issued, not after: an install command faber cannot
+    // build is a token that would sit there redeemable with no way to
+    // redeem it, and superseding the previous enrollment below would have
+    // already invalidated whatever the operator was holding.
+    let base = super::install::public_url(&state)?;
 
     let token = generate_token();
     let expires_at = Utc::now() + ENROLLMENT_TTL;
@@ -130,7 +142,7 @@ async fn enroll(
         StatusCode::CREATED,
         Json(EnrollResponse {
             install_command: format!(
-                "faber-agent install --token {token} --api <faber-api-url>"
+                "curl -fsSL {base}/api/agent/install.sh | sh -s -- --token {token}"
             ),
             token,
             expires_at,
