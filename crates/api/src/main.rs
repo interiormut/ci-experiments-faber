@@ -7,6 +7,7 @@ use tower_http::trace::TraceLayer;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 mod access;
+mod agent;
 mod auth;
 mod compact;
 mod config;
@@ -108,6 +109,7 @@ async fn main() {
         search,
         runs: Default::default(),
         interrupts: Default::default(),
+        agents: Default::default(),
     };
 
     let cors_origins = config

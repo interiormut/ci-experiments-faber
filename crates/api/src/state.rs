@@ -2,6 +2,7 @@ use axum::extract::FromRef;
 use std::sync::Arc;
 
 use crate::{
+    agent::AgentRegistry,
     config::Config,
     db::DbPool,
     run::{InterruptRegistry, RunRegistry},
@@ -49,6 +50,10 @@ pub struct AppState {
     /// for the same reason `runs` is, and with the same limit: an interrupt
     /// only reaches a run on the instance that owns it.
     pub interrupts: InterruptRegistry,
+    /// Connected agent-transport daemons, keyed by host. In-process for the
+    /// same reason `runs` is — a bind only finds a daemon whose connection
+    /// landed on this replica (X43).
+    pub agents: Arc<AgentRegistry>,
 }
 
 /// Required by `surge::AuthSession`, which resolves the provider off the router state.

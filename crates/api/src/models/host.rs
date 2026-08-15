@@ -23,6 +23,10 @@ use crate::schema::{host, host_container, host_probe, image};
 pub enum Transport {
     Local,
     Ssh,
+    /// A daemon that dialed out to faber, rather than a host faber dials —
+    /// see `internal-docs/agent-transport.md`. Carries no `ssh_address`;
+    /// its identity lives in `agent_credential`, keyed by `host_id`.
+    Agent,
 }
 
 impl Transport {
@@ -30,6 +34,7 @@ impl Transport {
         match self {
             Transport::Local => "local",
             Transport::Ssh => "ssh",
+            Transport::Agent => "agent",
         }
     }
 }

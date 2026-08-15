@@ -19,7 +19,8 @@ llm = { path = "../llm" }
 harness = { path = "../harness" }
 environment = { path = "../environment" }
 search = { path = "../search" }
-axum = { version = "0.8", features = ["macros"] }
+axum = { version = "0.8", features = ["macros", "ws"] }
+bytes = "1"
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures = "0.3"
 async-stream = "0.3"

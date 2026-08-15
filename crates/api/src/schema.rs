@@ -1,6 +1,27 @@
 // @generated automatically by Diesel CLI.
 
 diesel::table! {
+    agent_credential (id) {
+        id -> Uuid,
+        host_id -> Uuid,
+        token_hash -> Text,
+        host_pubkey -> Text,
+        issued_at -> Timestamptz,
+        revoked_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
+    agent_enrollment (id) {
+        id -> Uuid,
+        host_id -> Uuid,
+        token_hash -> Text,
+        expires_at -> Timestamptz,
+        consumed_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
     credentials (id) {
         id -> Uuid,
         user_id -> Uuid,
@@ -224,6 +245,8 @@ diesel::table! {
     }
 }
 
+diesel::joinable!(agent_credential -> host (host_id));
+diesel::joinable!(agent_enrollment -> host (host_id));
 diesel::joinable!(credentials -> users (user_id));
 diesel::joinable!(exchange -> run (run_id));
 diesel::joinable!(host -> users (user_id));
@@ -250,6 +273,8 @@ diesel::joinable!(workspace_member -> users (user_id));
 diesel::joinable!(workspace_member -> workspace (workspace_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
+    agent_credential,
+    agent_enrollment,
     blob,
     credentials,
     exchange,

@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::{
+    agent,
     auth::{AuthUser, extract_token},
     models::user::User,
     state::AppState,
@@ -39,6 +40,7 @@ pub fn router() -> Router<AppState> {
         .merge(sessions::router())
         .merge(threads::router())
         .merge(runs::router())
+        .merge(agent::routes::router())
 }
 
 /// Default and ceiling for `?limit=` on collection routes. Unbounded list endpoints are

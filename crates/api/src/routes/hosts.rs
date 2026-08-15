@@ -256,12 +256,19 @@ fn validate_transport_config(
             ))
         }
         Transport::Ssh => validate_ssh_address(ssh_address.expect("checked above")),
-        Transport::Local if ssh_address.is_some_and(|a| !a.is_empty()) => Err(
-            AppError::BadRequest("ssh_address is only valid when transport is 'ssh'".into()),
-        ),
-        Transport::Local if ssh_host_key.is_some_and(|k| !k.is_empty()) => Err(
-            AppError::BadRequest("ssh_host_key is only valid when transport is 'ssh'".into()),
-        ),
+        // Agent mode carries no ssh_address (R14 — faber never dials it) and
+        // no ssh_host_key (the daemon's key is pinned in `agent_credential`
+        // at enrollment, not learned here).
+        Transport::Local | Transport::Agent if ssh_address.is_some_and(|a| !a.is_empty()) => {
+            Err(AppError::BadRequest(
+                "ssh_address is only valid when transport is 'ssh'".into(),
+            ))
+        }
+        Transport::Local | Transport::Agent if ssh_host_key.is_some_and(|k| !k.is_empty()) => {
+            Err(AppError::BadRequest(
+                "ssh_host_key is only valid when transport is 'ssh'".into(),
+            ))
+        }
         _ => Ok(()),
     }
 }
@@ -576,7 +583,8 @@ async fn update(
     // `ssh_address` is fine on a local host and a 400 on an ssh one.
     let effective_transport = match input.transport {
         Some(t) => t,
-        None if current.transport == "ssh" => Transport::Ssh,
+        None if current.transport == Transport::Ssh.as_str() => Transport::Ssh,
+        None if current.transport == Transport::Agent.as_str() => Transport::Agent,
         None => Transport::Local,
     };
     let effective_ssh_address = match input.ssh_address {
@@ -1340,6 +1348,16 @@ mod tests {
     fn local_hosts_can_be_disabled_by_configuration() {
         assert!(validate_transport_config(Transport::Local, None, None, false).is_err());
         assert!(validate_transport_config(Transport::Ssh, Some("a@b:22"), None, false).is_ok());
+    }
+
+    #[test]
+    fn an_agent_host_may_not_carry_ssh_configuration_either() {
+        // Same rule as local, and for a related reason: the address and
+        // fingerprint an agent host would carry live in `agent_credential`
+        // instead, keyed by host_id rather than sitting on this row.
+        assert!(validate_transport_config(Transport::Agent, None, None, true).is_ok());
+        assert!(validate_transport_config(Transport::Agent, Some("a@b:22"), None, true).is_err());
+        assert!(validate_transport_config(Transport::Agent, None, Some("SHA256:x"), true).is_err());
     }
 
     #[test]

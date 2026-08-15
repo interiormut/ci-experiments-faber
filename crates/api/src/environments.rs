@@ -101,6 +101,30 @@ pub async fn reach_daemon(
         return Ok(Arc::new(SshForwarded::new(Arc::new(session), socket)));
     }
 
+    if host.transport == Transport::Agent.as_str() {
+        let session = agent_session(state, host)?;
+
+        let socket = match host.docker_endpoint.as_deref() {
+            None => DOCKER_SOCKET.to_owned(),
+            Some(endpoint) if endpoint.starts_with("unix://") => {
+                endpoint.trim_start_matches("unix://").to_owned()
+            }
+            Some(endpoint) if endpoint.starts_with('/') => endpoint.to_owned(),
+            Some(endpoint) => {
+                return Err(AppError::BadRequest(format!(
+                    "`{endpoint}` cannot be reached over the agent connection; \
+                     name the daemon's socket path on the far side"
+                )));
+            }
+        };
+
+        // No `record_host_key` here (X44.4): an agent host's key was pinned
+        // at enrollment, in `agent_credential`, not learned from a first
+        // connection — there is nothing to write back to `host.ssh_host_key`,
+        // and that column is constrained to stay null for this transport.
+        return Ok(Arc::new(SshForwarded::new(session, socket)));
+    }
+
     let endpoint = host.docker_endpoint.as_deref().ok_or_else(|| {
         AppError::BadRequest(
             "this host has no docker_endpoint; a daemon faber was not told about \
@@ -110,6 +134,21 @@ pub async fn reach_daemon(
     })?;
 
     Ok(Arc::new(LocalSocket::new(endpoint).map_err(fault)?))
+}
+
+/// The live session for an agent-transport host, or `Unreachable`.
+///
+/// There is no dial here and nothing to retry (R14): a daemon that has not
+/// connected — or connected to a different replica (X43) — is not a
+/// transient failure this call can wait out, it is the whole of what
+/// `Unreachable` means for this transport.
+fn agent_session(state: &AppState, host: &Host) -> ApiResult<Arc<SshSession>> {
+    state.agents.get(host.id).ok_or_else(|| {
+        fault(Fault::Unreachable(format!(
+            "no agent daemon is connected for '{}'",
+            host.name
+        )))
+    })
 }
 
 /// Stores the fingerprint a first connection saw.
@@ -559,6 +598,16 @@ async fn bind_one(
         .map_err(fault)?;
         record_host_key(state, &host_row, &fingerprint).await?;
         return Ok(machine);
+    }
+
+    if host_row.transport == Transport::Agent.as_str() {
+        let session = agent_session(state, &host_row)?;
+        // No fingerprint comes back, and none is written: the session is
+        // already authenticated, against a key pinned at enrollment rather
+        // than learned here (X44.4).
+        return SshTarget::bind_session(row.label.clone(), session, root, blobs)
+            .await
+            .map_err(fault);
     }
 
     LocalTarget::bind(row.label.clone(), root, blobs)
