@@ -7,6 +7,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use diesel::{ExpressionMethods, QueryDsl, SelectableHelper};
 use diesel_async::RunQueryDsl;
+use russh::keys::decode_secret_key;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -90,6 +91,14 @@ async fn create(
     let key = input.key.trim();
     if key.is_empty() {
         return Err(AppError::BadRequest("key is required".into()));
+    }
+
+    if matches!(input.kind, CredentialKind::SshKey) {
+        decode_secret_key(key, None).map_err(|error| {
+            AppError::BadRequest(format!(
+                "SSH credential must contain a valid unencrypted private key: {error}"
+            ))
+        })?;
     }
 
     let last_four: String = key

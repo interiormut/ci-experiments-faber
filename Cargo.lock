@@ -99,6 +99,7 @@ dependencies = [
  "llm",
  "rand 0.8.7",
  "reqwest",
+ "russh",
  "search",
  "secrecy",
  "serde",
