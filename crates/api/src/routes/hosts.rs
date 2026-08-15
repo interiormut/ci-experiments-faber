@@ -250,9 +250,12 @@ fn validate_transport_config(
     }
 
     match transport {
-        Transport::Ssh if ssh_address.is_none_or(str::is_empty) => Err(AppError::BadRequest(
-            "ssh_address is required when transport is 'ssh'".into(),
-        )),
+        Transport::Ssh if ssh_address.is_none_or(str::is_empty) => {
+            Err(AppError::BadRequest(
+                "ssh_address is required when transport is 'ssh'".into(),
+            ))
+        }
+        Transport::Ssh => validate_ssh_address(ssh_address.expect("checked above")),
         Transport::Local if ssh_address.is_some_and(|a| !a.is_empty()) => Err(
             AppError::BadRequest("ssh_address is only valid when transport is 'ssh'".into()),
         ),
@@ -261,6 +264,32 @@ fn validate_transport_config(
         ),
         _ => Ok(()),
     }
+}
+
+fn validate_ssh_address(address: &str) -> Result<(), AppError> {
+    let (user, host_port) = address.split_once('@').ok_or_else(|| {
+        AppError::BadRequest("ssh_address must use the format user@host:port".into())
+    })?;
+    if user.is_empty() || host_port.is_empty() {
+        return Err(AppError::BadRequest(
+            "ssh_address must use the format user@host:port".into(),
+        ));
+    }
+
+    let port = host_port
+        .rsplit_once(':')
+        .map(|(_, port)| port)
+        .filter(|port| !port.is_empty())
+        .ok_or_else(|| {
+            AppError::BadRequest("ssh_address must use the format user@host:port".into())
+        })?;
+    if port.parse::<u16>().is_err() {
+        return Err(AppError::BadRequest(
+            "ssh_address port must be between 1 and 65535".into(),
+        ));
+    }
+
+    Ok(())
 }
 
 fn validate_docker_endpoint(
