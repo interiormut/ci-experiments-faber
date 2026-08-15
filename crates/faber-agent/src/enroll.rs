@@ -21,7 +21,11 @@ struct ExchangeResponse {
     credential: String,
 }
 
-pub async fn install(api: &str, token: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn install(
+    api: &str,
+    token: &str,
+    start: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)?;
     let host_pubkey = key.public_key().to_openssh()?;
     let host_private_key = key.to_openssh(LineEnding::LF)?.to_string();
@@ -65,6 +69,12 @@ pub async fn install(api: &str, token: &str) -> Result<(), Box<dyn std::error::E
         "config written to {}",
         crate::config::config_dir()?.join("config.json").display()
     );
+
+    // After the exchange, never before: the bootstrap token is single-use, so
+    // a unit written first and an exchange that then fails would leave a
+    // service pointed at a credential that does not exist and a token that
+    // cannot be redeemed again.
+    crate::service::install_unit(start)?;
 
     Ok(())
 }

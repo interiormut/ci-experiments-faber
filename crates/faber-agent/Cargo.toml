@@ -25,7 +25,14 @@ webpki-roots = "1"
 futures = "0.3"
 bytes = "1"
 http = "1"
-reqwest = { version = "0.12", features = ["json"] }
+# rustls rather than the default native-tls: openssl reached this binary
+# through nothing but reqwest's default features, and dropping it both
+# removes the one C dependency standing between this crate and a static musl
+# build, and reuses the TLS stack the outbound WebSocket leg already carries.
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls",
+] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rand = "0.10"
