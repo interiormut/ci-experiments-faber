@@ -441,4 +441,190 @@ mod tests {
             Fault::Denied(Denial::Malformed { what, .. }) if what == "agent host key"
         ));
     }
+
+    /// A minimal `russh::server::Handler` standing in for the daemon
+    /// (`crates/faber-agent`) — real enough to prove `from_stream` and
+    /// `bind_session` drive an actual command to completion over a stream
+    /// nobody dialed, without needing the WebSocket hop or a second process.
+    #[derive(Default)]
+    struct TestDaemon {
+        pending: std::collections::HashMap<russh::ChannelId, russh::Channel<russh::server::Msg>>,
+    }
+
+    impl russh::server::Handler for TestDaemon {
+        type Error = russh::Error;
+
+        async fn auth_none(&mut self, _user: &str) -> Result<russh::server::Auth, Self::Error> {
+            Ok(russh::server::Auth::Accept)
+        }
+
+        async fn channel_open_session(
+            &mut self,
+            channel: russh::Channel<russh::server::Msg>,
+            reply: russh::server::ChannelOpenHandle,
+            _session: &mut russh::server::Session,
+        ) -> Result<(), Self::Error> {
+            self.pending.insert(channel.id(), channel);
+            reply.accept().await;
+            Ok(())
+        }
+
+        async fn exec_request(
+            &mut self,
+            channel: russh::ChannelId,
+            data: &[u8],
+            session: &mut russh::server::Session,
+        ) -> Result<(), Self::Error> {
+            let command = String::from_utf8_lossy(data).into_owned();
+            let handle = session.handle();
+            tokio::spawn(async move {
+                let output = tokio::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&command)
+                    .output()
+                    .await
+                    .expect("sh must be on PATH for this test");
+                let _ = handle.data(channel, output.stdout).await;
+                let _ = handle
+                    .extended_data(channel, 1, output.stderr)
+                    .await;
+                let code = output.status.code().unwrap_or(1) as u32;
+                let _ = handle.exit_status_request(channel, code).await;
+                let _ = handle.eof(channel).await;
+                let _ = handle.close(channel).await;
+            });
+            session.channel_success(channel)?;
+            Ok(())
+        }
+
+        async fn subsystem_request(
+            &mut self,
+            channel: russh::ChannelId,
+            name: &str,
+            session: &mut russh::server::Session,
+        ) -> Result<(), Self::Error> {
+            // `bind_session` opens SFTP unconditionally (`SftpFiles::open`
+            // calls `REALPATH` on the root as part of every bind, agent
+            // transport included), so the fixture needs enough of a real
+            // subsystem to answer that one call — not a stub that ignores
+            // the request, which is what left this test hanging on a
+            // 20-second `Fault::Unreachable` timeout before this existed.
+            if name != "sftp" {
+                session.channel_failure(channel)?;
+                return Ok(());
+            }
+            session.channel_success(channel)?;
+            let stream_channel = self.pending.remove(&channel);
+            tokio::spawn(async move {
+                if let Some(channel) = stream_channel {
+                    russh_sftp::server::run(channel.into_stream(), TestSftp).await;
+                }
+            });
+            Ok(())
+        }
+    }
+
+    /// Just enough SFTP to answer the one call `SftpFiles::open` makes at
+    /// bind — `REALPATH` on the root — since this fixture never exercises
+    /// file operations, only exec.
+    struct TestSftp;
+
+    impl russh_sftp::server::Handler for TestSftp {
+        type Error = russh_sftp::protocol::StatusCode;
+
+        fn unimplemented(&self) -> Self::Error {
+            russh_sftp::protocol::StatusCode::OpUnsupported
+        }
+
+        async fn realpath(
+            &mut self,
+            id: u32,
+            path: String,
+        ) -> Result<russh_sftp::protocol::Name, Self::Error> {
+            Ok(russh_sftp::protocol::Name {
+                id,
+                files: vec![russh_sftp::protocol::File::dummy(path)],
+            })
+        }
+
+        /// `SftpFiles::confine` follows every `REALPATH` with a `STAT` to
+        /// learn what kind of thing it resolved to (`Machine::resolve_cwd`
+        /// refuses a cwd that isn't a directory) — this fixture always
+        /// answers "directory", since the one path it is ever asked about
+        /// is the root it was bound with.
+        async fn stat(
+            &mut self,
+            id: u32,
+            _path: String,
+        ) -> Result<russh_sftp::protocol::Attrs, Self::Error> {
+            let mut attrs = russh_sftp::protocol::FileAttributes::default();
+            attrs.set_dir(true);
+            Ok(russh_sftp::protocol::Attrs { id, attrs })
+        }
+    }
+
+    /// Ed25519 keypair generated once for these tests (`ssh-keygen -t
+    /// ed25519 -N ""`), not regenerated per run — the point is exercising
+    /// [`HostKey::Verify`] against a fixed, known fingerprint, the same
+    /// shape an agent host's key is pinned in at enrollment (X39).
+    const TEST_HOST_KEY_PEM: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\n\
+        b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n\
+        QyNTUxOQAAACBbz7tTDB3vYN8E0RvJLb/jb/MiO66i4G5GkwARcl/MVAAAAJC226bLttum\n\
+        ywAAAAtzc2gtZWQyNTUxOQAAACBbz7tTDB3vYN8E0RvJLb/jb/MiO66i4G5GkwARcl/MVA\n\
+        AAAECGhA8nUe7Ef9iRVr0O3aoWJi4XN2G6jhtTqckrdSnW7FvPu1MMHe9g3wTRG8ktv+Nv\n\
+        8yI7rqLgbkaTABFyX8xUAAAACGVudi10ZXN0AQIDBAU=\n\
+        -----END OPENSSH PRIVATE KEY-----\n";
+    const TEST_HOST_FINGERPRINT: &str = "SHA256:YbH0dqJ6ab9b4vB03CT7q5+I3GjM71zH3iVBvHTdpmQ";
+
+    #[tokio::test]
+    async fn from_stream_drives_a_real_command_over_a_stream_nobody_dialed() {
+        let (client_side, server_side) = tokio::io::duplex(64 * 1024);
+
+        let server_config = Arc::new(russh::server::Config {
+            keys: vec![
+                russh::keys::PrivateKey::from_openssh(TEST_HOST_KEY_PEM)
+                    .expect("fixture key parses"),
+            ],
+            ..Default::default()
+        });
+        tokio::spawn(async move {
+            let running =
+                russh::server::run_stream(server_config, server_side, TestDaemon::default())
+                .await
+                .expect("daemon side of the handshake");
+            let _ = running.await;
+        });
+
+        let (session, fingerprint) = SshSession::from_stream(
+            client_side,
+            "test-daemon",
+            HostKey::Verify(TEST_HOST_FINGERPRINT.to_owned()),
+        )
+        .await
+        .expect("from_stream authenticates with no SshCredential");
+        assert_eq!(fingerprint, TEST_HOST_FINGERPRINT);
+
+        let blobs = Arc::new(crate::store::MemoryBlobs::new());
+        let machine = SshTarget::bind_session(
+            "agent-conformance",
+            Arc::new(session),
+            crate::path::Root::new("/tmp").expect("a root every machine running this test has"),
+            blobs.clone() as Arc<dyn crate::store::Blobs>,
+        )
+        .await
+        .expect("bind_session builds a Machine from an already-open session");
+
+        use crate::target::Target;
+        let exit = machine
+            .exec(crate::exec::Exec::new("echo agent-transport-works"))
+            .await
+            .expect("the far end actually ran the command");
+        assert_eq!(exit.outcome, crate::exec::Outcome::Completed { code: 0 });
+
+        let stdout = blobs.get(&exit.stdout.span.blob).expect("stdout was stored");
+        assert_eq!(
+            String::from_utf8_lossy(&stdout).trim(),
+            "agent-transport-works"
+        );
+    }
 }

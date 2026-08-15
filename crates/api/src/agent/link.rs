@@ -176,6 +176,13 @@ impl AsyncWrite for WsStream {
         Pin::new(&mut self.ws)
             .start_send(Message::Binary(Bytes::copy_from_slice(buf)))
             .map_err(io::Error::other)?;
+        // `start_send` only queues the frame in tungstenite's own buffer —
+        // nothing pushes it to the socket until something flushes, and nobody
+        // downstream of an `AsyncWrite` is obliged to call `poll_flush`
+        // separately from `poll_write`. Best-effort: a `Pending` here just
+        // means the caller's next `poll_write` (or explicit flush) tries
+        // again, not a reason to fail this one.
+        let _ = Pin::new(&mut self.ws).poll_flush(cx);
         Poll::Ready(Ok(buf.len()))
     }
 
