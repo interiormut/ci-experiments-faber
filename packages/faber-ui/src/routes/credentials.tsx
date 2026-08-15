@@ -271,16 +271,40 @@ function CredentialFormDialog({
             </select>
           </div>
 
-          <AnimatedField
-            id="credential-key"
-            label={kind === "ssh_key" ? "SSH private key" : "API key"}
-            type="password"
-            value={key}
-            onChange={setKey}
-            placeholder={kind === "ssh_key" ? "-----BEGIN OPENSSH PRIVATE KEY-----" : "sk-…"}
-            required
-            hint="Encrypted at rest — you won't be able to view it again."
-          />
+          {kind === "ssh_key" ? (
+            <div className="w-full">
+              <label htmlFor="credential-key" className="mb-1.5 block text-sm font-medium text-foreground/80">
+                SSH private key<span className="ml-0.5 text-accent-foreground/70">*</span>
+              </label>
+              <textarea
+                id="credential-key"
+                value={key}
+                onChange={(event) => setKey(event.target.value)}
+                placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                required
+                rows={8}
+                spellCheck={false}
+                autoCapitalize="none"
+                autoCorrect="off"
+                className="min-h-44 w-full resize-y rounded-lg border border-border bg-card px-3 py-2.5 font-mono text-xs text-foreground outline-none transition focus:border-primary focus:ring-4 focus:ring-primary/10"
+                aria-describedby="credential-key-hint"
+              />
+              <p id="credential-key-hint" className="mt-1.5 text-xs text-muted-foreground">
+                Encrypted at rest — you won&apos;t be able to view it again.
+              </p>
+            </div>
+          ) : (
+            <AnimatedField
+              id="credential-key"
+              label="API key"
+              type="password"
+              value={key}
+              onChange={setKey}
+              placeholder="sk-…"
+              required
+              hint="Encrypted at rest — you won't be able to view it again."
+            />
+          )}
 
           {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
