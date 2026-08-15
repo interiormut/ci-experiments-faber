@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use russh::client;
-use russh::keys::{PrivateKey, PrivateKeyWithHashAlg, ssh_key};
+use russh::keys::{PrivateKeyWithHashAlg, decode_secret_key, ssh_key};
 
 pub use files::SftpFiles;
 pub use forward::SshForwarded;
@@ -113,21 +113,15 @@ impl SshSession {
         credential: &SshCredential,
         host_key: HostKey,
     ) -> Result<(Self, String), Fault> {
-        let key = PrivateKey::from_openssh(&credential.private_key)
+        let key = decode_secret_key(
+            &credential.private_key,
+            credential.passphrase.as_deref(),
+        )
             .map_err(|error| {
                 Fault::Denied(Denial::Malformed {
                     what: "ssh key".into(),
                     reason: format!("could not read the private key: {error}"),
                 })
-            })
-            .and_then(|key| match &credential.passphrase {
-                Some(passphrase) => key.decrypt(passphrase).map_err(|error| {
-                    Fault::Denied(Denial::Malformed {
-                        what: "ssh key".into(),
-                        reason: format!("could not decrypt the private key: {error}"),
-                    })
-                }),
-                None => Ok(key),
             })?;
 
         let seen = Arc::new(Mutex::new(None));
