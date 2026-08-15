@@ -1,6 +1,5 @@
-"use client"
-
 import * as React from "react"
+import { createFileRoute } from "@tanstack/react-router"
 import {
   Box,
   ChevronDown,
@@ -55,7 +54,9 @@ import {
  * "is it reachable" is the next connection attempt, and a light would invite
  * reading a cached one instead.
  */
-export default function EnvironmentsPage() {
+export const Route = createFileRoute("/environments")({ component: EnvironmentsPage })
+
+function EnvironmentsPage() {
   const {
     hosts,
     loaded,

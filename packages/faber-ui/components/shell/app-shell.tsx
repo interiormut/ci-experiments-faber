@@ -1,7 +1,5 @@
-"use client"
-
 import * as React from "react"
-import { usePathname, useRouter } from "next/navigation"
+import { useLocation, useNavigate } from "@tanstack/react-router"
 
 import {
   faber,
@@ -61,11 +59,14 @@ const NAV_KEY_BY_PATH: Record<string, string> = {
  * threads — the sidebar's list and scroll position survive a route change.
  */
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const router = useRouter()
-  const pathname = usePathname()
-  const activeNavKey: string | null = pathname?.startsWith(SESSION_PATH_PREFIX)
+  const navigate = useNavigate()
+  // Old links and bookmarks may carry a trailing slash — normalize so the
+  // sidebar highlights the same row regardless, rather than losing the
+  // indicator on refresh and direct links.
+  const pathname = (useLocation().pathname ?? "").replace(/\/+$/, "") || "/"
+  const activeNavKey: string | null = pathname.startsWith(SESSION_PATH_PREFIX)
     ? sessionNavKey(pathname.slice(SESSION_PATH_PREFIX.length))
-    : (NAV_KEY_BY_PATH[pathname ?? ""] ?? null)
+    : (NAV_KEY_BY_PATH[pathname] ?? null)
 
   const [sessions, setSessions] = React.useState<Session[]>([])
   const [sessionsLoading, setSessionsLoading] = React.useState(true)
@@ -148,9 +149,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     async (id: Uuid): Promise<void> => {
       await faber.deleteSession(id)
       setSessions((prev) => prev.filter((session) => session.id !== id))
-      if (activeNavKey === sessionNavKey(id)) router.push("/")
+      if (activeNavKey === sessionNavKey(id)) navigate({ to: "/" })
     },
-    [activeNavKey, router],
+    [activeNavKey, navigate],
   )
 
   const addModel = React.useCallback(async (body: CreateModelRequest): Promise<ModelConfig> => {
@@ -217,14 +218,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <AppSidebar
           sessions={sessions}
           activeNavKey={activeNavKey}
-          onSelectSession={(id) => router.push(`/session/${id}`)}
-          onSelectModels={() => router.push("/models")}
-          onSelectCredentials={() => router.push("/credentials")}
-          onSelectHosts={() => router.push("/hosts")}
-          onSelectEnvironments={() => router.push("/environments")}
+          onSelectSession={(id) => navigate({ to: "/session/$sessionId", params: { sessionId: id } })}
+          onSelectModels={() => navigate({ to: "/models" })}
+          onSelectCredentials={() => navigate({ to: "/credentials" })}
+          onSelectHosts={() => navigate({ to: "/hosts" })}
+          onSelectEnvironments={() => navigate({ to: "/environments" })}
           onCreateSession={() => {
             void createSession().then((created) => {
-              if (created) router.push(`/session/${created.id}`)
+              if (created) navigate({ to: "/session/$sessionId", params: { sessionId: created.id } })
             })
           }}
           onRenameSession={renameSession}

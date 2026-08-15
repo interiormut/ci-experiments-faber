@@ -1,6 +1,5 @@
-"use client"
-
 import * as React from "react"
+import { createFileRoute } from "@tanstack/react-router"
 import { Cpu, Pencil, Plus, Trash2 } from "lucide-react"
 
 import {
@@ -121,7 +120,9 @@ function requestFromForm(form: FormState): CreateModelRequest {
   }
 }
 
-export default function ModelsPage() {
+export const Route = createFileRoute("/models")({ component: ModelsPage })
+
+function ModelsPage() {
   const { models, modelsLoaded, addModel, editModel, removeModel } = useAppShell()
 
   const [credentials, setCredentials] = React.useState<Credential[]>([])

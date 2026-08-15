@@ -21,32 +21,25 @@ function runtimeScript(): string {
 }
 
 async function serve(pathname: string): Promise<Response> {
-  const path = pathname === "/" ? "/index.html" : pathname
-  const candidates = [
-    path,
-    path.endsWith("/") ? `${path}index.html` : `${path}/index.html`,
-    "/index.html",
-  ]
+  const file = Bun.file(`./dist${pathname}`)
 
-  for (const candidate of candidates) {
-    const file = Bun.file(`./out${candidate}`)
-    if (!(await file.exists())) continue
-
-    if (!candidate.endsWith(".html")) return new Response(file)
-
-    const body = await file.text()
-    return new Response(body.replace("</head>", `${runtimeScript()}</head>`), {
-      headers: { "content-type": "text/html; charset=utf-8" },
+  if (pathname !== "/" && pathname !== "/index.html" && (await file.exists())) {
+    return new Response(file, {
+      headers: pathname.startsWith("/assets/")
+        ? { "cache-control": "public, max-age=31536000, immutable" }
+        : {},
     })
   }
 
-  return new Response("Not found", { status: 404 })
+  // Hashed assets are content-addressed: a miss is a genuine 404, never the
+  // shell. Returning HTML here would hand a stale client an opaque MIME error
+  // instead of a chunk-load failure it can recover from.
+  if (pathname.startsWith("/assets/")) return new Response("Not found", { status: 404 })
+
+  const html = await Bun.file("./dist/index.html").text()
+  return new Response(html.replace("</head>", `${runtimeScript()}</head>`), {
+    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+  })
 }
 
-Bun.serve({
-  port,
-  hostname,
-  fetch(request) {
-    return serve(new URL(request.url).pathname)
-  },
-})
+Bun.serve({ port, hostname, fetch: (request) => serve(new URL(request.url).pathname) })

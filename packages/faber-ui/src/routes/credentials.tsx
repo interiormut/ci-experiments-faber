@@ -1,6 +1,5 @@
-"use client"
-
 import * as React from "react"
+import { createFileRoute } from "@tanstack/react-router"
 import { KeyRound, Plus, Trash2 } from "lucide-react"
 
 import { faber, FaberError, type Credential } from "@/lib/api"
@@ -32,7 +31,9 @@ function formatDate(iso: string): string {
   })
 }
 
-export default function CredentialsPage() {
+export const Route = createFileRoute("/credentials")({ component: CredentialsPage })
+
+function CredentialsPage() {
   const [credentials, setCredentials] = React.useState<Credential[]>([])
   const [loaded, setLoaded] = React.useState(false)
 

@@ -26,8 +26,8 @@ export type * from "./types"
 /**
  * Origin the API is reachable at. Defaults to this app's own origin, which is
  * the deployment shape where the API serves the frontend — set
- * `NEXT_PUBLIC_FABER_API_URL` when the two are split (as in local dev, where
- * the API listens on its own port).
+ * `FABER_API_URL` in the container environment when the two are split (as in
+ * local dev, where the API listens on its own port).
  */
 const BASE_URL = getRuntimeApiUrl()
 

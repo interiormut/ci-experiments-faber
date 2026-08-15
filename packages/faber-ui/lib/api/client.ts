@@ -46,8 +46,9 @@ export interface FaberClientOptions {
   /**
    * Origin the API is reachable at, e.g. `https://faber.example.com`. Empty
    * (the default) means this app's own origin, which is the deployment shape
-   * where the frontend is served by the API — set `NEXT_PUBLIC_FABER_API_URL`
-   * when the two are split. A trailing slash is tolerated.
+   * where the frontend is served by the API — set `FABER_API_URL` in the
+   * container environment when the two are split. A trailing slash is
+   * tolerated.
    */
   baseUrl?: string
   /** Custom `fetch`, for tests or non-browser runtimes. Defaults to the global. */

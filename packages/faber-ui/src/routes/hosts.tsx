@@ -1,6 +1,5 @@
-"use client"
-
 import * as React from "react"
+import { createFileRoute } from "@tanstack/react-router"
 import { Pencil, Plus, Power, Server, Trash2 } from "lucide-react"
 
 import { type Host } from "@/lib/api"
@@ -28,7 +27,9 @@ import {
  * is an environment, and lives on `/environments`. Keeping the two apart is
  * what stops this page from becoming a container manager by accident.
  */
-export default function HostsPage() {
+export const Route = createFileRoute("/hosts")({ component: HostsPage })
+
+function HostsPage() {
   const { hosts, loaded, error, addHost, editHost, removeHost } = useHosts()
 
   const [hostDialogOpen, setHostDialogOpen] = React.useState(false)

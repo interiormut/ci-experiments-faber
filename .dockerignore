@@ -5,6 +5,6 @@
 target
 node_modules
 packages/faber-ui/node_modules
-packages/faber-ui/.next
+packages/faber-ui/dist
 packages/faber-ui/.env*
 internal-docs

@@ -1,21 +1,15 @@
-"use client"
-
 import * as React from "react"
-import { usePathname, useRouter } from "next/navigation"
+import { createFileRoute, useNavigate } from "@tanstack/react-router"
 
 import { faber, FaberError } from "@/lib/api"
 import { useAppShell } from "@/components/shell/app-shell"
 import { PromptBox } from "@/components/thread/prompt-box"
 import { ModelPicker } from "@/components/thread/model-picker"
-import SessionClient from "./session/[id]/session-client"
 
-export default function Home() {
-  const pathname = usePathname()
-  const sessionId = pathname.startsWith("/session/") ? pathname.slice("/session/".length) : ""
+export const Route = createFileRoute("/")({ component: Home })
 
-  if (sessionId) return <SessionClient sessionId={sessionId} />
-
-  const router = useRouter()
+function Home() {
+  const navigate = useNavigate()
   const { models, modelsLoaded, selectedModel, selectModel, createSession } = useAppShell()
   const [sendError, setSendError] = React.useState<string | null>(null)
   const [sending, setSending] = React.useState(false)
@@ -38,7 +32,7 @@ export default function Home() {
         if (!created) return false
 
         await faber.sendMessage(created.id, { content, model })
-        router.push(`/session/${created.id}`)
+        navigate({ to: "/session/$sessionId", params: { sessionId: created.id } })
         return true
       } catch (err) {
         setSendError(err instanceof FaberError ? err.message : "failed to send the message")
@@ -47,7 +41,7 @@ export default function Home() {
         setSending(false)
       }
     },
-    [selectedModel, createSession, router],
+    [selectedModel, createSession, navigate],
   )
 
   return (

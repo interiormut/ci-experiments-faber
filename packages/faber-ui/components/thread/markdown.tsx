@@ -118,10 +118,7 @@ const components: Components = {
   th: ({ children }) => <th className="px-2 py-1.5 font-semibold">{children}</th>,
   td: ({ children }) => <td className="px-2 py-1.5 align-top">{children}</td>,
 
-  // A plain `img`, not `next/image`: the source is arbitrary and comes from
-  // model output, which the optimizing loader would need allowlisted per host.
   img: ({ src, alt }) => (
-    // eslint-disable-next-line @next/next/no-img-element
     <img
       src={typeof src === "string" ? src : undefined}
       alt={alt ?? ""}
