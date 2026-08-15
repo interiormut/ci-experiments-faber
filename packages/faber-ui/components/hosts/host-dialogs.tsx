@@ -68,6 +68,7 @@ type HostFormState = {
   ssh_address: string
   ssh_key_ref: string
   docker_endpoint: string
+  root_path: string
 }
 
 const EMPTY_HOST_FORM: HostFormState = {
@@ -77,6 +78,7 @@ const EMPTY_HOST_FORM: HostFormState = {
   ssh_address: "",
   ssh_key_ref: "",
   docker_endpoint: "",
+  root_path: "",
 }
 
 function formFromHost(host: Host): HostFormState {
@@ -87,6 +89,7 @@ function formFromHost(host: Host): HostFormState {
     ssh_address: host.ssh_address ?? "",
     ssh_key_ref: host.ssh_key_ref ?? "",
     docker_endpoint: host.docker_endpoint ?? "",
+    root_path: host.root_path ?? "",
   }
 }
 
@@ -105,6 +108,10 @@ function requestFromHostForm(form: HostFormState): CreateHostRequest {
     docker_endpoint:
       form.exec_mode === "docker" && form.docker_endpoint.trim()
         ? form.docker_endpoint.trim()
+        : null,
+    root_path:
+      form.exec_mode === "direct" && form.root_path.trim()
+        ? form.root_path.trim()
         : null,
   }
 }
@@ -257,6 +264,18 @@ export function HostFormDialog({
               placeholder="unix:///var/run/docker.sock"
               required
               hint="Required. Use unix:// for a local socket or tcp:// for a reachable Docker daemon."
+            />
+          ) : null}
+
+          {form.exec_mode === "direct" ? (
+            <AnimatedField
+              id="host-root-path"
+              label="Root path"
+              value={form.root_path}
+              onChange={(v) => setForm((f) => ({ ...f, root_path: v }))}
+              placeholder="/workspace"
+              required
+              hint="Absolute path the agent can see on this machine."
             />
           ) : null}
 

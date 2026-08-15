@@ -207,6 +207,8 @@ export interface CreateHostRequest {
   ssh_address?: string | null
   ssh_key_ref?: string | null
   docker_endpoint?: string | null
+  /** Required for direct hosts; the agent-visible filesystem root. */
+  root_path?: string | null
 }
 
 /** Every field is optional; `null` clears a nullable column. */
@@ -217,6 +219,8 @@ export interface UpdateHostRequest {
   ssh_address?: string | null
   ssh_key_ref?: string | null
   docker_endpoint?: string | null
+  /** `null` clears the direct host root. */
+  root_path?: string | null
   /** `true` stamps `disabled_at`, `false` clears it. */
   disabled?: boolean
 }
