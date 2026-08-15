@@ -1,0 +1,19 @@
+[package]
+name = "traefik"
+version = "0.1.0"
+edition = "2024"
+
+# A leaf crate: no `environment`, no `harness`, no `llm`, and no Docker
+# socket. It writes one file and synthesizes upstream URLs; whether Traefik
+# can actually reach those URLs is a networking decision the operator makes
+# with Docker networks and mounts, not something this crate can observe.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["fs", "io-util", "sync", "rt"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
