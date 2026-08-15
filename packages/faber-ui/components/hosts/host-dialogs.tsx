@@ -7,6 +7,7 @@ import {
   type CreateContainerRequest,
   type CreateHostRequest,
   type CreateImageRequest,
+  type Credential,
   type ExecMode,
   type Host,
   type HostContainer,
@@ -17,6 +18,7 @@ import {
   type UpdateHostRequest,
   type UpdateImageRequest,
   type Uuid,
+  faber,
 } from "@/lib/api"
 import { useAppShell } from "@/components/shell/app-shell"
 import { Button } from "@/components/ui/button"
@@ -127,10 +129,15 @@ export function HostFormDialog({
   )
   const [submitting, setSubmitting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
+  const [credentials, setCredentials] = React.useState<Credential[]>([])
   const { config } = useAppShell()
   const allowLocalHosts = config?.allow_local_hosts ?? true
   const transport =
     !editing && !allowLocalHosts && form.transport === "local" ? "ssh" : form.transport
+  React.useEffect(() => {
+    if (transport !== "ssh") return
+    void faber.listCredentials("ssh_key").then(setCredentials).catch(() => setCredentials([]))
+  }, [transport])
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault()
@@ -193,14 +200,33 @@ export function HostFormDialog({
                 placeholder="user@host:22"
                 required
               />
-              <AnimatedField
+              <Field
                 id="host-ssh-key-ref"
-                label="SSH key reference"
-                value={form.ssh_key_ref}
-                onChange={(v) => setForm((f) => ({ ...f, ssh_key_ref: v }))}
-                placeholder="Optional"
-                hint="A handle into the secret store — never the key itself."
-              />
+                label="SSH key"
+                hint="Select an SSH private-key credential."
+              >
+                <select
+                  id="host-ssh-key-ref"
+                  value={form.ssh_key_ref}
+                  onChange={(event) =>
+                    setForm((f) => ({ ...f, ssh_key_ref: event.target.value }))
+                  }
+                  className={SELECT_CLASS}
+                  required
+                >
+                  <option value="">Select a credential</option>
+                  {credentials.map((credential) => (
+                    <option key={credential.id} value={credential.id}>
+                      {credential.label} ····{credential.last_four}
+                    </option>
+                  ))}
+                </select>
+                {credentials.every((credential) => credential.kind !== "ssh_key") ? (
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    Add an SSH private-key credential first in Credentials.
+                  </p>
+                ) : null}
+              </Field>
             </>
           ) : null}
 

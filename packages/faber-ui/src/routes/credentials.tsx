@@ -1,8 +1,8 @@
 import * as React from "react"
 import { createFileRoute } from "@tanstack/react-router"
-import { KeyRound, Plus, Trash2 } from "lucide-react"
+import { Plus, Trash2 } from "lucide-react"
 
-import { faber, FaberError, type Credential } from "@/lib/api"
+import { faber, FaberError, type Credential, type CredentialKind } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { AnimatedField } from "@/components/ui/animated-field"
 import {
@@ -61,11 +61,14 @@ function CredentialsPage() {
     setDialogOpen(true)
   }
 
-  const addCredential = React.useCallback(async (label: string, key: string): Promise<Credential> => {
-    const created = await faber.createCredential({ label, key })
-    setCredentials((prev) => [...prev, created])
-    return created
-  }, [])
+  const addCredential = React.useCallback(
+    async (label: string, kind: CredentialKind, key: string): Promise<Credential> => {
+      const created = await faber.createCredential({ label, kind, key })
+      setCredentials((prev) => [...prev, created])
+      return created
+    },
+    [],
+  )
 
   const [deleteTarget, setDeleteTarget] = React.useState<Credential | null>(null)
   const [deleting, setDeleting] = React.useState(false)
@@ -91,8 +94,8 @@ function CredentialsPage() {
           <div>
             <h1 className="text-lg font-semibold tracking-tight">Credentials</h1>
             <p className="text-sm text-muted-foreground">
-              API keys models authenticate with. Stored encrypted — only the last four characters
-              ever come back.
+              Encrypted secrets used by models and SSH hosts. Only the last four characters ever
+              come back.
             </p>
           </div>
           <Button size="sm" onClick={openCreate}>
@@ -103,44 +106,21 @@ function CredentialsPage() {
 
         {!loaded ? (
           <p className="text-sm text-muted-foreground">Loading…</p>
-        ) : credentials.length === 0 ? (
-          <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-border py-16 text-center">
-            <KeyRound className="h-6 w-6 text-muted-foreground" />
-            <div>
-              <p className="text-sm font-medium">No credentials yet</p>
-              <p className="text-sm text-muted-foreground">
-                Add one so a model can authenticate with its provider.
-              </p>
-            </div>
-            <Button size="sm" onClick={openCreate}>
-              <Plus className="h-4 w-4" />
-              Add credential
-            </Button>
-          </div>
         ) : (
-          <ul className="flex flex-col gap-2">
-            {credentials.map((credential) => (
-              <li
-                key={credential.id}
-                className="flex items-center justify-between gap-4 rounded-xl border border-border bg-card px-4 py-3"
-              >
-                <div className="min-w-0">
-                  <span className="truncate text-sm font-medium">{credential.label}</span>
-                  <p className="truncate text-xs text-muted-foreground">
-                    ····{credential.last_four} · added {formatDate(credential.created_at)}
-                  </p>
-                </div>
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  aria-label={`Delete ${credential.label}`}
-                  onClick={() => setDeleteTarget(credential)}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </li>
-            ))}
-          </ul>
+          <div className="flex flex-col gap-8">
+            <CredentialSection
+              title="API keys"
+              description="Provider credentials used by models."
+              credentials={credentials.filter((credential) => credential.kind === "api_key")}
+              onDelete={setDeleteTarget}
+            />
+            <CredentialSection
+              title="SSH keys"
+              description="Private keys used to connect to remote hosts."
+              credentials={credentials.filter((credential) => credential.kind === "ssh_key")}
+              onDelete={setDeleteTarget}
+            />
+          </div>
         )}
       </div>
 
@@ -179,6 +159,56 @@ function CredentialsPage() {
   )
 }
 
+function CredentialSection({
+  title,
+  description,
+  credentials,
+  onDelete,
+}: {
+  title: string
+  description: string
+  credentials: Credential[]
+  onDelete: (credential: Credential) => void
+}) {
+  return (
+    <section className="flex flex-col gap-3">
+      <div>
+        <h2 className="text-sm font-semibold tracking-tight">{title}</h2>
+        <p className="text-xs text-muted-foreground">{description}</p>
+      </div>
+      {credentials.length === 0 ? (
+        <p className="rounded-lg border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
+          None added.
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {credentials.map((credential) => (
+            <li
+              key={credential.id}
+              className="flex items-center justify-between gap-4 rounded-xl border border-border bg-card px-4 py-3"
+            >
+              <div className="min-w-0">
+                <span className="truncate text-sm font-medium">{credential.label}</span>
+                <p className="truncate text-xs text-muted-foreground">
+                  ····{credential.last_four} · added {formatDate(credential.created_at)}
+                </p>
+              </div>
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                aria-label={`Delete ${credential.label}`}
+                onClick={() => onDelete(credential)}
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
 function CredentialFormDialog({
   open,
   onOpenChange,
@@ -186,9 +216,10 @@ function CredentialFormDialog({
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onCreate: (label: string, key: string) => Promise<Credential>
+  onCreate: (label: string, kind: CredentialKind, key: string) => Promise<Credential>
 }) {
   const [label, setLabel] = React.useState("")
+  const [kind, setKind] = React.useState<CredentialKind>("api_key")
   const [key, setKey] = React.useState("")
   const [submitting, setSubmitting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
@@ -198,7 +229,7 @@ function CredentialFormDialog({
     setSubmitting(true)
     setError(null)
     try {
-      await onCreate(label.trim(), key.trim())
+      await onCreate(label.trim(), kind, key.trim())
       onOpenChange(false)
     } catch (err) {
       setError(err instanceof FaberError ? err.message : "failed to save the credential")
@@ -222,16 +253,31 @@ function CredentialFormDialog({
             onChange={setLabel}
             placeholder="anthropic-personal"
             required
-            hint="Unique per user — used to pick this credential when adding a model."
+            hint="Unique per user — used to pick this credential when adding a model or host."
           />
+
+          <div className="w-full">
+            <label htmlFor="credential-kind" className="mb-1.5 block text-sm font-medium text-foreground/80">
+              Kind
+            </label>
+            <select
+              id="credential-kind"
+              value={kind}
+              onChange={(event) => setKind(event.target.value as CredentialKind)}
+              className="w-full rounded-lg border border-border bg-card px-3 py-2.5 text-[15px] text-foreground outline-none"
+            >
+              <option value="api_key">API key</option>
+              <option value="ssh_key">SSH private key</option>
+            </select>
+          </div>
 
           <AnimatedField
             id="credential-key"
-            label="API key"
+            label={kind === "ssh_key" ? "SSH private key" : "API key"}
             type="password"
             value={key}
             onChange={setKey}
-            placeholder="sk-…"
+            placeholder={kind === "ssh_key" ? "-----BEGIN OPENSSH PRIVATE KEY-----" : "sk-…"}
             required
             hint="Encrypted at rest — you won't be able to view it again."
           />

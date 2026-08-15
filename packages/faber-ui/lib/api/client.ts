@@ -108,8 +108,8 @@ export class FaberClient {
   // Credentials
   // -------------------------------------------------------------------------
 
-  async listCredentials(): Promise<Credential[]> {
-    return this.request("GET", "/api/credentials")
+  async listCredentials(kind?: Credential["kind"]): Promise<Credential[]> {
+    return this.request("GET", "/api/credentials", { query: { kind } })
   }
 
   /** The key is encrypted at rest and never readable again through the API. */

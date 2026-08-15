@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{delete, post},
 };
@@ -28,13 +28,36 @@ pub fn router() -> Router<AppState> {
 #[derive(Deserialize)]
 struct CreateRequest {
     label: String,
+    kind: CredentialKind,
     key: String,
+}
+
+#[derive(Deserialize)]
+struct ListQuery {
+    kind: Option<CredentialKind>,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CredentialKind {
+    ApiKey,
+    SshKey,
+}
+
+impl CredentialKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ApiKey => "api_key",
+            Self::SshKey => "ssh_key",
+        }
+    }
 }
 
 #[derive(Serialize)]
 struct CredentialResponse {
     id: Uuid,
     label: String,
+    kind: String,
     last_four: String,
     created_at: DateTime<Utc>,
 }
@@ -43,6 +66,7 @@ fn credential_response(c: &Credential) -> CredentialResponse {
     CredentialResponse {
         id: c.id,
         label: c.label.clone(),
+        kind: c.kind.clone(),
         last_four: c.last_four.clone(),
         created_at: c.created_at,
     }
@@ -90,6 +114,7 @@ async fn create(
         id: cred_id,
         user_id: user.id,
         label,
+        kind: input.kind.as_str(),
         key_ciphertext: &ciphertext,
         key_nonce: &nonce,
         key_version: "v1",
@@ -117,11 +142,17 @@ async fn create(
 async fn list(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
+    Query(query): Query<ListQuery>,
 ) -> ApiResult<Json<Vec<CredentialResponse>>> {
     let mut conn = state.db.get().await?;
 
-    let rows: Vec<Credential> = credentials::table
+    let mut statement = credentials::table
         .filter(credentials::user_id.eq(user.id))
+        .into_boxed();
+    if let Some(kind) = query.kind {
+        statement = statement.filter(credentials::kind.eq(kind.as_str()));
+    }
+    let rows: Vec<Credential> = statement
         .order(credentials::created_at.asc())
         .select(Credential::as_select())
         .load(&mut conn)

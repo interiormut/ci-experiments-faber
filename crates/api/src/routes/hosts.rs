@@ -42,7 +42,7 @@ use crate::{
         Transport, UpdateHost, UpdateHostContainer,
     },
     routes::{clamp_limit, deserialize_optional_field},
-    schema::{host, host_container, host_probe, image},
+    schema::{credentials, host, host_container, host_probe, image},
     state::AppState,
 };
 
@@ -309,6 +309,31 @@ fn trimmed(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|v| !v.is_empty())
 }
 
+async fn validate_ssh_credential(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user_id: Uuid,
+    key_ref: Option<&str>,
+) -> Result<(), AppError> {
+    let key_ref = key_ref.ok_or_else(|| {
+        AppError::BadRequest("ssh_key_ref is required when transport is 'ssh'".into())
+    })?;
+    let credential_id = Uuid::parse_str(key_ref)
+        .map_err(|_| AppError::BadRequest("ssh_key_ref is not a credential id".into()))?;
+    let exists: Option<Uuid> = credentials::table
+        .filter(credentials::id.eq(credential_id))
+        .filter(credentials::user_id.eq(user_id))
+        .filter(credentials::kind.eq("ssh_key"))
+        .select(credentials::id)
+        .first(conn)
+        .await
+        .optional()
+        .map_err(|err| AppError::db(err, "hosts.verify_ssh_credential"))?;
+    if exists.is_none() {
+        return Err(AppError::BadRequest("SSH key credential not found".into()));
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Loading
 // ---------------------------------------------------------------------------
@@ -405,6 +430,12 @@ async fn create(
     let docker_endpoint = trimmed(input.docker_endpoint.as_deref());
     validate_docker_endpoint(input.transport, input.exec_mode, docker_endpoint)?;
 
+    let ssh_key_ref = trimmed(input.ssh_key_ref.as_deref());
+    let mut conn = state.db.get().await?;
+    if input.transport == Transport::Ssh {
+        validate_ssh_credential(&mut conn, user.id, ssh_key_ref).await?;
+    }
+
     let new_host = NewHost {
         id: Uuid::now_v7(),
         user_id: user.id,
@@ -412,13 +443,11 @@ async fn create(
         transport: input.transport.as_str(),
         exec_mode: input.exec_mode.as_str(),
         ssh_address,
-        ssh_key_ref: trimmed(input.ssh_key_ref.as_deref()),
+        ssh_key_ref,
         ssh_host_key,
         docker_endpoint,
         root_path: host_root,
     };
-
-    let mut conn = state.db.get().await?;
 
     let inserted: Host = diesel::insert_into(host::table)
         .values(&new_host)
@@ -538,6 +567,14 @@ async fn update(
         state.config.allow_local_hosts || current.transport == Transport::Local.as_str(),
     )?;
 
+    let effective_ssh_key_ref = match input.ssh_key_ref.as_ref() {
+        Some(value) => trimmed(value.as_deref()),
+        None => current.ssh_key_ref.as_deref(),
+    };
+    if effective_transport == Transport::Ssh {
+        validate_ssh_credential(&mut conn, user.id, effective_ssh_key_ref).await?;
+    }
+
     let effective_exec_mode = input.exec_mode.unwrap_or_else(|| {
         if current.exec_mode == ExecMode::Docker.as_str() {
             ExecMode::Docker
@@ -558,6 +595,12 @@ async fn update(
     // A transport switch that leaves the old address behind would fail the DB
     // check, so normalize: going local clears the address alongside it.
     let ssh_address_patch = match (input.transport, input.ssh_address.as_ref()) {
+        (_, Some(value)) => Some(trimmed(value.as_deref())),
+        (Some(Transport::Local), None) => Some(None),
+        _ => None,
+    };
+
+    let ssh_key_ref_patch = match (input.transport, input.ssh_key_ref.as_ref()) {
         (_, Some(value)) => Some(trimmed(value.as_deref())),
         (Some(Transport::Local), None) => Some(None),
         _ => None,
@@ -585,7 +628,7 @@ async fn update(
         transport: input.transport.map(|t| t.as_str()),
         exec_mode: input.exec_mode.map(|m| m.as_str()),
         ssh_address: ssh_address_patch,
-        ssh_key_ref: input.ssh_key_ref.as_ref().map(|v| trimmed(v.as_deref())),
+        ssh_key_ref: ssh_key_ref_patch,
         ssh_host_key: ssh_host_key_patch,
         docker_endpoint: input
             .docker_endpoint

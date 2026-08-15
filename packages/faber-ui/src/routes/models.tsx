@@ -130,7 +130,7 @@ function ModelsPage() {
   React.useEffect(() => {
     let cancelled = false
     void faber
-      .listCredentials()
+      .listCredentials("api_key")
       .then((rows) => {
         if (!cancelled) setCredentials(rows)
       })

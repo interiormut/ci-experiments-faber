@@ -137,13 +137,14 @@ async fn create(
         let exists: Option<Uuid> = credentials::table
             .filter(credentials::id.eq(cred_id))
             .filter(credentials::user_id.eq(user.id))
+            .filter(credentials::kind.eq("api_key"))
             .select(credentials::id)
             .first(&mut conn)
             .await
             .optional()
             .map_err(|err| AppError::db(err, "models.create.verify_credential"))?;
         if exists.is_none() {
-            return Err(AppError::BadRequest("credential not found".into()));
+            return Err(AppError::BadRequest("API key credential not found".into()));
         }
     }
 
@@ -225,13 +226,14 @@ async fn update(
         let exists: Option<Uuid> = credentials::table
             .filter(credentials::id.eq(cred_id))
             .filter(credentials::user_id.eq(user.id))
+            .filter(credentials::kind.eq("api_key"))
             .select(credentials::id)
             .first(&mut conn)
             .await
             .optional()
             .map_err(|err| AppError::db(err, "models.update.verify_credential"))?;
         if exists.is_none() {
-            return Err(AppError::BadRequest("credential not found".into()));
+            return Err(AppError::BadRequest("API key credential not found".into()));
         }
     }
 

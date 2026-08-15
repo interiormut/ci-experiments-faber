@@ -5,6 +5,7 @@ diesel::table! {
         id -> Uuid,
         user_id -> Uuid,
         label -> Text,
+        kind -> Text,
         key_ciphertext -> Bytea,
         key_nonce -> Bytea,
         key_version -> Text,

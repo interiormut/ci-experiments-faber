@@ -42,9 +42,12 @@ export interface Me {
 // ---------------------------------------------------------------------------
 
 /** The key itself is write-only — only its last four characters ever come back. */
+export type CredentialKind = "api_key" | "ssh_key"
+
 export interface Credential {
   id: Uuid
   label: string
+  kind: CredentialKind
   last_four: string
   created_at: Timestamp
 }
@@ -52,6 +55,7 @@ export interface Credential {
 export interface CreateCredentialRequest {
   /** Unique per user; a duplicate is a 400, not a conflict. */
   label: string
+  kind: CredentialKind
   key: string
 }
 
