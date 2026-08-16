@@ -52,7 +52,7 @@ pub struct AppState {
     pub interrupts: InterruptRegistry,
     /// Connected agent-transport daemons, keyed by host. In-process for the
     /// same reason `runs` is — a bind only finds a daemon whose connection
-    /// landed on this replica (X43).
+    /// landed on this process, and faber runs as one.
     pub agents: Arc<AgentRegistry>,
 }
 

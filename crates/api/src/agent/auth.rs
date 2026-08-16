@@ -1,10 +1,11 @@
-//! Machine auth for the agent-transport connect endpoint (X41).
+//! Machine auth for the agent-transport connect endpoint.
 //!
 //! Deliberately not `SurgeIdentity`/`AuthUser`: those verify a human's
 //! session, and an agent connection arrives unsolicited from a daemon Faber
 //! did not dial, running on infrastructure Faber does not control. What is
-//! being checked is "did we issue this token", not "which user is this" —
-//! R15's argument for why this needs its own extractor rather than a bent
+//! being checked is "did we issue this token", not "which user is this".
+//! A daemon authenticates itself rather than a user, which is a materially
+//! different trust check and earns its own extractor rather than a bent
 //! version of theirs.
 
 use axum::{

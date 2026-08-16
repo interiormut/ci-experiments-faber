@@ -1,8 +1,10 @@
 //! `host_id -> AgentLink`, in-memory, one process's view only.
 //!
-//! Single-replica only (X43): a bind dispatched to a process that never saw
-//! this daemon's connection has nothing to look up. The cross-replica story
-//! is out of scope for this registry — see X43/X46.1.
+//! One process only: a bind dispatched to a process that never saw this
+//! daemon's connection has nothing to look up. That is a decision rather
+//! than a stage — faber runs as a single process by preference, not on the
+//! way to several — so there is no cross-process routing story here and this
+//! map is the whole answer.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -11,8 +13,8 @@ use environment::ssh::SshSession;
 use uuid::Uuid;
 
 /// One connected daemon's session, shared by every binding and every
-/// concurrent run against that host (R16) — reused rather than reopened,
-/// since there is nothing here to reopen (R14).
+/// concurrent run against that host — reused rather than reopened, since
+/// there is nothing here to reopen: faber never dials a daemon.
 #[derive(Default)]
 pub struct AgentRegistry {
     links: Mutex<HashMap<Uuid, Arc<SshSession>>>,
@@ -22,8 +24,8 @@ impl AgentRegistry {
     /// Registers a freshly connected session, replacing and closing whatever
     /// was there before.
     ///
-    /// R16 — newest wins, unconditionally: two live connections claiming the
-    /// same host is a routing ambiguity, not a capacity question. The old
+    /// Newest wins, unconditionally: two live connections claiming the same
+    /// host is a routing ambiguity, not a capacity question. The old
     /// session is disconnected explicitly rather than simply dropped, so
     /// every binding still holding a clone of it fails on its next call
     /// instead of quietly outliving a connection that no longer exists on
@@ -42,8 +44,8 @@ impl AgentRegistry {
     }
 
     /// The live session for a host, or `None` if no daemon is connected —
-    /// which is the whole of what `Unreachable` means for this transport
-    /// (R14): there is no dial to retry.
+    /// which is the whole of what `Unreachable` means for this transport:
+    /// there is no dial to retry.
     ///
     /// Eviction is lazy rather than watched by a background task: a session
     /// whose connection died — the far side closed it, or a missed ping
@@ -62,8 +64,9 @@ impl AgentRegistry {
     }
 
     /// Closes and drops the live session for a host, if any — what
-    /// revoking a credential does to the connection it authenticated
-    /// (X41), on this replica. Best-effort beyond that: see X44.7.
+    /// revoking a credential does to the connection it authenticated. The
+    /// close lands within the same request, unconditionally — there is no
+    /// second process the connection could have landed on instead.
     pub async fn evict(&self, host_id: Uuid) {
         let removed = self
             .links

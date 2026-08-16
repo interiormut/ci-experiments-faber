@@ -1,4 +1,4 @@
-//! Enrollment and connection for agent-transport hosts (X40, X41).
+//! Enrollment and connection for agent-transport hosts.
 //!
 //! Three endpoints, three different callers:
 //!
@@ -216,7 +216,7 @@ pub async fn issue_enrollment(
 ///
 /// The row is tombstoned rather than deleted, for the same reason a re-issue
 /// tombstones: what was issued and when stays answerable. Eviction is
-/// best-effort and this-replica-only (X44.7).
+/// best-effort, and lands within this request because faber is one process.
 pub async fn revoke_credential(
     state: &AppState,
     conn: &mut diesel_async::AsyncPgConnection,
@@ -292,7 +292,7 @@ async fn status(
 struct ExchangeRequest {
     token: String,
     /// The daemon's freshly generated SSH host public key, OpenSSH format.
-    /// Pinned from here on (X39) — there is no TOFU window for agent hosts,
+    /// Pinned from here on — there is no TOFU window for agent hosts,
     /// because this exchange is itself the one-time authenticated moment
     /// TOFU exists to approximate.
     host_pubkey: String,
@@ -335,7 +335,7 @@ async fn exchange(
 
     let credential = generate_token();
 
-    // "Regenerate token" (X44.7) reaches the same state by the same path: a
+    // "Regenerate token" reaches the same state by the same path: a
     // new row, the old one revoked rather than overwritten, so the log keeps
     // what was there rather than losing it to an UPDATE. Enrollment can run
     // again on a host that already has an active credential — a daemon

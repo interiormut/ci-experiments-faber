@@ -1,5 +1,5 @@
 //! `faber-agent` — the daemon half of agent transport
-//! (`internal-docs/agent-transport.md`, X40). Two commands, hand-rolled
+//! (`internal-docs/agent-transport.md`). Two commands, hand-rolled
 //! rather than pulled in via `clap`: two subcommands and three flags total
 //! doesn't earn a dependency the rest of the workspace doesn't otherwise
 //! need.

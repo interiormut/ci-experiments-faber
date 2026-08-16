@@ -167,13 +167,13 @@ impl SshSession {
     }
 
     /// Connects over a stream that is already open — no dial, because for an
-    /// agent-transport host there is nothing to dial (R14). `name` stands in
+    /// agent-transport host there is nothing to dial. `name` stands in
     /// for the address that [`Fault`] messages would otherwise quote.
     ///
     /// Takes no [`SshCredential`]: the daemon on the far side of an agent
     /// stream is not authenticating a human. It already proved itself one
     /// layer below the SSH handshake, over the connection it dialed out to
-    /// establish (R15), so the SSH layer here is deliberately not a trust
+    /// establish, so the SSH layer here is deliberately not a trust
     /// boundary — it authenticates with `auth_none`, on the strength of that
     /// prior check.
     pub async fn from_stream<S>(
@@ -203,8 +203,8 @@ impl SshSession {
         )
         .await?;
 
-        // There is no user to name — the peer accepts unconditionally
-        // (X39) — so this string is a label on the wire, not a credential.
+        // There is no user to name — the peer accepts unconditionally — so
+        // this string is a label on the wire, not a credential.
         let authenticated = handle
             .authenticate_none("faber")
             .await
@@ -270,9 +270,9 @@ impl SshSession {
 
     /// Whether the underlying connection has already gone down — a dropped
     /// TCP socket, a completed [`Self::disconnect`], or the far side closing
-    /// first. A caller holding a shared session (R16) checks this rather
-    /// than dialing to find out, because for an agent-transport host there
-    /// is nothing to dial (R14).
+    /// first. A caller holding a session shared across bindings checks this
+    /// rather than dialing to find out, because for an agent-transport host
+    /// there is nothing to dial.
     pub fn is_closed(&self) -> bool {
         self.handle.is_closed()
     }
@@ -281,7 +281,7 @@ impl SshSession {
     ///
     /// Dropping an `Arc<SshSession>` only closes the underlying handle once
     /// the *last* clone goes away — no help to a caller preempting a shared
-    /// session (R16) while other bindings still hold a reference to it. This
+    /// session while other bindings still hold a reference to it. This
     /// tears the transport down regardless of who else is holding on, so
     /// every one of them fails on its next call rather than silently
     /// outliving the connection they think they still have.
@@ -319,7 +319,7 @@ impl SshTarget {
     }
 
     /// Binds against a session the caller already holds, rather than dialing
-    /// one — what an agent-transport host uses (X39): the connection came in
+    /// one — what an agent-transport host uses: the connection came in
     /// from the daemon, is kept by the broker, and every bind against that
     /// host shares it rather than opening a second one. There is no
     /// fingerprint to return here because there is nothing to write back —
@@ -421,7 +421,7 @@ mod tests {
     fn a_public_keys_fingerprint_matches_what_ssh_keygen_reports() {
         // Generated with `ssh-keygen -t ed25519` and checked against
         // `ssh-keygen -lf … -E sha256` — the value an agent host's
-        // `HostKey::Verify` is pinned to at enrollment (X39) has to be the
+        // `HostKey::Verify` is pinned to at enrollment has to be the
         // same one any operator comparing keys by hand would compute.
         let public_key =
             "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIML17Ogk1BkPexAPb4jAfCUfFq0h9LzAhi09kSznnjY0 test";
@@ -597,7 +597,7 @@ mod tests {
     /// Ed25519 keypair generated once for these tests (`ssh-keygen -t
     /// ed25519 -N ""`), not regenerated per run — the point is exercising
     /// [`HostKey::Verify`] against a fixed, known fingerprint, the same
-    /// shape an agent host's key is pinned in at enrollment (X39).
+    /// shape an agent host's key is pinned in at enrollment.
     const TEST_HOST_KEY_PEM: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\n\
         b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n\
         QyNTUxOQAAACBbz7tTDB3vYN8E0RvJLb/jb/MiO66i4G5GkwARcl/MVAAAAJC226bLttum\n\

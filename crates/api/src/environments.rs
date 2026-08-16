@@ -121,7 +121,7 @@ pub async fn reach_daemon(
             }
         };
 
-        // No `record_host_key` here (X44.4): an agent host's key was pinned
+        // No `record_host_key` here: an agent host's key was pinned
         // at enrollment, in `agent_credential`, not learned from a first
         // connection — there is nothing to write back to `host.ssh_host_key`,
         // and that column is constrained to stay null for this transport.
@@ -169,10 +169,9 @@ pub async fn reach_tenancy(state: &AppState, host: &Host) -> ApiResult<Tenancy> 
 
 /// The live session for an agent-transport host, or `Unreachable`.
 ///
-/// There is no dial here and nothing to retry (R14): a daemon that has not
-/// connected — or connected to a different replica (X43) — is not a
-/// transient failure this call can wait out, it is the whole of what
-/// `Unreachable` means for this transport.
+/// There is no dial here and nothing to retry: a daemon that has not
+/// connected is not a transient failure this call can wait out, it is the
+/// whole of what `Unreachable` means for this transport.
 fn agent_session(state: &AppState, host: &Host) -> ApiResult<Arc<SshSession>> {
     state.agents.get(host.id).ok_or_else(|| {
         fault(Fault::Unreachable(format!(
@@ -658,7 +657,7 @@ async fn bind_one(
         let session = agent_session(state, &host_row)?;
         // No fingerprint comes back, and none is written: the session is
         // already authenticated, against a key pinned at enrollment rather
-        // than learned here (X44.4).
+        // than learned here.
         return SshTarget::bind_session(row.label.clone(), session, root, blobs)
             .await
             .map_err(fault);

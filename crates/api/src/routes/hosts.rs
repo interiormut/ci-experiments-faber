@@ -308,7 +308,7 @@ fn validate_transport_config(
             "ssh_address is required when transport is 'ssh'".into(),
         )),
         Transport::Ssh => validate_ssh_address(ssh_address.expect("checked above")),
-        // Agent mode carries no ssh_address (R14 — faber never dials it) and
+        // Agent mode carries no ssh_address (faber never dials it) and
         // no ssh_host_key (the daemon's key is pinned in `agent_credential`
         // at enrollment, not learned here).
         Transport::Local | Transport::Agent if ssh_address.is_some_and(|a| !a.is_empty()) => Err(

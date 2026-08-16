@@ -841,10 +841,10 @@ pub async fn release_host_user(
 /// cgroup counter read through it is the container's view of itself, and the
 /// question is what the tenant is using on the host.
 ///
-/// The `host.service()` guard stays. An agent installed under a user's own
-/// account cannot write a limit or read a tenant quota — that is SR10, and it
-/// is the backstop — but this is the gate, and faber should not be
-/// *attempting* either against a machine somebody else owns.
+/// The `host.service()` guard stays. A daemon installed under a user's own
+/// account is physically incapable of writing a cgroup limit or reading a
+/// tenant quota, and that is the backstop — but this is the gate, and faber
+/// should not be *attempting* either against a machine somebody else owns.
 pub async fn allowance(
     conn: &mut AsyncPgConnection,
     state: &crate::state::AppState,

@@ -1,7 +1,7 @@
 //! The SFTP subsystem, backed by the real filesystem — unconfined, same as
 //! any other sshd's `sftp-server`.
 //!
-//! Confinement is Faber's job, not this daemon's (X45.1): `SftpFiles` on
+//! Confinement is Faber's job, not this daemon's: `SftpFiles` on
 //! Faber's side resolves every path against the target's root and refuses
 //! anything a `REALPATH` shows escaping it *before* sending the operation
 //! over. That check only works if [`realpath`](Sftp::realpath) here tells

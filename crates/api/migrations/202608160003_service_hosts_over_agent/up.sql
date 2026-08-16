@@ -1,5 +1,5 @@
 -- Service hosts over agent transport.
--- See internal-docs/service-hosts-over-agent.md (SR9).
+-- See internal-docs/service-hosts-over-agent.md.
 --
 -- `host_service_needs_endpoint` required a service host's docker_endpoint to
 -- be a `unix://` socket. The invariant it enforced survives; its enforcement

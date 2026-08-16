@@ -3,9 +3,9 @@
  *
  * One rule drives everything here: **a probe is an observation, never a
  * status.** Everything below phrases the last probe in the past tense with its
- * age attached, so there is no "online" for a caller to accidentally gate on —
- * per R1 in `internal-docs/host.md`, the authoritative answer to "is it
- * reachable" is the next connection attempt.
+ * age attached, so there is no "online" for a caller to accidentally gate on.
+ * Per `internal-docs/host.md`, the authoritative answer to "is it reachable"
+ * is the next connection attempt.
  */
 
 import type { Host, HostProbe } from "@/lib/api"

@@ -1,4 +1,4 @@
-//! `faber-agent install --token … --api …` — the one-time exchange (X40).
+//! `faber-agent install --token … --api …` — the one-time exchange.
 //!
 //! Generates this daemon's SSH host keypair locally, trades the bootstrap
 //! token for a long-lived connection credential, and writes both to disk.
@@ -41,8 +41,8 @@ pub async fn install(
 
     // Ambient HTTP_PROXY/HTTPS_PROXY/NO_PROXY, deliberately: this daemon *is*
     // the caller, running on the caller's own infrastructure, so reading its
-    // own environment is the ambient trust decision R11 reserves to whoever
-    // owns it (X40) — `reqwest::Client::new()` honors those by default.
+    // own environment is a trust decision that belongs to whoever owns it.
+    // `reqwest::Client::new()` honors those by default.
     let client = reqwest::Client::new();
     let url = format!("{}/api/agent/enroll", api.trim_end_matches('/'));
     let response = client

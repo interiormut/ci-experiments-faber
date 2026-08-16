@@ -3,7 +3,7 @@
 //! shared code: different crate, different WebSocket type
 //! (`tokio_tungstenite::WebSocketStream` here, `axum::extract::ws::WebSocket`
 //! there), and this side answers pings rather than sending them — the
-//! broker owns the one liveness clock for this connection (X38), and two
+//! broker owns the one liveness clock for this connection, and two
 //! clocks pinging each other independently would just be two things that
 //! can disagree about whether the link is alive.
 

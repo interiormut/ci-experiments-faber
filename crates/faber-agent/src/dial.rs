@@ -1,14 +1,15 @@
 //! The outbound leg: WebSocket over TLS on 443, through whatever proxy the
-//! machine this daemon runs on is configured to use (X40).
+//! machine this daemon runs on is configured to use.
 //!
 //! Dialing this way, deliberately, is why this daemon exists: an egress
 //! proxy that passes ordinary HTTPS traffic carries a WebSocket upgrade
 //! without special-casing it, where a raw TLS socket on a nonstandard port
 //! is exactly what such a proxy exists to block. Honoring the *ambient*
-//! `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` here does not conflict with R11 —
-//! this daemon is the caller, running on the caller's own infrastructure,
-//! so reading its own environment is the trust decision R11 reserves to
-//! whoever owns it.
+//! `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` here does not conflict with faber's
+//! rule against ambient configuration — that rule binds faber, which is a
+//! multi-user service reaching other people's machines. This daemon is the
+//! caller, running on the caller's own infrastructure, so reading its own
+//! environment is a trust decision that belongs to whoever owns it.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,9 +27,9 @@ const MIN_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
 /// Reconnects forever, jittered backoff between attempts. There is
-/// deliberately no supervisor logic beyond this (X40): a dropped connection
-/// — a blip, an API restart, R16 preemption by a newer connection — is
-/// handled the same way every time, by reconnecting.
+/// deliberately no supervisor logic beyond this: a dropped connection — a
+/// blip, an API restart, preemption by a newer connection for the same host
+/// — is handled the same way every time, by reconnecting.
 pub async fn run_forever(config: &Config) -> ! {
     let mut backoff = MIN_BACKOFF;
     loop {
@@ -58,9 +59,9 @@ async fn connect_and_serve(config: &Config) -> Result<(), Box<dyn std::error::Er
         let server_name = rustls_pki_types::ServerName::try_from(target.host.clone())?;
         MaybeTls::Tls(Box::new(connector.connect(server_name, tcp).await?))
     } else {
-        // http:// only ever happens against a local dev instance — X40's
-        // "TLS on 443" is the deliberate production shape, not a default
-        // this branch second-guesses.
+        // http:// only ever happens against a local dev instance. TLS on
+        // 443 is the deliberate production shape, not a default this branch
+        // second-guesses.
         MaybeTls::Plain(tcp)
     };
 

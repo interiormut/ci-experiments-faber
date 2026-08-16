@@ -1,4 +1,4 @@
--- Agent transport. See internal-docs/agent-transport.md (X42).
+-- Agent transport. See internal-docs/agent-transport.md.
 --
 -- `host.transport` gains a third value. Two checks gate it, not one: the
 -- inline `transport in ('local','ssh')` from 202608120001_hosts (postgres
@@ -9,8 +9,8 @@ ALTER TABLE host ADD  CONSTRAINT host_transport_check CHECK (
     transport IN ('local', 'ssh', 'agent')
 );
 
--- Agent-mode hosts carry no ssh_address, since faber never dials them (R14
--- — the connection always arrives from the daemon, never the other way).
+-- Agent-mode hosts carry no ssh_address, since faber never dials them: the
+-- connection always arrives from the daemon, never the other way.
 ALTER TABLE host DROP CONSTRAINT host_transport_config;
 ALTER TABLE host ADD  CONSTRAINT host_transport_config CHECK (
     (transport = 'local' AND ssh_address IS NULL)
@@ -37,9 +37,9 @@ CREATE TABLE agent_enrollment (
 CREATE INDEX agent_enrollment_host_id_idx ON agent_enrollment (host_id);
 
 -- The long-lived connection credential a daemon presents on every reconnect,
--- plus the SSH host key it reported at enrollment (X39 — pinned, not TOFU;
+-- plus the SSH host key it reported at enrollment — pinned, not TOFU, since
 -- the identity check already happened at enrollment, an authenticated
--- exchange).
+-- exchange.
 CREATE TABLE agent_credential (
     id          uuid        PRIMARY KEY,
     host_id     uuid        NOT NULL REFERENCES host(id) ON DELETE CASCADE,

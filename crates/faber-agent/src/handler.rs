@@ -1,12 +1,13 @@
 //! This daemon's `russh::server::Handler` — the inverse of
-//! `LocalSpawn`/`LocalFiles` (X40): it runs as the far end of a connection
+//! `LocalSpawn`/`LocalFiles`: it runs as the far end of a connection
 //! instead of the near end, spawning local processes and touching the local
 //! filesystem in response to whatever Faber's `SshSpawn`/`SftpFiles`/
 //! `SshForwarded` ask of it.
 //!
 //! **Not an authentication boundary.** `auth_none` accepts unconditionally,
-//! on R15's argument that the WebSocket hop this session arrived over
-//! already established identity (the machine-auth extractor in
+//! because the WebSocket hop this session arrived over already established
+//! identity — a daemon authenticates itself there, not a user (the
+//! machine-auth extractor in
 //! `crates/api/src/agent/auth.rs`, one layer below). That is only sound
 //! because this daemon never listens on a socket anything else can reach —
 //! it dials out, and every connection it serves is the one Faber gave it.
@@ -186,7 +187,7 @@ impl russh::server::Handler for Handler {
         Ok(())
     }
 
-    /// `agent+docker` (X39): Faber's `SshForwarded` opens this to reach the
+    /// `agent+docker`: Faber's `SshForwarded` opens this to reach the
     /// container daemon's socket, exactly as it would over a dialed SSH
     /// connection — the far end doesn't know or care which kind of
     /// connection it's speaking over, only that this is `direct-streamlocal`

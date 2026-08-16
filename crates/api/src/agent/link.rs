@@ -1,12 +1,13 @@
 //! Wraps a WebSocket as `AsyncRead + AsyncWrite`, the seam
-//! `SshSession::from_stream` (X39) needs and nothing more — `environment`
-//! carries no WebSocket dependency, so the adapter lives here instead.
+//! `SshSession::from_stream` needs and nothing more — `environment` carries
+//! no WebSocket dependency, so the adapter lives here instead.
 //!
 //! SSH protocol bytes ride inside `Binary` frames. This also owns the one
-//! liveness mechanism this connection gets: R16's second consequence is that
-//! nothing detects a wedged-but-connected daemon unless something here
-//! pings for it, since [`SshSession`] is built with `inactivity_timeout:
-//! None` and R14 forbids probing the way a dialed host would be. Once a
+//! liveness mechanism this connection gets. Sharing one link per host is
+//! what makes that necessary: nothing detects a wedged-but-connected daemon
+//! unless something here pings for it, since [`SshSession`] is built with
+//! `inactivity_timeout: None` and faber never probes the path the way it
+//! would a host it dialed. Once a
 //! stream is handed to `SshSession::from_stream`, russh owns it exclusively
 //! from a single background task, so a ping/pong deadline has to live
 //! inside the adapter itself — there is no other point still holding a

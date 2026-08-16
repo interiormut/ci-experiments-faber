@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     /// Faber's base URL, e.g. `https://faber.example.com`.
     pub api: String,
-    /// The long-lived connection credential from the enrollment exchange
-    /// (X41) — presented as `Authorization: Bearer` on every reconnect.
+    /// The long-lived connection credential from the enrollment exchange,
+    /// presented as `Authorization: Bearer` on every reconnect.
     pub credential: String,
     /// This daemon's SSH host private key, OpenSSH PEM. Generated once at
     /// install; Faber pinned the public half at that same exchange, so this
@@ -43,8 +43,8 @@ pub enum Scope {
 const SYSTEM_CONFIG_DIR: &str = "/etc/faber-agent";
 
 /// `$XDG_CONFIG_HOME/faber-agent`, falling back to `~/.config/faber-agent` —
-/// a user-service install (X40's resolved run-as-user decision) has no
-/// business writing outside its own account's config directory. A system
+/// a user-service install runs as the account that installed it and has no
+/// business writing outside that account's config directory. A system
 /// install writes under `/etc` instead, because there is no account whose
 /// directory would be the right one.
 pub fn config_dir(scope: Scope) -> std::io::Result<PathBuf> {
@@ -72,8 +72,8 @@ impl Config {
     }
 
     /// Writes the config with `0600` permissions — this file holds the
-    /// credential that authenticates this daemon to Faber (R15) and the
-    /// private half of the key Faber pinned at enrollment (X39). Either one
+    /// credential that authenticates this daemon to Faber and the private
+    /// half of the key Faber pinned at enrollment. Either one
     /// leaking is the same class of compromise as an SSH private key
     /// leaking, because that is exactly what one of them is.
     pub fn save(&self, scope: Scope) -> std::io::Result<()> {

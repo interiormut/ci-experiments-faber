@@ -7,7 +7,7 @@ edition = "2024"
 name = "faber-agent"
 path = "src/main.rs"
 
-# One dependency family with `environment`'s SSH client half (X40) — the
+# One dependency family with `environment`'s SSH client half — the
 # server side of the same two crates, not a second SSH implementation to
 # keep in sync.
 [dependencies]

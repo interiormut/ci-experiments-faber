@@ -10,7 +10,7 @@
 //!   this transport (same manifest code the plain SSH path already uses).
 //! - **Pty**: `portable-pty`. Its `Read`/`Write` handles are blocking, so
 //!   they run on dedicated threads that bridge into the async world over
-//!   channels — there is no async pty API to reach for instead (X40).
+//!   channels — there is no async pty API to reach for instead.
 //!   Nothing on Faber's side asks for this yet; it exists so the daemon
 //!   answers a real `ssh` client's `-t` the way a real sshd would, rather
 //!   than being the one transport whose protocol surface silently narrows.
