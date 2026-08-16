@@ -15,14 +15,8 @@ import {
 
 import { type ServiceHost, type ServiceImage, type Tenant } from "@/lib/api"
 import { useServiceHosts } from "@/lib/admin/use-service-hosts"
-import {
-  bytes,
-  committedFraction,
-  cores,
-  count,
-  summary,
-  usedFraction,
-} from "@/lib/admin/limits"
+import { bytes, cores, count, summary } from "@/lib/hosts/limits"
+import { committedFraction, usedFraction } from "@/lib/admin/limits"
 import { age } from "@/lib/hosts/labels"
 import { useAppShell } from "@/components/shell/app-shell"
 import { Button } from "@/components/ui/button"

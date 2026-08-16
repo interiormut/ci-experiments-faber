@@ -177,6 +177,16 @@ export interface HostContainer {
   created_at: Timestamp
   /** State of the *registration*, not of the container. */
   unregistered_at: Timestamp | null
+  /**
+   * Whether faber created this container. The two are rendered differently on
+   * purpose: unregistering a managed container can also destroy it, and
+   * unregistering one faber merely knows about never can.
+   */
+  managed: boolean
+  managed_at: Timestamp | null
+  /** The template it came from, or `null` — including when the template was
+   *  deleted since. Provenance; nothing resolves through it. */
+  image_id: Uuid | null
 }
 
 /** A reachable machine. Everything else in this section hangs off one. */
@@ -203,6 +213,50 @@ export interface Host {
   containers: HostContainer[]
   /** The most recent observation, or `null` if never probed. */
   last_probe: HostProbe | null
+  /**
+   * Whether faber operates this host rather than the caller. Derived from
+   * having no owner — there is no flag on the row that could disagree with it.
+   */
+  service: boolean
+  /**
+   * The caller's ceiling here, on a service host only. `null` on a host they
+   * own, where there is nobody to be limited by.
+   */
+  quota: HostQuota | null
+}
+
+/** The caller's own limits on a shared machine. Every field `null` is
+ *  unlimited, which is what an unconfigured host grants. */
+export interface HostQuota {
+  cpu_millis: number | null
+  memory_bytes: number | null
+  storage_bytes: number | null
+  container_max: number | null
+  /** Whether these came from a grant made to this user specifically rather
+   *  than from the host's defaults. */
+  granted: boolean
+  /** When a temporary grant lapses. Surfaced because expiry takes effect the
+   *  moment it passes and can shrink a limit under work already running. */
+  expires_at: Timestamp | null
+}
+
+/**
+ * What the caller is currently taking on a shared machine.
+ *
+ * Read from the machine when asked and stored nowhere, so a `null` field means
+ * it did not answer rather than that the number is zero.
+ */
+export interface HostUsage {
+  /** Whether the caller has a directory here yet. It appears the first time
+   *  they launch something, which is when their storage is reserved. */
+  materialised: boolean
+  memory_bytes: number | null
+  pids: number | null
+  storage_bytes: number | null
+  work_path: string | null
+  /** The path meant to be thrown away — named, because "free some space"
+   *  without saying where is how a build cache gets deleted. */
+  scratch_path: string | null
 }
 
 export interface CreateHostRequest {
@@ -243,8 +297,11 @@ export interface CreateContainerRequest {
  *
  * Unlike {@link CreateContainerRequest}, which only records a container the
  * user already runs, this asks faber to create one — the "Create" half of the
- * Add menu on `/environments`. The route it posts to does not exist server-side
- * yet; the shape is here so the surface is settled before it lands.
+ * Add menu on `/environments`.
+ *
+ * On a service host the mounts are faber's to decide and cannot be named here:
+ * a bind source would be a path on faber's own machine, and what a tenant gets
+ * is their own work and scratch directories, both inside their quota.
  */
 export interface SpawnContainerRequest {
   /** The template to start from. */
@@ -298,6 +355,12 @@ export interface Image {
   default_mounts: JsonValue | null
   default_root_path: string
   created_at: Timestamp
+  /**
+   * Whether faber provides this template rather than the caller. Service hosts
+   * accept only these, so anything choosing a template for one has to be able
+   * to tell them apart — and a service image is not the caller's to edit.
+   */
+  service: boolean
 }
 
 export interface CreateImageRequest {

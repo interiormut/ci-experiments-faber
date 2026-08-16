@@ -21,7 +21,7 @@ import {
   gibToBytes,
   millisToCores,
   toInteger,
-} from "@/lib/admin/limits"
+} from "@/lib/hosts/limits"
 import { AnimatedField } from "@/components/ui/animated-field"
 import { Button } from "@/components/ui/button"
 import {

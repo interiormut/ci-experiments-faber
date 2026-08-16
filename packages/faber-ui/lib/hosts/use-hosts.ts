@@ -149,10 +149,16 @@ export function useHosts() {
     [],
   )
 
-  /** Ends the registration. The container itself keeps running. */
+  /**
+   * Ends the registration, and destroys the container too when asked.
+   *
+   * Destroying is what actually frees anything on a shared host: the container
+   * count bills on existence rather than on running, so a container left
+   * behind holds its slot and its directory until it is gone.
+   */
   const unregisterContainer = React.useCallback(
-    async (hostId: Uuid, id: Uuid): Promise<void> => {
-      await faber.unregisterContainer(id)
+    async (hostId: Uuid, id: Uuid, destroy = false): Promise<void> => {
+      await faber.unregisterContainer(id, { destroy })
       setHosts((prev) =>
         prev.map((host) =>
           host.id === hostId

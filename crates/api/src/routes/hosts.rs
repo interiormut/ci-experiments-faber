@@ -59,6 +59,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/hosts/{id}/containers/spawn", post(spawn_container))
         // No host in the path: faber picks one of its own.
         .route("/api/service-containers", post(spawn_service_container))
+        .route("/api/hosts/{id}/usage", get(usage))
         .route(
             "/api/hosts/{id}/probes",
             post(record_probe).get(list_probes),
@@ -1618,6 +1619,75 @@ async fn unregister_container(
         .map_err(|err| AppError::db(err, "hosts.containers.unregister"))?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------------------
+// Usage
+// ---------------------------------------------------------------------------
+
+/// What the caller is currently taking on a shared machine.
+///
+/// Nothing here is stored. Per-user aggregates are a property of the cgroup
+/// and the filesystem's project quota, so they are read at the moment they are
+/// asked for — a copy in the database would be the same cached-liveness
+/// mistake the host schema already refuses. A `null` field means the machine
+/// did not answer, never that the number is zero.
+#[derive(Serialize, Default)]
+struct UsageResponse {
+    /// Whether the caller has a directory on this machine yet. It appears the
+    /// first time they launch something, which is also when their storage is
+    /// reserved — before that there is nothing to measure.
+    materialised: bool,
+    memory_bytes: Option<u64>,
+    pids: Option<u64>,
+    storage_bytes: Option<u64>,
+    /// Where their work lives, mounted at the container's root path.
+    work_path: Option<String>,
+    /// The path meant to be thrown away. Named because storage is the one
+    /// limit that can stop work mid-flight, and "free some space" without
+    /// saying where is how a build cache gets deleted.
+    scratch_path: Option<String>,
+}
+
+/// The caller's footprint on a host faber operates.
+///
+/// Their own, always — there is no argument for whose usage to read, and the
+/// other tenants' numbers are not theirs to see.
+async fn usage(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(host_id): Path<Uuid>,
+) -> ApiResult<Json<UsageResponse>> {
+    let mut conn = state.db.get().await?;
+    let parent = visible_host(&mut conn, user.id, host_id).await?;
+
+    if !parent.service() {
+        return Err(AppError::BadRequest(
+            "that host is your own; nothing on it is shared, so nothing is measured".into(),
+        ));
+    }
+
+    if crate::service_hosts::live_host_user(&mut conn, parent.id, user.id)
+        .await?
+        .is_none()
+    {
+        return Ok(Json(UsageResponse::default()));
+    }
+
+    let Some(allowance) = crate::service_hosts::allowance(&mut conn, &parent, user.id).await?
+    else {
+        return Ok(Json(UsageResponse::default()));
+    };
+
+    let report = allowance.measure().await;
+    Ok(Json(UsageResponse {
+        materialised: true,
+        memory_bytes: report.usage.memory_bytes,
+        pids: report.usage.pids,
+        storage_bytes: report.usage.storage_bytes,
+        work_path: Some(report.work_path.to_string_lossy().into_owned()),
+        scratch_path: Some(report.scratch_path.to_string_lossy().into_owned()),
+    }))
 }
 
 // ---------------------------------------------------------------------------

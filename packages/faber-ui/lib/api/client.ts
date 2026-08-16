@@ -16,6 +16,7 @@ import type {
   Host,
   HostContainer,
   HostProbe,
+  HostUsage,
   Image,
   ListContainersQuery,
   ListProbesQuery,
@@ -229,8 +230,7 @@ export class FaberClient {
    *
    * The counterpart to {@link createContainer}: this one is faber-managed, so
    * unlike every other route here it does claim the create half of container
-   * lifecycle. **The server route is not implemented yet** — the UI is wired
-   * ahead of it, and calls fail until it lands.
+   * lifecycle.
    */
   async spawnContainer(
     hostId: Uuid,
@@ -253,12 +253,30 @@ export class FaberClient {
   }
 
   /**
-   * Ends the registration. The container itself keeps running — faber never
-   * owned it. `updateContainer(id, { unregistered: false })` brings the row
-   * back.
+   * Ends the registration, and — only when asked, and only for a container
+   * faber created — destroys the container too.
+   *
+   * Destroying is the half that matters on a shared host: the container count
+   * bills on existence, so a stopped container still holds a slot and its
+   * quota'd directory until it is gone. `updateContainer(id, { unregistered:
+   * false })` brings a row back, which a destroyed container obviously cannot
+   * honour.
    */
-  async unregisterContainer(id: Uuid): Promise<void> {
-    await this.request("DELETE", `/api/host-containers/${encodeURIComponent(id)}`)
+  async unregisterContainer(id: Uuid, options: { destroy?: boolean } = {}): Promise<void> {
+    await this.request("DELETE", `/api/host-containers/${encodeURIComponent(id)}`, {
+      query: { destroy: options.destroy },
+    })
+  }
+
+  /**
+   * The caller's own live footprint on a service host.
+   *
+   * Read from the machine per call, because per-user aggregates live in the
+   * cgroup and the filesystem's project quota rather than in faber. A host the
+   * caller owns is a 400: nothing on it is shared, so nothing is measured.
+   */
+  async hostUsage(hostId: Uuid): Promise<HostUsage> {
+    return this.request("GET", `/api/hosts/${encodeURIComponent(hostId)}/usage`)
   }
 
   /** The host's observation log, newest first. */
@@ -280,9 +298,9 @@ export class FaberClient {
   }
 
   /**
-   * Spawn templates. Registration only — faber has no spawn route, because
-   * issuing the create needs a reach-the-machine layer that does not exist
-   * yet.
+   * Spawn templates — the caller's own and faber's, under one namespace, with
+   * `service` saying which is which. Only the caller's own are writable
+   * through the routes below.
    */
   async listImages(): Promise<Image[]> {
     return this.request("GET", "/api/images")

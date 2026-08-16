@@ -11,12 +11,15 @@ import {
   Sparkles,
   Trash2,
   Unplug,
+  Users,
 } from "lucide-react"
 
 import { type Host, type HostContainer, type Image } from "@/lib/api"
 import { useHosts } from "@/lib/hosts/use-hosts"
 import { useImages } from "@/lib/hosts/use-images"
+import { useHostUsage } from "@/lib/hosts/use-host-usage"
 import { addressLabel, observation, toolList } from "@/lib/hosts/labels"
+import { bytes, cores, count } from "@/lib/hosts/limits"
 import { Button } from "@/components/ui/button"
 import {
   ContainerFormDialog,
@@ -53,6 +56,15 @@ import {
  * here and nothing on this page should grow one: the authoritative answer to
  * "is it reachable" is the next connection attempt, and a light would invite
  * reading a cached one instead.
+ *
+ * A host faber provides is listed here alongside the user's own, because what
+ * they are choosing is a place to run and which of the two it is belongs in
+ * the row rather than on a page of its own. It renders differently in three
+ * ways, all of them consequences of the machine being shared: it carries the
+ * caller's ceiling and what they are using against it, it starts containers
+ * only from faber's own templates, and a container on it is deleted rather
+ * than forgotten — unregistering one would leave it running on somebody
+ * else's machine, out of sight and out of the count.
  */
 export const Route = createFileRoute("/environments")({ component: EnvironmentsPage })
 
@@ -75,7 +87,7 @@ function EnvironmentsPage() {
   const [formKey, setFormKey] = React.useState(0)
 
   const [unregisterTarget, setUnregisterTarget] = React.useState<
-    { host: Host; container: HostContainer } | null
+    { host: Host; container: HostContainer; destroy: boolean } | null
   >(null)
   const [unregistering, setUnregistering] = React.useState(false)
 
@@ -103,7 +115,11 @@ function EnvironmentsPage() {
     if (!unregisterTarget) return
     setUnregistering(true)
     try {
-      await unregisterContainer(unregisterTarget.host.id, unregisterTarget.container.id)
+      await unregisterContainer(
+        unregisterTarget.host.id,
+        unregisterTarget.container.id,
+        unregisterTarget.destroy,
+      )
       setUnregisterTarget(null)
     } catch {
       // The dialog stays open with the target set so the user can retry.
@@ -146,7 +162,9 @@ function EnvironmentsPage() {
                   onAdd={() => openAdd(host)}
                   onCreate={() => openCreate(host)}
                   onEdit={(container) => openEdit(host, container)}
-                  onUnregister={(container) => setUnregisterTarget({ host, container })}
+                  onUnregister={(container, destroy) =>
+                    setUnregisterTarget({ host, container, destroy })
+                  }
                 />
               ))}
             </ul>
@@ -161,7 +179,11 @@ function EnvironmentsPage() {
         open={spawnOpen}
         onOpenChange={setSpawnOpen}
         host={dialogHost}
-        images={images.images}
+        images={
+          dialogHost?.service
+            ? images.images.filter((image) => image.service)
+            : images.images
+        }
         onSpawn={spawnContainer}
       />
 
@@ -182,12 +204,13 @@ function EnvironmentsPage() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              Unregister{" "}
+              {unregisterTarget?.destroy ? "Delete" : "Unregister"}{" "}
               {unregisterTarget?.container.name ?? unregisterTarget?.container.container_ref}?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              Faber forgets the container and stops offering it as an environment.
-              The container itself keeps running — nothing on the host is touched.
+              {unregisterTarget?.destroy
+                ? "The container is removed from the machine and everything inside it goes with it. Your work and scratch directories are mounts and survive — anything written outside them does not."
+                : "Faber forgets the container and stops offering it as an environment. The container itself keeps running — nothing on the host is touched."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -200,7 +223,11 @@ function EnvironmentsPage() {
               disabled={unregistering}
               className="bg-destructive text-white hover:bg-destructive/90"
             >
-              {unregistering ? "Unregistering…" : "Unregister"}
+              {unregistering
+                ? "Working…"
+                : unregisterTarget?.destroy
+                  ? "Delete"
+                  : "Unregister"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -228,10 +255,11 @@ function HostEnvironments({
   onAdd: () => void
   onCreate: () => void
   onEdit: (container: HostContainer) => void
-  onUnregister: (container: HostContainer) => void
+  onUnregister: (container: HostContainer, destroy: boolean) => void
 }) {
   const disabled = !!host.disabled_at
   const tools = toolList(host.last_probe)
+  const usage = useHostUsage(host.id, host.service)
 
   return (
     <li className="rounded-xl border border-border bg-card">
@@ -239,18 +267,36 @@ function HostEnvironments({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <span className="truncate text-sm font-medium">{host.name}</span>
+            {host.service ? <Badge>faber&apos;s</Badge> : null}
             <Badge>{host.exec_mode}</Badge>
             {disabled ? <Badge>disabled</Badge> : null}
           </div>
           {/* Past tense with its age, because that is all a probe is.
               "Never probed" is its own answer — not a default to "down". */}
           <p className="truncate text-xs text-muted-foreground">
-            {addressLabel(host)} · {observation(host.last_probe)}
+            {host.service ? (
+              <>
+                <Users className="mr-1 inline h-3 w-3" />
+                Shared with other people · {observation(host.last_probe)}
+              </>
+            ) : (
+              <>
+                {addressLabel(host)} · {observation(host.last_probe)}
+              </>
+            )}
           </p>
         </div>
         {/* Two ways to get a container, and the difference is who created it:
             Create starts one from an image, Add adopts one already running. */}
-        {host.exec_mode === "docker" ? (
+        {host.exec_mode === "docker" && host.service ? (
+          /* No "Add": registering a container faber did not create means
+             pointing it at a ref on a machine it operates, which is either
+             somebody else's container or one faber already knows about. */
+          <Button size="sm" variant="ghost" className="shrink-0" onClick={onCreate}>
+            <Sparkles className="h-4 w-4" />
+            Create
+          </Button>
+        ) : host.exec_mode === "docker" ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button size="sm" variant="ghost" className="shrink-0">
@@ -283,6 +329,45 @@ function HostEnvironments({
         ) : null}
       </div>
 
+      {host.service && host.quota ? (
+        <div className="border-t border-border px-4 py-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <p className="text-xs font-medium">Your share of this machine</p>
+            {host.quota.expires_at ? (
+              <Badge>
+                {host.quota.granted ? "grant" : "limits"} expire{" "}
+                {new Date(host.quota.expires_at).toLocaleDateString()}
+              </Badge>
+            ) : null}
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {cores(host.quota.cpu_millis)} · {bytes(host.quota.memory_bytes)} RAM ·{" "}
+            {host.containers.length}/{count(host.quota.container_max)} containers
+          </p>
+
+          {/* Storage is the only limit that can stop work mid-flight, and the
+              only one whose current level is worth showing next to the grant:
+              CPU and memory degrade or kill, storage refuses the next write. */}
+          <div className="mt-2 flex flex-col gap-1">
+            <StorageMeter
+              used={usage?.storage_bytes ?? null}
+              limit={host.quota.storage_bytes}
+            />
+            <p className="text-xs text-muted-foreground">
+              {usage?.storage_bytes == null
+                ? `${bytes(host.quota.storage_bytes)} of disk granted`
+                : `${bytes(usage.storage_bytes)} of ${bytes(host.quota.storage_bytes)} disk used`}
+            </p>
+          </div>
+
+          {usage?.scratch_path ? (
+            <p className="mt-2 truncate font-mono text-[11px] text-muted-foreground">
+              scratch: {usage.scratch_path}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
       {tools.length > 0 ? (
         <div className="flex flex-wrap items-center gap-1.5 px-4 pb-3">
           {tools.map(([name, version]) => (
@@ -300,7 +385,9 @@ function HostEnvironments({
         <div className="border-t border-border px-4 py-3">
           {host.containers.length === 0 ? (
             <p className="text-xs text-muted-foreground">
-              No containers registered on this host.
+              {host.service
+                ? "Nothing of yours here yet. Create one and faber makes you a directory on the machine at the same time."
+                : "No containers registered on this host."}
             </p>
           ) : (
             <ul className="flex flex-col gap-1">
@@ -319,23 +406,49 @@ function HostEnvironments({
                     </span>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
-                    <Button
-                      size="icon-sm"
-                      variant="ghost"
-                      aria-label={`Edit ${container.container_ref}`}
-                      onClick={() => onEdit(container)}
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button
-                      size="icon-sm"
-                      variant="ghost"
-                      aria-label={`Unregister ${container.container_ref}`}
-                      title="Unregister — the container itself keeps running"
-                      onClick={() => onUnregister(container)}
-                    >
-                      <Unplug className="h-3.5 w-3.5" />
-                    </Button>
+                    {/* Not editable on a shared machine. `root_path` there is
+                        where faber mounted the tenant's own directory when it
+                        created the container, so repointing the row afterwards
+                        aims the recorded root at somewhere nothing is
+                        mounted. */}
+                    {host.service ? null : (
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        aria-label={`Edit ${container.container_ref}`}
+                        onClick={() => onEdit(container)}
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
+                    {/* Offered exactly when the server will accept it: faber
+                        destroys only what it created. On a shared machine that
+                        is also the only offer, because forgetting a
+                        registration there leaves a container running that
+                        nothing counts and nobody can see — the count bills on
+                        the row. */}
+                    {container.managed ? (
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        aria-label={`Delete ${container.container_ref}`}
+                        title="Delete — the container is removed from the machine"
+                        onClick={() => onUnregister(container, true)}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    ) : null}
+                    {host.service ? null : (
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        aria-label={`Unregister ${container.container_ref}`}
+                        title="Unregister — the container itself keeps running"
+                        onClick={() => onUnregister(container, false)}
+                      >
+                        <Unplug className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
                   </div>
                 </li>
               ))}
@@ -344,6 +457,27 @@ function HostEnvironments({
         </div>
       ) : null}
     </li>
+  )
+}
+
+/**
+ * Storage used against storage granted.
+ *
+ * Nothing is drawn when either half is missing. An unlimited grant has no bar
+ * to fill, and an unread counter is the machine declining to answer rather
+ * than a zero — a bar from a guess would be worse than no bar on the one
+ * number a user checks before deciding they are out of space.
+ */
+function StorageMeter({ used, limit }: { used: number | null; limit: number | null }) {
+  if (used === null || limit === null || limit <= 0) return null
+  const fraction = Math.min(1, used / limit)
+  return (
+    <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+      <div
+        className="h-full rounded-full bg-foreground/40"
+        style={{ width: `${Math.round(fraction * 100)}%` }}
+      />
+    </div>
   )
 }
 
@@ -402,7 +536,9 @@ function ImagesSection({ images: source }: { images: ReturnType<typeof useImages
         <div>
           <h2 className="text-lg font-semibold tracking-tight">Images</h2>
           <p className="text-sm text-muted-foreground">
-            Saved templates for containers you start yourself.
+            Saved templates for containers you start yourself. The ones faber
+            provides are here too — they are the only templates a shared host
+            will start.
           </p>
         </div>
         <Button size="sm" onClick={openCreate}>
@@ -430,30 +566,37 @@ function ImagesSection({ images: source }: { images: ReturnType<typeof useImages
               <div className="flex min-w-0 items-center gap-2.5">
                 <Box className="h-4 w-4 shrink-0 text-muted-foreground" />
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{image.name}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="truncate text-sm font-medium">{image.name}</p>
+                    {image.service ? <Badge>faber&apos;s</Badge> : null}
+                  </div>
                   <p className="truncate text-xs text-muted-foreground">
                     {image.reference} · {image.default_root_path}
                   </p>
                 </div>
               </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  aria-label={`Edit ${image.name}`}
-                  onClick={() => openEdit(image)}
-                >
-                  <Pencil className="h-4 w-4" />
-                </Button>
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  aria-label={`Delete ${image.name}`}
-                  onClick={() => setDeleteTarget(image)}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
+              {/* A template faber provides is offered, not owned: editing or
+                  deleting it would change what every other user can start. */}
+              {image.service ? null : (
+                <div className="flex shrink-0 items-center gap-1">
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label={`Edit ${image.name}`}
+                    onClick={() => openEdit(image)}
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label={`Delete ${image.name}`}
+                    onClick={() => setDeleteTarget(image)}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              )}
             </li>
           ))}
         </ul>
