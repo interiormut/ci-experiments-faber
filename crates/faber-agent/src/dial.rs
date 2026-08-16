@@ -54,7 +54,7 @@ async fn connect_and_serve(config: &Config) -> Result<(), Box<dyn std::error::Er
     let tcp = dial_tcp(&target.host, target.port).await?;
 
     let stream: MaybeTls = if target.tls {
-        let connector = tls_connector();
+        let connector = tls_connector()?;
         let server_name = rustls_pki_types::ServerName::try_from(target.host.clone())?;
         MaybeTls::Tls(Box::new(connector.connect(server_name, tcp).await?))
     } else {
@@ -65,8 +65,8 @@ async fn connect_and_serve(config: &Config) -> Result<(), Box<dyn std::error::Er
     };
 
     let path = "/api/agent/connect";
-    let mut request = format!("{}://{}{path}", target.ws_scheme(), target.authority())
-        .into_client_request()?;
+    let mut request =
+        format!("{}://{}{path}", target.ws_scheme(), target.authority()).into_client_request()?;
     request.headers_mut().insert(
         AUTHORIZATION,
         format!("Bearer {}", config.credential).parse()?,
@@ -151,13 +151,21 @@ impl tokio::io::AsyncWrite for MaybeTls {
     }
 }
 
-fn tls_connector() -> tokio_rustls::TlsConnector {
+/// Names the crypto provider rather than taking `ClientConfig::builder`'s
+/// process-level default: that default only exists when exactly one provider
+/// is compiled in, so a dependency quietly enabling a second one turns every
+/// dial into a panic instead of a build error. Asking for `ring` by name
+/// makes the choice this crate's, whatever else ends up in the tree.
+fn tls_connector() -> Result<tokio_rustls::TlsConnector, rustls::Error> {
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let client_config = rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    tokio_rustls::TlsConnector::from(Arc::new(client_config))
+    let client_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    Ok(tokio_rustls::TlsConnector::from(Arc::new(client_config)))
 }
 
 struct Target {
@@ -227,10 +235,13 @@ fn no_proxy_matches(host: &str) -> bool {
     if raw.trim() == "*" {
         return true;
     }
-    raw.split(',').map(str::trim).filter(|s| !s.is_empty()).any(|pattern| {
-        let pattern = pattern.trim_start_matches('.');
-        host == pattern || host.ends_with(&format!(".{pattern}"))
-    })
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .any(|pattern| {
+            let pattern = pattern.trim_start_matches('.');
+            host == pattern || host.ends_with(&format!(".{pattern}"))
+        })
 }
 
 /// `CONNECT`s through an HTTP(S) proxy and hands back the tunnel — the TCP
@@ -251,8 +262,7 @@ async fn connect_via_proxy(
     let proxy_port: u16 = proxy_port.parse()?;
 
     let mut stream = TcpStream::connect((proxy_host, proxy_port)).await?;
-    let request =
-        format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n");
+    let request = format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n");
     stream.write_all(request.as_bytes()).await?;
 
     let mut response = Vec::new();
@@ -275,4 +285,17 @@ async fn connect_via_proxy(
     }
 
     Ok(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The provider ambiguity that broke this was a runtime panic, not a
+    /// build error, so building the connector is the only thing that catches
+    /// it before the daemon is out in the field.
+    #[test]
+    fn tls_connector_builds() {
+        tls_connector().expect("the TLS connector must build");
+    }
 }
