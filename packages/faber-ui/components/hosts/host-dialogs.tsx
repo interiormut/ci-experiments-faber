@@ -440,13 +440,18 @@ function CommandBlock({ command }: { command: string }) {
 
   return (
     <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/40 p-2.5">
-      <code className="min-w-0 flex-1 overflow-x-auto whitespace-pre text-xs leading-relaxed">
+      {/* Wrapped, not scrolled: a command that runs off the side hides the
+          half that carries the token behind a scrollbar sitting on top of the
+          text. It is meant to be read and copied, and three lines cost less
+          than either. */}
+      <code className="min-w-0 flex-1 break-all whitespace-pre-wrap text-xs leading-relaxed">
         {command}
       </code>
       <Button
         type="button"
         size="icon-sm"
         variant="ghost"
+        className="shrink-0"
         aria-label="Copy the install command"
         onClick={() => void copy()}
       >
