@@ -28,3 +28,23 @@ without changing the commit and compare whether the build `RUN` instruction is
 The experiment intentionally does not build or push the production agent image.
 Faber's static musl `faber-agent` build is a separate target and should be
 measured separately from API dependency caching.
+
+## Verified Results
+
+The first run of commit `471896c` built both variants cold on GitHub-hosted
+runners:
+
+- `layer-output`: approximately 5m26s
+- `target-mount`: approximately 5m20s
+
+The identical rerun completed with both variants cached:
+
+- `layer-output`: 23s job time; the Cargo `RUN` was `CACHED`
+- `target-mount`: 34s job time; the Cargo `RUN` was `CACHED`
+
+This proves that the fork's `type=gha,mode=max` cache scope persisted both
+Docker build results for unchanged inputs. The long first build was a cold
+compile, not evidence that the layer cache was broken. The target mount is
+still mutable state and should not be treated as a portable compiled-artifact
+archive when a Docker build step is invalidated; the experiment only proves
+that an unchanged Docker `RUN` can be restored as a layer cache hit.
