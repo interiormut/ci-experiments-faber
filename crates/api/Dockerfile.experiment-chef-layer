@@ -20,7 +20,18 @@ COPY crates/llm/Cargo.toml crates/llm/Cargo.toml
 COPY crates/readable/Cargo.toml crates/readable/Cargo.toml
 COPY crates/search/Cargo.toml crates/search/Cargo.toml
 COPY crates/traefik/Cargo.toml crates/traefik/Cargo.toml
-RUN cargo chef prepare --recipe-path recipe.json
+RUN mkdir -p crates/{api,environment,faber-agent,harness,readable,search,llm,traefik}/src \
+    && mkdir -p crates/harness/examples \
+    && touch crates/api/src/main.rs \
+             crates/environment/src/lib.rs \
+             crates/faber-agent/src/main.rs \
+             crates/harness/src/lib.rs \
+             crates/harness/examples/run.rs \
+             crates/readable/src/lib.rs \
+             crates/search/src/lib.rs \
+             crates/llm/src/lib.rs \
+             crates/traefik/src/lib.rs \
+    && cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS cacher
 COPY --from=planner /app/recipe.json recipe.json
