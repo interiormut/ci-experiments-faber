@@ -1,5 +1,7 @@
 import { FaberError, errorFromResponse } from "./errors"
 import type {
+  AgentEnrollment,
+  AgentStatus,
   CreateContainerRequest,
   CreateCredentialRequest,
   CreateHostRequest,
@@ -195,6 +197,29 @@ export class FaberClient {
    */
   async deleteHost(id: Uuid): Promise<void> {
     await this.request("DELETE", `/api/hosts/${encodeURIComponent(id)}`)
+  }
+
+  /**
+   * Issues a fresh bootstrap token for an agent-transport host and returns
+   * the install command carrying it.
+   *
+   * Calling it again is a re-issue, not an addition: the previous token stops
+   * being redeemable, so an install command copied earlier no longer works.
+   * Fails with a 503 when the server has no externally reachable URL
+   * configured — it cannot tell a remote machine where to dial back to, and
+   * that message is worth showing verbatim.
+   */
+  async enrollAgentHost(id: Uuid): Promise<AgentEnrollment> {
+    return this.request("POST", `/api/hosts/${encodeURIComponent(id)}/agent/enroll`)
+  }
+
+  /**
+   * Whether a daemon has enrolled on this host and whether one is connected
+   * right now. Read live on every call — poll it while waiting for an install
+   * to land, and stop polling once it has.
+   */
+  async agentStatus(id: Uuid): Promise<AgentStatus> {
+    return this.request("GET", `/api/hosts/${encodeURIComponent(id)}/agent`)
   }
 
   /** Unregistered rows are omitted unless `include_unregistered` is set. */

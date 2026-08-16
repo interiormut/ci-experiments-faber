@@ -1,6 +1,6 @@
 import * as React from "react"
 import { createFileRoute } from "@tanstack/react-router"
-import { Pencil, Plus, Power, Server, Trash2 } from "lucide-react"
+import { Pencil, Plus, PlugZap, Power, Server, Trash2 } from "lucide-react"
 
 import { type Host } from "@/lib/api"
 import { useHosts } from "@/lib/hosts/use-hosts"
@@ -40,6 +40,10 @@ function HostsPage() {
   const [hostDialogOpen, setHostDialogOpen] = React.useState(false)
   const [editingHost, setEditingHost] = React.useState<Host | null>(null)
   const [deleteTarget, setDeleteTarget] = React.useState<Host | null>(null)
+  // An agent host whose install command was never used — or was lost — has no
+  // way back to one, since the token is shown once. This reopens the flow at
+  // the install step with a freshly issued command.
+  const [installTarget, setInstallTarget] = React.useState<Host | null>(null)
   const [deleting, setDeleting] = React.useState(false)
 
   // Bumped on every open so the dialog remounts with a fresh draft — the same
@@ -49,12 +53,21 @@ function HostsPage() {
 
   const openCreateHost = () => {
     setEditingHost(null)
+    setInstallTarget(null)
     bump()
     setHostDialogOpen(true)
   }
 
   const openEditHost = (host: Host) => {
     setEditingHost(host)
+    setInstallTarget(null)
+    bump()
+    setHostDialogOpen(true)
+  }
+
+  const openInstall = (host: Host) => {
+    setEditingHost(null)
+    setInstallTarget(host)
     bump()
     setHostDialogOpen(true)
   }
@@ -114,6 +127,7 @@ function HostsPage() {
                 key={host.id}
                 host={host}
                 onEdit={() => openEditHost(host)}
+                onInstall={() => openInstall(host)}
                 onDelete={() => setDeleteTarget(host)}
                 onToggleDisabled={() =>
                   editHost(host.id, { disabled: !host.disabled_at }).catch(() => {
@@ -132,6 +146,7 @@ function HostsPage() {
         open={hostDialogOpen}
         onOpenChange={setHostDialogOpen}
         editing={editingHost}
+        installFor={installTarget}
         onCreate={addHost}
         onUpdate={editHost}
       />
@@ -176,11 +191,13 @@ function Badge({ children }: { children: React.ReactNode }) {
 function HostCard({
   host,
   onEdit,
+  onInstall,
   onDelete,
   onToggleDisabled,
 }: {
   host: Host
   onEdit: () => void
+  onInstall: () => void
   onDelete: () => void
   onToggleDisabled: () => void
 }) {
@@ -210,6 +227,17 @@ function HostCard({
         {/* Nothing to offer on a machine somebody else operates. */}
         {host.service ? null : (
           <div className="flex shrink-0 items-center gap-1">
+            {host.transport === "agent" ? (
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                aria-label={`Install command for ${host.name}`}
+                title="Install command"
+                onClick={onInstall}
+              >
+                <PlugZap className="h-4 w-4" />
+              </Button>
+            ) : null}
             <Button
               size="icon-sm"
               variant="ghost"

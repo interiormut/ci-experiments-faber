@@ -1,10 +1,11 @@
 "use client"
 
 import * as React from "react"
-import { Laptop, Server } from "lucide-react"
+import { Check, Copy, Laptop, PlugZap, Server } from "lucide-react"
 
 import {
   FaberError,
+  type AgentEnrollment,
   type CreateContainerRequest,
   type CreateHostRequest,
   type CreateImageRequest,
@@ -106,6 +107,8 @@ function formFromHost(host: Host): HostFormState {
 /**
  * `ssh_address` is sent only on an SSH host: the server rejects it on a local
  * one, and clearing it here is what lets a host switch transports in one save.
+ * An agent host is addressless for a different reason than a local one — faber
+ * never dials it at all — but the request looks the same either way.
  */
 function requestFromHostForm(form: HostFormState): CreateHostRequest {
   const ssh = form.transport === "ssh"
@@ -130,12 +133,20 @@ export function HostFormDialog({
   open,
   onOpenChange,
   editing,
+  installFor,
   onCreate,
   onUpdate,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   editing: Host | null
+  /**
+   * An agent host to issue a fresh install command for, skipping the form
+   * entirely. This is how an agent host whose daemon was never installed —
+   * or whose command expired unused — gets a second one, since the token in
+   * the first is shown once and never stored.
+   */
+  installFor?: Host | null
   onCreate: (body: CreateHostRequest) => Promise<Host>
   onUpdate: (id: Uuid, patch: UpdateHostRequest) => Promise<Host>
 }) {
@@ -147,7 +158,12 @@ export function HostFormDialog({
   const [submitting, setSubmitting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const [credentials, setCredentials] = React.useState<Credential[]>([])
-  const [view, setView] = React.useState(editing ? "form" : "transport")
+  const [view, setView] = React.useState(
+    installFor ? "install" : editing ? "form" : "transport",
+  )
+  // The host the install command belongs to: the one just created, or the one
+  // the caller asked to re-issue for.
+  const [agentHost, setAgentHost] = React.useState<Host | null>(installFor ?? null)
   const { config } = useAppShell()
   const allowLocalHosts = config?.allow_local_hosts ?? true
   const transport =
@@ -163,8 +179,19 @@ export function HostFormDialog({
     setError(null)
     try {
       const body = requestFromHostForm({ ...form, transport })
-      if (editing) await onUpdate(editing.id, body)
-      else await onCreate(body)
+      if (editing) {
+        await onUpdate(editing.id, body)
+      } else {
+        const created = await onCreate(body)
+        // An agent host is not usable the moment it is saved: the machine has
+        // to dial in, and it cannot until somebody installs the daemon. So the
+        // flow continues rather than closing on the row being written.
+        if (created.transport === "agent") {
+          setAgentHost(created)
+          setView("install")
+          return
+        }
+      }
       onOpenChange(false)
     } catch (err) {
       setError(err instanceof FaberError ? err.message : "failed to save the host")
@@ -178,14 +205,28 @@ export function HostFormDialog({
     setView("form")
   }
 
+  const flowView = editing ? "form" : view
+  // Stable, so the install view's poll keeps its interval instead of
+  // restarting it on every parent render.
+  const handleConnected = React.useCallback(() => setView("connected"), [])
+
   return (
     <FlowDialog
       open={open}
       onOpenChange={onOpenChange}
-      view={editing ? "form" : view}
+      view={flowView}
       title={editing ? `Edit ${editing.name}` : "Add host"}
     >
-      {!editing && view === "transport" ? (
+      {flowView === "install" && agentHost ? (
+        <AgentInstall
+          host={agentHost}
+          open={open}
+          reentry={!!installFor}
+          onConnected={handleConnected}
+        />
+      ) : flowView === "connected" && agentHost ? (
+        <AgentConnected host={agentHost} onDone={() => onOpenChange(false)} />
+      ) : !editing && view === "transport" ? (
         <div>
           <FlowDialogHeading
             title="How should faber reach this host?"
@@ -207,6 +248,13 @@ export function HostFormDialog({
               chevron
               onSelect={() => chooseTransport("ssh")}
             />
+            <ActionRow
+              icon={<PlugZap />}
+              label="Agent"
+              description="A daemon you install dials out to faber"
+              chevron
+              onSelect={() => chooseTransport("agent")}
+            />
           </ActionRowGroup>
         </div>
       ) : (
@@ -218,7 +266,9 @@ export function HostFormDialog({
                 ? undefined
                 : transport === "ssh"
                   ? "Connect to this host over SSH."
-                  : "Run faber directly on this machine."
+                  : transport === "agent"
+                    ? "Name it first. The install command comes next, and the machine dials faber itself."
+                    : "Run faber directly on this machine."
             }
           />
 
@@ -247,6 +297,7 @@ export function HostFormDialog({
                 <SelectContent>
                   <SelectItem value="local">local — this machine</SelectItem>
                   <SelectItem value="ssh">ssh — a remote machine</SelectItem>
+                  <SelectItem value="agent">agent — a daemon that dials faber</SelectItem>
                 </SelectContent>
               </Select>
             </Field>
@@ -356,13 +407,251 @@ export function HostFormDialog({
             {!editing ? <FlowDialogBack onClick={() => setView("transport")} /> : null}
             <DialogFooter>
               <Button type="submit" loading={submitting} loadingText={editing ? "Saving" : "Adding"}>
-                {editing ? "Save" : "Add host"}
+                {editing ? "Save" : transport === "agent" ? "Continue" : "Add host"}
               </Button>
             </DialogFooter>
           </div>
         </form>
       )}
     </FlowDialog>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Host — agent install
+// ---------------------------------------------------------------------------
+
+/** How often the install view asks whether the daemon has shown up. */
+const AGENT_POLL_MS = 2000
+
+function CommandBlock({ command }: { command: string }) {
+  const [copied, setCopied] = React.useState(false)
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(command)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // Clipboard access can be refused. The command is selectable text, so
+      // there is still a way to take it — nothing to report.
+    }
+  }
+
+  return (
+    <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/40 p-2.5">
+      <code className="min-w-0 flex-1 overflow-x-auto whitespace-pre text-xs leading-relaxed">
+        {command}
+      </code>
+      <Button
+        type="button"
+        size="icon-sm"
+        variant="ghost"
+        aria-label="Copy the install command"
+        onClick={() => void copy()}
+      >
+        {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+      </Button>
+    </div>
+  )
+}
+
+/**
+ * The waiting half of the flow: hand over a command, then watch for the
+ * daemon it installs to dial in.
+ *
+ * Everything here is scoped to one bootstrap token, which is shown once and
+ * stored nowhere — a token issued and then lost is replaced by issuing
+ * another, never by reading the old one back.
+ */
+function AgentInstall({
+  host,
+  open,
+  reentry,
+  onConnected,
+}: {
+  host: Host
+  open: boolean
+  /**
+   * Whether this view was reached by asking for the install command again
+   * rather than by creating the host.
+   *
+   * It decides one thing, and it matters: issuing a command *supersedes* the
+   * previous one. Doing that on arrival would kill the command the user is
+   * halfway through running on the machine, and the failure would surface
+   * over there rather than here. So a re-entry waits, and issues only when
+   * the user asks for it.
+   */
+  reentry: boolean
+  onConnected: () => void
+}) {
+  const [enrollment, setEnrollment] = React.useState<AgentEnrollment | null>(null)
+  const [error, setError] = React.useState<string | null>(null)
+  const [issuing, setIssuing] = React.useState(false)
+  const [enrolled, setEnrolled] = React.useState(false)
+  const [expired, setExpired] = React.useState(false)
+
+  const issue = React.useCallback(async () => {
+    setIssuing(true)
+    setError(null)
+    try {
+      setEnrollment(await faber.enrollAgentHost(host.id))
+      setExpired(false)
+    } catch (err) {
+      // The server's message names what to fix — an unset public URL, most
+      // often — and replacing it with a generic failure throws that away.
+      setError(
+        err instanceof FaberError ? err.message : "failed to issue an install command",
+      )
+    } finally {
+      setIssuing(false)
+    }
+  }, [host.id])
+
+  React.useEffect(() => {
+    if (reentry) return
+    void issue()
+  }, [reentry, issue])
+
+  React.useEffect(() => {
+    if (!open || expired) return
+
+    let cancelled = false
+    let inFlight = false
+
+    const tick = async () => {
+      if (inFlight) return
+      // A token nobody redeemed stops being redeemable, so polling past that
+      // point would ask a question whose answer can no longer change. An
+      // unparseable timestamp is left alone rather than treated as expired:
+      // the dialog closing ends the poll either way.
+      const deadline = enrollment ? Date.parse(enrollment.expires_at) : NaN
+      if (!Number.isNaN(deadline) && Date.now() > deadline) {
+        if (!cancelled) setExpired(true)
+        return
+      }
+      inFlight = true
+      try {
+        const status = await faber.agentStatus(host.id)
+        if (cancelled) return
+        setEnrolled(!!status.enrolled_at)
+        if (status.connected) onConnected()
+      } catch {
+        // A failed poll says nothing about the daemon; the next one asks
+        // again.
+      } finally {
+        inFlight = false
+      }
+    }
+
+    void tick()
+    const timer = window.setInterval(() => void tick(), AGENT_POLL_MS)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [open, enrollment, expired, host.id, onConnected])
+
+  const waiting = (
+    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+      <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-muted-foreground" />
+      {enrolled
+        ? "The daemon enrolled. Waiting for it to connect…"
+        : "Waiting for the daemon to connect…"}
+    </div>
+  )
+
+  const reissue = (label: string) => (
+    <DialogFooter>
+      <Button type="button" onClick={() => void issue()} loading={issuing} loadingText="Issuing">
+        {label}
+      </Button>
+    </DialogFooter>
+  )
+
+  return (
+    <div className="flex flex-col gap-4">
+      <FlowDialogHeading
+        title={`Install the daemon on ${host.name}`}
+        description="Run this on the machine. It installs a user service — no root, and nothing to open in a firewall."
+      />
+
+      {error ? (
+        <>
+          <p className="text-sm text-destructive">{error}</p>
+          <DialogFooter>
+            <Button type="button" onClick={() => void issue()} loading={issuing} loadingText="Retrying">
+              Try again
+            </Button>
+          </DialogFooter>
+        </>
+      ) : enrollment ? (
+        <>
+          <CommandBlock command={enrollment.install_command} />
+
+          <p className="text-xs text-muted-foreground">
+            The token in it works once, for an hour. Anyone who can read the
+            command can enrol this host, so treat it as the secret it is.
+          </p>
+
+          {expired ? (
+            <>
+              <p className="text-sm text-muted-foreground">
+                This command has expired. Issue another to keep going.
+              </p>
+              {reissue("New command")}
+            </>
+          ) : (
+            waiting
+          )}
+
+          <p className="text-xs text-muted-foreground">
+            You can close this. The host is already saved, and it becomes usable
+            the moment the daemon connects.
+          </p>
+        </>
+      ) : reentry ? (
+        <>
+          {waiting}
+          <p className="text-xs text-muted-foreground">
+            The command issued earlier is shown once and kept nowhere, so there
+            is nothing to show again. Issuing a new one is the way back — and it
+            retires the old command, which stops working the moment this does.
+          </p>
+          {reissue("New command")}
+        </>
+      ) : (
+        <p className="text-sm text-muted-foreground">Issuing an install command…</p>
+      )}
+    </div>
+  )
+}
+
+function AgentConnected({ host, onDone }: { host: Host; onDone: () => void }) {
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col items-center gap-3 py-2 text-center">
+        <span className="flex h-10 w-10 items-center justify-center rounded-full bg-muted">
+          <Check className="h-5 w-5" />
+        </span>
+        <FlowDialogHeading
+          title={`${host.name} is connected`}
+          description="The daemon dialed in and faber is holding the connection. Nothing else to install."
+        />
+      </div>
+
+      <p className="rounded-lg border border-border bg-muted/40 px-3 py-2.5 text-xs text-muted-foreground">
+        If the machine reboots or the network drops, the daemon reconnects on
+        its own — faber never dials this host, so there is nothing to re-run
+        here.
+      </p>
+
+      <DialogFooter>
+        <Button type="button" onClick={onDone}>
+          Done
+        </Button>
+      </DialogFooter>
+    </div>
   )
 }
 

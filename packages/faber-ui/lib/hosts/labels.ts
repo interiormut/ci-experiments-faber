@@ -50,5 +50,8 @@ export function toolList(probe: HostProbe | null): Array<[string, string]> {
 /** How the host is addressed, for the line under its name. */
 export function addressLabel(host: Host): string {
   if (host.transport === "ssh") return host.ssh_address ?? "ssh"
+  // An agent host has no address by construction — faber never dials it — so
+  // the line says which way the connection goes instead of inventing one.
+  if (host.transport === "agent") return "dialed in by its daemon"
   return "local"
 }

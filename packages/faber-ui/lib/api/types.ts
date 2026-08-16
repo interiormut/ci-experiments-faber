@@ -129,8 +129,14 @@ export interface FaberConfig {
   allow_local_hosts: boolean
 }
 
-/** How faber reaches the machine. */
-export type Transport = "local" | "ssh"
+/**
+ * How faber reaches the machine.
+ *
+ * `agent` inverts the direction: faber never dials such a host, a daemon
+ * installed on it dials faber and holds the connection open. That is why an
+ * agent host carries no address — there is nothing to connect to.
+ */
+export type Transport = "local" | "ssh" | "agent"
 
 /**
  * What faber execs into once it has reached the machine. Deliberately not
@@ -257,6 +263,32 @@ export interface HostUsage {
   /** The path meant to be thrown away — named, because "free some space"
    *  without saying where is how a build cache gets deleted. */
   scratch_path: string | null
+}
+
+/**
+ * A one-time bootstrap token and the command that carries it onto the
+ * machine. Issued per request: asking again supersedes whatever was issued
+ * before, so only the newest command still works.
+ */
+export interface AgentEnrollment {
+  /** Shown once, inside {@link AgentEnrollment.install_command}. */
+  token: string
+  expires_at: Timestamp
+  /** Copy-pasteable one-liner: it fetches the installer, which downloads the
+   *  daemon and hands it the token. */
+  install_command: string
+}
+
+/**
+ * Where an agent host's daemon stands. Neither field is stored as state on
+ * the host: `connected` is read from the live connection each time it is
+ * asked for, and stops being true the moment the connection is gone.
+ */
+export interface AgentStatus {
+  connected: boolean
+  /** When the daemon exchanged its bootstrap token, or `null` if nobody has
+   *  run the install command yet. */
+  enrolled_at: Timestamp | null
 }
 
 export interface CreateHostRequest {

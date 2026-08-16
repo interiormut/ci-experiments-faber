@@ -4,6 +4,8 @@
 //!
 //! - `POST /api/hosts/{id}/agent/enroll` — the operator, authenticated as a
 //!   user, asking for a one-time install command.
+//! - `GET /api/hosts/{id}/agent` — the same operator, watching for the
+//!   daemon they just installed to show up.
 //! - `POST /api/agent/enroll` — the daemon's first run, presenting the
 //!   bootstrap token from that command and getting back the long-lived
 //!   credential it will hold from then on.
@@ -44,6 +46,7 @@ use crate::{
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/hosts/{id}/agent/enroll", post(enroll))
+        .route("/api/hosts/{id}/agent", get(status))
         .route("/api/agent/enroll", post(exchange))
         .route("/api/agent/connect", get(connect))
         .merge(super::install::router())
@@ -81,20 +84,26 @@ struct EnrollResponse {
     install_command: String,
 }
 
-async fn enroll(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(id): Path<Uuid>,
-) -> ApiResult<(StatusCode, Json<EnrollResponse>)> {
-    let mut conn = state.db.get().await?;
+/// The caller's own agent host, or the error that says why it isn't one.
+///
+/// Both operator-facing routes want exactly this, and want it to fail the
+/// same way: a host somebody else owns is indistinguishable from one that
+/// does not exist, and a host of another transport has nothing to enroll or
+/// report on.
+async fn owned_agent_host(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user_id: Uuid,
+    id: Uuid,
+    context: &'static str,
+) -> Result<Host, AppError> {
     let target: Host = host::table
         .filter(host::id.eq(id))
-        .filter(host::user_id.eq(user.id))
+        .filter(host::user_id.eq(user_id))
         .select(Host::as_select())
-        .first(&mut conn)
+        .first(conn)
         .await
         .optional()
-        .map_err(|err| AppError::db(err, "agent.enroll.load_host"))?
+        .map_err(|err| AppError::db(err, context))?
         .ok_or(AppError::NotFound)?;
 
     if target.transport != Transport::Agent.as_str() {
@@ -102,6 +111,17 @@ async fn enroll(
             "this host's transport is not 'agent'".into(),
         ));
     }
+
+    Ok(target)
+}
+
+async fn enroll(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<(StatusCode, Json<EnrollResponse>)> {
+    let mut conn = state.db.get().await?;
+    let target = owned_agent_host(&mut conn, user.id, id, "agent.enroll.load_host").await?;
 
     // Before the token is issued, not after: an install command faber cannot
     // build is a token that would sit there redeemable with no way to
@@ -148,6 +168,47 @@ async fn enroll(
             expires_at,
         }),
     ))
+}
+
+// ---------------------------------------------------------------------------
+// Operator: is the daemon there yet?
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct StatusResponse {
+    /// Whether a daemon is on the wire *right now*, read from the live
+    /// connection registry rather than from a column. Nothing stores this:
+    /// a connection that died is gone from the registry, so there is no
+    /// stale value for a caller to read.
+    connected: bool,
+    /// When the daemon exchanged its bootstrap token for the credential it
+    /// reconnects with, or `null` if that has not happened. This is what
+    /// separates "nobody has run the install command" from "the daemon is
+    /// installed and dialing".
+    enrolled_at: Option<chrono::DateTime<Utc>>,
+}
+
+async fn status(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<StatusResponse>> {
+    let mut conn = state.db.get().await?;
+    let target = owned_agent_host(&mut conn, user.id, id, "agent.status.load_host").await?;
+
+    let enrolled_at: Option<chrono::DateTime<Utc>> = agent_credential::table
+        .filter(agent_credential::host_id.eq(target.id))
+        .filter(agent_credential::revoked_at.is_null())
+        .select(agent_credential::issued_at)
+        .first(&mut conn)
+        .await
+        .optional()
+        .map_err(|err| AppError::db(err, "agent.status.load_credential"))?;
+
+    Ok(Json(StatusResponse {
+        connected: state.agents.get(target.id).is_some(),
+        enrolled_at,
+    }))
 }
 
 // ---------------------------------------------------------------------------
