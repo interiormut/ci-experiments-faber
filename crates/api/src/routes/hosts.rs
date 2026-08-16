@@ -21,7 +21,7 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::{get, patch, post},
+    routing::{delete, get, patch, post},
 };
 use chrono::{DateTime, Utc};
 use diesel::{
@@ -60,6 +60,9 @@ pub fn router() -> Router<AppState> {
         // No host in the path: faber picks one of its own.
         .route("/api/service-containers", post(spawn_service_container))
         .route("/api/hosts/{id}/usage", get(usage))
+        // No user in the path: the only materialisation anyone may drop here
+        // is their own.
+        .route("/api/hosts/{id}/tenancy", delete(release_tenancy))
         .route(
             "/api/hosts/{id}/probes",
             post(record_probe).get(list_probes),
@@ -1703,6 +1706,53 @@ async fn usage(
         work_path: Some(report.work_path.to_string_lossy().into_owned()),
         scratch_path: Some(report.scratch_path.to_string_lossy().into_owned()),
     }))
+}
+
+/// Gives up the caller's own footprint on a host faber operates.
+///
+/// **This destroys their work on that machine.** The quota goes to zero and
+/// the directory is removed; there is no retention window and no export, so
+/// this is the counterpart of `usage` above rather than of unregistering a
+/// container. Everything else the user has is untouched — this is one
+/// machine's worth of storage, not their account.
+///
+/// Theirs, always. There is no `user_id` in the path for the same reason
+/// `usage` takes no argument for whose usage to read: one tenant on a shared
+/// machine has no business reaching another's directory, and an administrator
+/// releasing somebody else goes through `/api/admin` where being allowed to is
+/// checked.
+///
+/// Refused while they still have containers registered here, which is a
+/// conflict they can act on: unregister those first, with `destroy` if faber
+/// created them.
+async fn release_tenancy(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(host_id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    let mut conn = state.db.get().await?;
+    let parent = visible_host(&mut conn, user.id, host_id).await?;
+
+    if !parent.service() {
+        return Err(AppError::BadRequest(
+            "that host is your own; faber holds nothing on it to give back".into(),
+        ));
+    }
+
+    if crate::service_hosts::live_host_user(&mut conn, parent.id, user.id)
+        .await?
+        .is_none()
+    {
+        return Err(AppError::NotFound);
+    }
+
+    // The machine has to answer. A row tombstoned while the bytes are still on
+    // disk returns a reservation the filesystem has not actually given back,
+    // and the host would go on to promise that space to somebody else.
+    let tenancy = crate::environments::reach_tenancy(&state, &parent).await?;
+    crate::service_hosts::release_host_user(&mut conn, &tenancy, &parent, user.id).await?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ---------------------------------------------------------------------------

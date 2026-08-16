@@ -8,7 +8,7 @@
 //! out of a filter rather than out of a rule. This module is the deliberate
 //! exception, and it is gated by [`AdminUser`] on every route.
 //!
-//! Three things live here and one deliberately does not:
+//! Four things live here:
 //!
 //! * **Hosts.** Registering a machine faber operates, setting the per-user
 //!   ceilings every tenant gets by default, and draining one.
@@ -16,20 +16,18 @@
 //!   *wholesale* — a grant is the answer in full, never a patch over the
 //!   defaults, which is the only thing that makes "grant this user unlimited"
 //!   expressible.
+//! * **Tenants.** Who is materialised on a machine, and releasing one — which
+//!   destroys their directory on it. The user-facing half of that, for
+//!   somebody dropping their *own* materialisation, is in `routes::hosts`.
 //! * **Service images.** A service host runs faber's own templates and nothing
 //!   else, so a shared host with no service image on it is a machine nobody
 //!   can spawn on.
-//! * **Not here: releasing a tenant.** What happens to a user's data when
-//!   their materialisation on a host is released — removed at once, kept for a
-//!   window, or exported — is an open question, and a route would settle it by
-//!   accident. `service_hosts::release_host_user` stays unreachable until it
-//!   is answered.
 
 use axum::{
     Json, Router,
     extract::{Path, State},
     http::StatusCode,
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
 };
 use chrono::{DateTime, Utc};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, SelectableHelper};
@@ -63,6 +61,10 @@ pub fn router() -> Router<AppState> {
             post(enroll_agent).delete(revoke_agent),
         )
         .route("/api/admin/hosts/{id}/users", get(list_tenants))
+        .route(
+            "/api/admin/hosts/{id}/users/{user_id}",
+            delete(release_tenant),
+        )
         .route(
             "/api/admin/hosts/{id}/users/{user_id}/quota",
             put(grant_quota).delete(revoke_quota),
@@ -827,6 +829,54 @@ async fn list_tenants(
     }
 
     Ok(Json(responses))
+}
+
+/// Releases somebody's materialisation on a host, destroying their data on it.
+///
+/// **This removes their work.** The machine-side half is a project quota set to
+/// zero and an `rm -rf` of their directory, so there is no retention window and
+/// no export — releasing is the end of that data, and the reservation it was
+/// holding goes back to the host the moment the row is tombstoned.
+///
+/// Refused while they still hold container registrations, which
+/// [`release_host_user`](service_hosts::release_host_user) checks: the
+/// directory is what those containers are running inside.
+///
+/// The host has to be reachable. Everywhere else in this module a machine-side
+/// failure is logged and left for the next launch to repair, because the
+/// database is the source of truth and the machine is the copy. Here the
+/// ordering is the opposite way round: tombstoning the row while the bytes are
+/// still on disk drops the reservation that `projected_storage` sums over, and
+/// the host would then promise storage it has already spent. So an offline
+/// daemon is a refusal rather than a partial release.
+///
+/// Any live grant is left alone. A grant is an administrator's decision about a
+/// person with its own retire-and-audit lifecycle, not a property of their
+/// directory — and if the same user materialises here again, the ceiling
+/// somebody deliberately gave them is the one they should get.
+async fn release_tenant(
+    State(state): State<AppState>,
+    AdminUser(_): AdminUser,
+    Path((id, user_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<StatusCode> {
+    let mut conn = state.db.get().await?;
+    let found = service_host(&mut conn, id).await?;
+
+    // Checked before the release rather than reading it out of the result: the
+    // release itself is idempotent by design and returns cleanly for a user
+    // who was never here, which as an answer to `DELETE .../users/{id}` would
+    // report success for a typo'd id.
+    if service_hosts::live_host_user(&mut conn, found.id, user_id)
+        .await?
+        .is_none()
+    {
+        return Err(AppError::NotFound);
+    }
+
+    let tenancy = crate::environments::reach_tenancy(&state, &found).await?;
+    service_hosts::release_host_user(&mut conn, &tenancy, &found, user_id).await?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// The note on the live grant, if there is one.

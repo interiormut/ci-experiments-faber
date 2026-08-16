@@ -772,11 +772,17 @@ pub async fn apply(tenancy: &Tenancy, host: &Host, subject: i32, quota: &Quota) 
 /// directory sits inside, and removing it under a running container would take
 /// the workspace out from under a session.
 ///
-/// No route reaches this yet, deliberately. What happens to a user's data when
-/// their materialisation is released — immediate removal, a retention window,
-/// or an export — is an open question, and exposing the destructive half of it
-/// before that is answered would settle it by accident.
-#[allow(dead_code)]
+/// **Immediate removal is the data policy**, and it is this function that
+/// decides it: the project quota goes to zero and the directory is deleted in
+/// the same call that tombstones the row. Neither a retention window nor an
+/// export is expressible here — both would need somewhere for the bytes to go
+/// and a sweeper to eventually forget them, and neither exists. The two routes
+/// that reach this (an administrator releasing anyone, a user releasing
+/// themselves) both say so before they ask.
+///
+/// Idempotent on purpose: a user with no subject id never had a directory, and
+/// an already-released row updates nothing. A caller that needs "there was
+/// nobody here" to be an error checks [`live_host_user`] first.
 pub async fn release_host_user(
     conn: &mut AsyncPgConnection,
     tenancy: &Tenancy,
@@ -1144,6 +1150,132 @@ mod tests {
             .execute(&mut conn)
             .await
             .expect("a retired grant blocked a new one");
+    }
+
+    /// A machine that fails the test if it is reached at all.
+    ///
+    /// Releasing writes a quota of zero and an `rm -rf`, so "the refusal came
+    /// first" is not a detail of ordering — it is the difference between
+    /// refusing to release a tenant and deleting their work and then refusing.
+    struct Untouchable;
+
+    #[async_trait::async_trait]
+    impl environment::spawn::Spawn for Untouchable {
+        async fn spawn(
+            &self,
+            run: environment::spawn::Run,
+        ) -> Result<Box<dyn environment::spawn::Proc>, environment::Fault> {
+            panic!("a release that should have been refused ran {:?}", run.argv);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl environment::tenancy::Reads for Untouchable {
+        async fn capacity(
+            &self,
+            _path: &str,
+        ) -> Result<environment::tenancy::Capacity, environment::Fault> {
+            panic!("a release that should have been refused read the filesystem");
+        }
+        async fn memory(&self) -> Result<environment::tenancy::Memory, environment::Fault> {
+            panic!("a release that should have been refused read memory");
+        }
+        async fn counters(
+            &self,
+            _paths: &[String],
+        ) -> Result<Vec<Option<u64>>, environment::Fault> {
+            panic!("a release that should have been refused read a counter");
+        }
+    }
+
+    #[tokio::test]
+    async fn releasing_is_refused_while_the_tenant_still_holds_a_container() {
+        let Some(mut conn) = connection().await else {
+            return;
+        };
+        let user = a_user(&mut conn).await;
+        let host_id = insert_host(&mut conn, None, "shared").await.unwrap();
+        let host = load_host(&mut conn, host_id).await;
+
+        diesel::insert_into(host_user::table)
+            .values(&NewHostUser {
+                host_id,
+                user_id: user,
+            })
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        diesel::insert_into(host_container::table)
+            .values(&crate::models::host::NewHostContainer {
+                id: Uuid::now_v7(),
+                host_id,
+                user_id: user,
+                container_ref: "faber-test",
+                name: None,
+                root_path: "/work",
+                managed_at: Some(Utc::now()),
+                image_id: None,
+            })
+            .execute(&mut conn)
+            .await
+            .unwrap();
+
+        let untouchable = Tenancy::new(
+            std::sync::Arc::new(Untouchable),
+            std::sync::Arc::new(Untouchable),
+        );
+        let refused = release_host_user(&mut conn, &untouchable, &host, user).await;
+        assert!(
+            matches!(refused, Err(AppError::Conflict(_))),
+            "releasing a tenant with a container registered was allowed",
+        );
+
+        // And the row is still live, so the reservation it carries is still
+        // being counted.
+        assert!(
+            live_host_user(&mut conn, host_id, user)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_released_tenant_stops_holding_its_reservation() {
+        let Some(mut conn) = connection().await else {
+            return;
+        };
+        let user = a_user(&mut conn).await;
+        let host_id = insert_host(&mut conn, None, "shared").await.unwrap();
+        diesel::sql_query("UPDATE host SET default_storage_bytes = 1000 WHERE id = $1")
+            .bind::<diesel::sql_types::Uuid, _>(host_id)
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        let host = load_host(&mut conn, host_id).await;
+
+        diesel::insert_into(host_user::table)
+            .values(&NewHostUser {
+                host_id,
+                user_id: user,
+            })
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(
+            projected_storage(&mut conn, &host, None).await.unwrap(),
+            1000
+        );
+
+        // The tombstone is the whole of it: what the host has promised out is
+        // summed over live rows, so releasing hands the space back without
+        // anything having to adjust a total.
+        diesel::update(host_user::table.filter(host_user::host_id.eq(host_id)))
+            .set(host_user::released_at.eq(Some(Utc::now())))
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(projected_storage(&mut conn, &host, None).await.unwrap(), 0);
     }
 
     #[tokio::test]
