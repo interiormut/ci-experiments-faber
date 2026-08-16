@@ -162,7 +162,10 @@ impl russh_sftp::server::Handler for Sftp {
         let Some(Open::File(file)) = self.handles.get(&handle) else {
             return Err(StatusCode::Failure);
         };
-        let metadata = file.metadata().await.map_err(|error| status_of(id, &error))?;
+        let metadata = file
+            .metadata()
+            .await
+            .map_err(|error| status_of(id, &error))?;
         Ok(Attrs {
             id,
             attrs: (&metadata).into(),

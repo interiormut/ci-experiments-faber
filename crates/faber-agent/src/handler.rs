@@ -198,9 +198,7 @@ impl russh::server::Handler for Handler {
             }
             Err(error) => {
                 tracing::warn!(%socket_path, %error, "could not reach the local socket");
-                reply
-                    .reject(russh::ChannelOpenFailure::ConnectFailed)
-                    .await;
+                reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
             }
         }
         Ok(())

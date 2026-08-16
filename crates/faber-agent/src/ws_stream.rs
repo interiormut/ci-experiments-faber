@@ -58,9 +58,9 @@ where
                 // them; a stray Text or Pong (the broker's own liveness
                 // check, not ours to act on) is dropped rather than treated
                 // as data or as EOF.
-                Poll::Ready(Some(Ok(Message::Text(_) | Message::Ping(_) | Message::Pong(_)))) => {
-                }
-                Poll::Ready(Some(Ok(Message::Close(_) | Message::Frame(_)))) | Poll::Ready(None) => {
+                Poll::Ready(Some(Ok(Message::Text(_) | Message::Ping(_) | Message::Pong(_)))) => {}
+                Poll::Ready(Some(Ok(Message::Close(_) | Message::Frame(_))))
+                | Poll::Ready(None) => {
                     return Poll::Ready(Ok(())); // EOF: an unfilled buf is the signal.
                 }
                 Poll::Ready(Some(Err(error))) => {
@@ -99,10 +99,14 @@ where
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.ws).poll_flush(cx).map_err(io::Error::other)
+        Pin::new(&mut self.ws)
+            .poll_flush(cx)
+            .map_err(io::Error::other)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.ws).poll_close(cx).map_err(io::Error::other)
+        Pin::new(&mut self.ws)
+            .poll_close(cx)
+            .map_err(io::Error::other)
     }
 }

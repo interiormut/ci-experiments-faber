@@ -77,7 +77,11 @@ pub fn spawn_piped(
             match stdout.read(&mut buf).await {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    if out_handle.data(channel_id, buf[..n].to_vec()).await.is_err() {
+                    if out_handle
+                        .data(channel_id, buf[..n].to_vec())
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -209,10 +213,7 @@ pub fn spawn_pty(
     tokio::spawn(async move {
         let code = tokio::task::spawn_blocking(move || {
             let mut child = child;
-            let code = child
-                .wait()
-                .map(|status| status.exit_code())
-                .unwrap_or(1);
+            let code = child.wait().map(|status| status.exit_code()).unwrap_or(1);
             drop(master);
             code
         })
