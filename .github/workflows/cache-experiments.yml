@@ -31,6 +31,10 @@ jobs:
             input: target-mount
             file: crates/api/Dockerfile.experiment-target-mount
             scope: experiment-target-mount
+          - name: chef-layer
+            input: chef-layer
+            file: crates/api/Dockerfile.experiment-chef-layer
+            scope: experiment-chef-layer
     steps:
       - name: Skip unselected variant
         if: inputs.variant != 'both' && inputs.variant != matrix.input
