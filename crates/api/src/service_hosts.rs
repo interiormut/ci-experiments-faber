@@ -138,7 +138,11 @@ pub async fn ensure_subject(conn: &mut AsyncPgConnection, user_id: Uuid) -> ApiR
     })
 }
 
-async fn subject(conn: &mut AsyncPgConnection, user_id: Uuid) -> ApiResult<Option<i32>> {
+/// The user's subject id if they have one, without allocating.
+///
+/// The read counterpart to [`ensure_subject`]: reporting on a host must not
+/// hand an id to a user who has never needed one.
+pub async fn subject(conn: &mut AsyncPgConnection, user_id: Uuid) -> ApiResult<Option<i32>> {
     user_subject::table
         .filter(user_subject::user_id.eq(user_id))
         .select(user_subject::subject_id)
@@ -343,9 +347,8 @@ pub async fn ensure_host_user(
         // A blocking `statvfs` inside the admission transaction. It is one
         // syscall against a local filesystem, and it has to be inside: the
         // reservation it decides is only sound while the lock is held.
-        let capacity = environment::tenancy::capacity(&root).map_err(crate::environments::fault)?;
-        let ceiling = (capacity.total_bytes as f64 * (1.0 - STORAGE_RESERVE_RATIO)) as i64;
-        let committed = reserved_storage(conn, host).await?;
+        let ceiling = storage_ceiling(&root)?;
+        let committed = projected_storage(conn, host, None).await?;
 
         if committed + wanted > ceiling {
             return Err(AppError::HostAtCapacity {
@@ -388,27 +391,97 @@ pub async fn live_host_user(
         .map_err(|err| AppError::db(err, "service_hosts.live_host_user"))
 }
 
-/// Storage already promised on this host, summed over materialised users.
+/// Everyone materialised on this host, oldest first.
+pub async fn tenants(conn: &mut AsyncPgConnection, host_id: Uuid) -> ApiResult<Vec<HostUser>> {
+    host_user::table
+        .filter(host_user::host_id.eq(host_id))
+        .filter(host_user::released_at.is_null())
+        .order(host_user::created_at.asc())
+        .select(HostUser::as_select())
+        .load(conn)
+        .await
+        .map_err(|err| AppError::db(err, "service_hosts.tenants"))
+}
+
+/// The most storage this filesystem may have promised out at once.
+///
+/// The reserve is what keeps the last accepted reservation from being the one
+/// that fills the disk — storage is the single resource faber refuses to
+/// overcommit, because running out of it is global and cannot be repaired by
+/// the user who caused it.
+pub fn storage_ceiling(root: &Path) -> ApiResult<i64> {
+    let capacity = environment::tenancy::capacity(root).map_err(crate::environments::fault)?;
+    Ok((capacity.total_bytes as f64 * (1.0 - STORAGE_RESERVE_RATIO)) as i64)
+}
+
+/// Storage promised on this host, summed over materialised users.
 ///
 /// Computed from live rows joined to their *resolved* quotas rather than from
 /// a snapshot column, so raising a grant cannot drift from the reservation it
 /// implies. The row count is bounded by exactly this check, which is what
 /// makes loading them all reasonable.
-async fn reserved_storage(conn: &mut AsyncPgConnection, host: &Host) -> ApiResult<i64> {
-    let tenants: Vec<Uuid> = host_user::table
-        .filter(host_user::host_id.eq(host.id))
-        .filter(host_user::released_at.is_null())
-        .select(host_user::user_id)
-        .load(conn)
-        .await
-        .map_err(|err| AppError::db(err, "service_hosts.reserved_storage.tenants"))?;
+///
+/// `host` is read for its defaults, so passing a host with the defaults a
+/// pending patch would write answers "what would this cost afterwards" —
+/// which is the question, because changing a default silently regrants every
+/// tenant who has no override of their own. `grant` substitutes one user's
+/// storage for the value they are about to be given.
+pub async fn projected_storage(
+    conn: &mut AsyncPgConnection,
+    host: &Host,
+    grant: Option<(Uuid, Option<i64>)>,
+) -> ApiResult<i64> {
+    let live = tenants(conn, host.id).await?;
 
     let mut total: i64 = 0;
-    for tenant in tenants {
-        let resolved = resolve_quota(conn, host, tenant).await?;
-        total = total.saturating_add(resolved.quota.storage_bytes.unwrap_or(0));
+    for tenant in live {
+        let bytes = match grant {
+            Some((user_id, bytes)) if user_id == tenant.user_id => bytes,
+            _ => {
+                resolve_quota(conn, host, tenant.user_id)
+                    .await?
+                    .quota
+                    .storage_bytes
+            }
+        };
+        total = total.saturating_add(bytes.unwrap_or(0));
     }
     Ok(total)
+}
+
+/// Refuses a change that would promise more storage than the filesystem holds.
+///
+/// The check `ensure_host_user` runs when a tenant first appears, applied to
+/// the other two ways the same number moves: a grant raised for one user, and
+/// a host default raised for everyone who has no grant of their own. Without
+/// it, storage is reserved on the way in and overcommitted on every path
+/// afterwards.
+///
+/// A change that lowers the total is always allowed, even on a host already
+/// over its ceiling — a filesystem that shrank under an existing set of grants
+/// is a real situation, and refusing the reductions that would repair it would
+/// be exactly backwards.
+pub async fn check_storage_capacity(
+    conn: &mut AsyncPgConnection,
+    current: &Host,
+    prospective: &Host,
+    grant: Option<(Uuid, Option<i64>)>,
+) -> ApiResult<()> {
+    let root = data_root(prospective)?;
+    let ceiling = storage_ceiling(&root)?;
+
+    let after = projected_storage(conn, prospective, grant).await?;
+    if after <= ceiling {
+        return Ok(());
+    }
+
+    let before = projected_storage(conn, current, None).await?;
+    if after > before {
+        return Err(AppError::HostAtCapacity {
+            resource: "storage",
+        });
+    }
+    Ok(())
 }
 
 /// Refuses a launch when the machine's free memory is under the floor.

@@ -125,6 +125,16 @@ pub struct NewHost<'a> {
     pub ssh_host_key: Option<&'a str>,
     pub docker_endpoint: Option<&'a str>,
     pub root_path: Option<&'a str>,
+    /// Meaningful only on a service host, and only an operator sets them: a
+    /// host somebody owns has nobody to be limited by, and `None` is unlimited
+    /// rather than unset.
+    pub default_cpu_millis: Option<i32>,
+    pub default_memory_bytes: Option<i64>,
+    pub default_storage_bytes: Option<i64>,
+    pub default_container_max: Option<i32>,
+    /// Required for a service host by CHECK — the parent of the per-user
+    /// directories whose project quotas carry the storage limit.
+    pub user_data_root: Option<&'a str>,
 }
 
 #[derive(AsChangeset, Default)]
@@ -143,6 +153,13 @@ pub struct UpdateHost<'a> {
     /// observation.
     pub disabled_at: Option<Option<DateTime<Utc>>>,
     pub root_path: Option<Option<&'a str>>,
+    /// `Some(None)` sets a default to unlimited, which is a real thing to
+    /// mean here and is why these are doubly optional like the rest.
+    pub default_cpu_millis: Option<Option<i32>>,
+    pub default_memory_bytes: Option<Option<i64>>,
+    pub default_storage_bytes: Option<Option<i64>>,
+    pub default_container_max: Option<Option<i32>>,
+    pub user_data_root: Option<Option<&'a str>>,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]

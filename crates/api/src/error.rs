@@ -18,6 +18,14 @@ pub enum AppError {
     #[error("not found")]
     NotFound,
 
+    /// The caller is authenticated and the row is not theirs to touch. Rare on
+    /// purpose: reachability is normally reported as [`AppError::NotFound`],
+    /// since whether a row exists is itself information. This is for the case
+    /// where nothing is concealed and the answer is genuinely "not you" — the
+    /// administrative surface, which every deployment has in the same place.
+    #[error("forbidden: {0}")]
+    Forbidden(String),
+
     #[error("bad request: {0}")]
     BadRequest(String),
 
@@ -114,6 +122,7 @@ impl AppError {
             AppError::Unauthorized(_)
             | AppError::ServiceUnavailable(_)
             | AppError::NotFound
+            | AppError::Forbidden(_)
             | AppError::BadRequest(_)
             | AppError::Conflict(_)
             | AppError::QuotaExceeded { .. }
@@ -137,6 +146,7 @@ impl IntoResponse for AppError {
             AppError::Unauthorized(_) => (StatusCode::UNAUTHORIZED, "unauthorized".to_owned()),
             AppError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
             AppError::NotFound => (StatusCode::NOT_FOUND, "not found".to_owned()),
+            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             // A conflict, not a bad request: the same bytes would have worked

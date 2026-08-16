@@ -1,6 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
+use uuid::Uuid;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -24,6 +25,19 @@ pub struct Config {
     /// Whether users may register hosts reached through the API process itself.
     /// Existing local hosts are left intact when this is disabled.
     pub allow_local_hosts: bool,
+    /// Surge identities allowed to operate faber's own machines.
+    ///
+    /// Deployment configuration rather than a column, because there is no
+    /// bootstrap for a column: the first administrator would have to be made
+    /// by hand in SQL anyway, and a self-service route that grants the flag
+    /// would be a privilege-escalation surface serving nobody. Empty — the
+    /// default — means no request is administrative, which is the direction a
+    /// missing value should fail in.
+    ///
+    /// Keyed on the *identity* rather than the username or the local user row:
+    /// a username can be changed and reassigned upstream, and the local row
+    /// does not exist until that person's first request.
+    pub admin_identities: Vec<Uuid>,
     /// This API's own externally reachable base URL — what a machine *out
     /// there* dials to get here. Nothing else in this struct answers that:
     /// `surge_url` points at the auth service, and `cors_origins` names
@@ -89,6 +103,28 @@ impl Config {
             allow_local_hosts: env::var("FABER_ALLOW_LOCAL_HOSTS")
                 .map(|value| value.trim() != "false")
                 .unwrap_or(true),
+            admin_identities: env::var("FABER_ADMIN_IDENTITIES")
+                .ok()
+                .map(|value| {
+                    value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(|value| {
+                            // Loud at boot rather than quiet at request time: a
+                            // typo here reads as "that person is not an
+                            // administrator", which looks exactly like a
+                            // correctly configured deployment and is the sort
+                            // of thing discovered during an incident.
+                            Uuid::parse_str(value).unwrap_or_else(|_| {
+                                panic!(
+                                    "FABER_ADMIN_IDENTITIES contains '{value}', which is not a UUID"
+                                )
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
             public_url: env::var("FABER_PUBLIC_URL")
                 .ok()
                 .map(|value| value.trim().trim_end_matches('/').to_owned())

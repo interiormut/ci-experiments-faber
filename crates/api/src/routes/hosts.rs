@@ -563,6 +563,13 @@ async fn create(
         ssh_host_key,
         docker_endpoint,
         root_path: host_root,
+        // Limits and a tenant data root belong to a host faber operates.
+        // Nobody shares this one, so there is nobody to bound.
+        default_cpu_millis: None,
+        default_memory_bytes: None,
+        default_storage_bytes: None,
+        default_container_max: None,
+        user_data_root: None,
     };
 
     let inserted: Host = diesel::insert_into(host::table)
@@ -762,6 +769,9 @@ async fn update(
             .map(|v| trimmed(v.as_deref())),
         root_path: input.root_path.as_ref().map(|v| trimmed(v.as_deref())),
         disabled_at: input.disabled.map(|d| d.then(Utc::now)),
+        // A host with an owner has nobody to be limited by, and this route
+        // only ever loads one of those.
+        ..Default::default()
     };
 
     let updated: Host = diesel::update(

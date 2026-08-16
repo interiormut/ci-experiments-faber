@@ -1,3 +1,4 @@
+mod admin;
 mod credentials;
 mod environments;
 mod hosts;
@@ -41,6 +42,7 @@ pub fn router() -> Router<AppState> {
         .merge(threads::router())
         .merge(runs::router())
         .merge(agent::routes::router())
+        .merge(admin::router())
 }
 
 /// Default and ceiling for `?limit=` on collection routes. Unbounded list endpoints are
@@ -97,15 +99,21 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> impl IntoR
 #[derive(Serialize)]
 struct MeResponse {
     id: String,
+    /// Whether this caller operates faber's own machines. Not profile
+    /// information: it is what a client needs to decide whether to render the
+    /// administrative surface at all. Every `/api/admin` route checks it again
+    /// for itself — this bit decides what is *shown*, never what is allowed.
+    admin: bool,
 }
 
-async fn me(State(_state): State<AppState>, AuthUser(user): AuthUser) -> Json<MeResponse> {
-    Json(me_response(&user))
+async fn me(State(state): State<AppState>, AuthUser(user): AuthUser) -> Json<MeResponse> {
+    Json(me_response(&user, crate::auth::is_admin(&state, &user)))
 }
 
-fn me_response(user: &User) -> MeResponse {
+fn me_response(user: &User, admin: bool) -> MeResponse {
     MeResponse {
         id: user.id.to_string(),
+        admin,
     }
 }
 
