@@ -17,16 +17,7 @@ COPY crates ./crates
 
 RUN cargo chef prepare --recipe-path recipe.json
 
-FROM chef AS cacher
-
-COPY --from=planner /app/recipe.json recipe.json
-
-RUN --mount=type=cache,id=faber-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,id=faber-cargo-git,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,id=faber-api-target,target=/app/target,sharing=locked \
-    cargo chef cook --release --locked --recipe-path recipe.json
-
-FROM cacher AS builder
+FROM chef AS builder
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
