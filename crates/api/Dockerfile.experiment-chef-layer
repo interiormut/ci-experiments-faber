@@ -12,7 +12,14 @@ RUN apt-get update \
 
 FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
-COPY crates ./crates
+COPY crates/api/Cargo.toml crates/api/Cargo.toml
+COPY crates/environment/Cargo.toml crates/environment/Cargo.toml
+COPY crates/faber-agent/Cargo.toml crates/faber-agent/Cargo.toml
+COPY crates/harness/Cargo.toml crates/harness/Cargo.toml
+COPY crates/llm/Cargo.toml crates/llm/Cargo.toml
+COPY crates/readable/Cargo.toml crates/readable/Cargo.toml
+COPY crates/search/Cargo.toml crates/search/Cargo.toml
+COPY crates/traefik/Cargo.toml crates/traefik/Cargo.toml
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS cacher
