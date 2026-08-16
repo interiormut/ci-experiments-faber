@@ -1585,6 +1585,7 @@ dependencies = [
  "bytes",
  "futures",
  "http",
+ "libc",
  "portable-pty",
  "rand 0.10.2",
  "reqwest",

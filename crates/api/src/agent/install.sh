@@ -5,16 +5,23 @@
 #
 #   curl -fsSL https://faber.example.com/api/agent/install.sh | sh -s -- --token <token>
 #
-# Everything happens under $HOME and nothing here uses sudo. The daemon runs
-# as a systemd *user* service with exactly the privileges of whoever runs
-# this command, so an install that needed root would be granting the daemon
-# more than the account that asked for it.
+# By default everything happens under $HOME and nothing here uses sudo. The
+# daemon runs as a systemd *user* service with exactly the privileges of
+# whoever runs this command, so an install that needed root would be granting
+# the daemon more than the account that asked for it.
+#
+# `--system` is the other case, and it is not a user's to choose: a machine
+# faber itself operates runs the daemon as a system service, because faber
+# writes cgroup limits and project quotas on that machine through it. Faber
+# only ever puts `--system` in the command it hands an administrator for one
+# of its own hosts.
 
 set -eu
 
 API="@FABER_API@"
 TOKEN=""
 START="yes"
+SYSTEM="no"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -22,9 +29,15 @@ while [ $# -gt 0 ]; do
         # Writes the service unit but leaves it stopped, for anyone who
         # supervises this some other way.
         --no-start) START="no"; shift ;;
+        --system) SYSTEM="yes"; shift ;;
         *) echo "faber-agent install: unrecognized argument '$1'" >&2; exit 2 ;;
     esac
 done
+
+if [ "$SYSTEM" = "yes" ] && [ "$(id -u)" != "0" ]; then
+    echo "faber-agent install: --system writes a system unit and /etc/faber-agent; run it as root." >&2
+    exit 1
+fi
 
 if [ -z "$TOKEN" ]; then
     echo "faber-agent install: --token is required." >&2
@@ -52,7 +65,14 @@ if [ "$OS" != "Linux" ]; then
     exit 1
 fi
 
-BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
+# A system install puts the binary where a system unit may exec it: $HOME
+# for whoever ran `sudo` is not a path root should be executing out of, and
+# on a machine with no such account it does not exist at all.
+if [ "$SYSTEM" = "yes" ]; then
+    BIN_DIR="/usr/local/bin"
+else
+    BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
+fi
 BIN="$BIN_DIR/faber-agent"
 mkdir -p "$BIN_DIR"
 
@@ -84,12 +104,11 @@ echo "installed $BIN"
 
 # The binary takes it from here: it generates a host keypair, trades the
 # bootstrap token for a long-lived credential, and writes and starts its own
-# systemd user unit. The token is single-use, so this runs exactly once.
-if [ "$START" = "yes" ]; then
-    "$BIN" install --token "$TOKEN" --api "$API"
-else
-    "$BIN" install --token "$TOKEN" --api "$API" --no-start
-fi
+# systemd unit. The token is single-use, so this runs exactly once.
+set -- install --token "$TOKEN" --api "$API"
+if [ "$SYSTEM" = "yes" ]; then set -- "$@" --system; fi
+if [ "$START" != "yes" ]; then set -- "$@" --no-start; fi
+"$BIN" "$@"
 
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;

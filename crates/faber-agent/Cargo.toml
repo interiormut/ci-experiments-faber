@@ -48,3 +48,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 thiserror = "1"
 anyhow = "1"
+
+# `geteuid` to refuse a system install that is not root, and `statvfs` for
+# the filesystem read the API's admission check asks this daemon for —
+# neither has a std equivalent.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

@@ -8,7 +8,7 @@
 use russh::keys::{Algorithm, PrivateKey, ssh_key::LineEnding};
 use serde::{Deserialize, Serialize};
 
-use crate::config::Config;
+use crate::config::{Config, Scope};
 
 #[derive(Serialize)]
 struct ExchangeRequest<'a> {
@@ -24,8 +24,17 @@ struct ExchangeResponse {
 pub async fn install(
     api: &str,
     token: &str,
+    scope: Scope,
     start: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Before the exchange consumes the single-use token, because a system
+    // install that cannot write `/etc` or talk to the system manager is a
+    // failure the operator repairs by re-running with the right authority —
+    // and re-running is exactly what a consumed token forbids.
+    if scope == Scope::System {
+        require_root()?;
+    }
+
     let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)?;
     let host_pubkey = key.public_key().to_openssh()?;
     let host_private_key = key.to_openssh(LineEnding::LF)?.to_string();
@@ -58,7 +67,7 @@ pub async fn install(
         credential: exchanged.credential,
         host_private_key,
     };
-    config.save()?;
+    config.save(scope)?;
 
     println!(
         "enrolled. host key fingerprint: {}",
@@ -67,14 +76,44 @@ pub async fn install(
     );
     println!(
         "config written to {}",
-        crate::config::config_dir()?.join("config.json").display()
+        crate::config::config_dir(scope)?
+            .join("config.json")
+            .display()
     );
 
     // After the exchange, never before: the bootstrap token is single-use, so
     // a unit written first and an exchange that then fails would leave a
     // service pointed at a credential that does not exist and a token that
     // cannot be redeemed again.
-    crate::service::install_unit(start)?;
+    crate::service::install_unit(scope, start)?;
 
     Ok(())
+}
+
+/// Refuses a system install that is not running as root.
+///
+/// An agent's privilege is fixed at install and never negotiated, so this is
+/// the one moment the question can be asked at all. Failing here says what
+/// is wrong; proceeding would write `/etc` successfully on some machines,
+/// fail confusingly on others, and in either case produce a daemon whose
+/// authority is not the one the operator asked for.
+#[cfg(unix)]
+fn require_root() -> Result<(), Box<dyn std::error::Error>> {
+    // SAFETY: `geteuid` takes no arguments, touches no memory, and cannot
+    // fail.
+    if unsafe { libc::geteuid() } != 0 {
+        return Err(
+            "--system installs a system unit and writes /etc/faber-agent; run it as root"
+                .to_owned()
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn require_root() -> Result<(), Box<dyn std::error::Error>> {
+    Err("--system is only meaningful on a systemd machine"
+        .to_owned()
+        .into())
 }

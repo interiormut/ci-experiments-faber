@@ -9,11 +9,12 @@ mod dial;
 mod enroll;
 mod exec;
 mod handler;
+mod probe;
 mod service;
 mod sftp;
 mod ws_stream;
 
-use config::Config;
+use config::{Config, Scope};
 
 #[tokio::main]
 async fn main() {
@@ -35,13 +36,22 @@ async fn main() {
                     std::process::exit(2);
                 }
             };
-            if let Err(error) = enroll::install(&install.api, &install.token, install.start).await {
+            if let Err(error) =
+                enroll::install(&install.api, &install.token, install.scope, install.start).await
+            {
                 eprintln!("install failed: {error}");
                 std::process::exit(1);
             }
         }
         Some("run") => {
-            let config = match Config::load() {
+            let scope = match parse_run_args(&args[1..]) {
+                Ok(scope) => scope,
+                Err(message) => {
+                    eprintln!("{message}");
+                    std::process::exit(2);
+                }
+            };
+            let config = match Config::load(scope) {
                 Ok(config) => config,
                 Err(error) => {
                     eprintln!(
@@ -55,8 +65,8 @@ async fn main() {
         _ => {
             eprintln!(
                 "usage:\n  \
-                 faber-agent install --token <bootstrap-token> --api <https://faber.example.com> [--no-start]\n  \
-                 faber-agent run"
+                 faber-agent install --token <bootstrap-token> --api <https://faber.example.com> [--system] [--no-start]\n  \
+                 faber-agent run [--system]"
             );
             std::process::exit(2);
         }
@@ -66,7 +76,10 @@ async fn main() {
 struct Install {
     token: String,
     api: String,
-    /// Whether to enable and start the systemd user unit, rather than only
+    /// Which manager supervises the daemon, and therefore what authority it
+    /// runs with. Fixed here and never renegotiated — see `service.rs`.
+    scope: Scope,
+    /// Whether to enable and start the systemd unit, rather than only
     /// writing it. Installing is the point of the command, so starting is
     /// the default and `--no-start` is the escape for anyone who supervises
     /// this some other way.
@@ -76,19 +89,40 @@ struct Install {
 fn parse_install_args(args: &[String]) -> Result<Install, String> {
     let mut token = None;
     let mut api = None;
+    let mut scope = Scope::User;
     let mut start = true;
     let mut iter = args.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
             "--token" => token = iter.next().cloned(),
             "--api" => api = iter.next().cloned(),
+            "--system" => scope = Scope::System,
             "--no-start" => start = false,
             other => return Err(format!("unrecognized argument '{other}'")),
         }
     }
     let token = token.ok_or("--token is required")?;
     let api = api.ok_or("--api is required")?;
-    Ok(Install { token, api, start })
+    Ok(Install {
+        token,
+        api,
+        scope,
+        start,
+    })
+}
+
+/// `run` carries the same scope flag the unit was written with, because the
+/// scope decides where the daemon's identity lives and nothing about the
+/// running process reveals which install produced it.
+fn parse_run_args(args: &[String]) -> Result<Scope, String> {
+    let mut scope = Scope::User;
+    for flag in args {
+        match flag.as_str() {
+            "--system" => scope = Scope::System,
+            other => return Err(format!("unrecognized argument '{other}'")),
+        }
+    }
+    Ok(scope)
 }
 
 #[cfg(test)]
@@ -107,6 +141,19 @@ mod tests {
             parse_install_args(&args(&["--token", "t", "--api", "https://f", "--no-start"]))
                 .unwrap();
         assert!(!parsed.start);
+    }
+
+    #[test]
+    fn the_scope_is_stated_and_never_inferred() {
+        let parsed = parse_install_args(&args(&["--token", "t", "--api", "https://f"])).unwrap();
+        assert_eq!(parsed.scope, Scope::User);
+        let parsed =
+            parse_install_args(&args(&["--token", "t", "--api", "https://f", "--system"])).unwrap();
+        assert_eq!(parsed.scope, Scope::System);
+        // `run` has to be told the same thing: the config it reads lives in
+        // a different place, and nothing about the process says which.
+        assert_eq!(parse_run_args(&args(&[])).unwrap(), Scope::User);
+        assert_eq!(parse_run_args(&args(&["--system"])).unwrap(), Scope::System);
     }
 
     #[test]
