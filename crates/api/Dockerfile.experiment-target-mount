@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1
+
+# Experiment: the current target cache-mount strategy. BuildKit cache mounts
+# are mutable state and are intentionally excluded from ordinary image layers.
+FROM rust:bookworm AS builder
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libpq-dev pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+
+RUN --mount=type=cache,id=faber-experiment-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=faber-experiment-git,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=faber-experiment-target,target=/app/target,sharing=locked \
+    cargo build --release --locked -p api \
+    && mkdir -p /out \
+    && cp target/release/api /out/faber-api
+
+FROM debian:bookworm-slim AS runner
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates libpq5 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --shell /usr/sbin/nologin faber
+WORKDIR /app
+ENV API_PORT=3001
+COPY --from=builder /out/faber-api /usr/local/bin/faber-api
+USER faber
+EXPOSE 3001
+CMD ["/usr/local/bin/faber-api"]

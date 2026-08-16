@@ -1,0 +1,55 @@
+name: Docker cache experiments
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: Build variant to test
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - layer
+          - target-mount
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: layer-output
+            input: layer
+            file: crates/api/Dockerfile.experiment-layer
+            scope: experiment-layer
+          - name: target-mount
+            input: target-mount
+            file: crates/api/Dockerfile.experiment-target-mount
+            scope: experiment-target-mount
+    steps:
+      - name: Skip unselected variant
+        if: inputs.variant != 'both' && inputs.variant != matrix.input
+        run: echo "Skipping ${{ matrix.name }}"
+
+      - uses: actions/checkout@v4
+        if: inputs.variant == 'both' || inputs.variant == matrix.input
+
+      - uses: docker/setup-buildx-action@v3
+        if: inputs.variant == 'both' || inputs.variant == matrix.input
+
+      - name: Build ${{ matrix.name }}
+        if: inputs.variant == 'both' || inputs.variant == matrix.input
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          tags: faber-cache-experiment:${{ matrix.input }}
+          push: false
+          cache-from: type=gha,scope=${{ matrix.scope }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.scope }}
+          outputs: type=docker,dest=/tmp/${{ matrix.input }}.tar
