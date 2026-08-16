@@ -14,7 +14,7 @@ import {
   Trash2,
 } from "lucide-react"
 
-import { type ServiceHost, type ServiceImage, type Tenant } from "@/lib/api"
+import { FaberError, type ServiceHost, type ServiceImage, type Tenant } from "@/lib/api"
 import { useServiceHosts } from "@/lib/admin/use-service-hosts"
 import { bytes, cores, count, summary } from "@/lib/hosts/limits"
 import { committedFraction, usedFraction } from "@/lib/admin/limits"
@@ -81,6 +81,7 @@ function AdminPage() {
   const [editingHost, setEditingHost] = React.useState<ServiceHost | null>(null)
   const [deleteTarget, setDeleteTarget] = React.useState<ServiceHost | null>(null)
   const [deleting, setDeleting] = React.useState(false)
+  const [deleteError, setDeleteError] = React.useState<string | null>(null)
 
   const [grantTarget, setGrantTarget] = React.useState<
     { host: ServiceHost; tenant: Tenant } | null
@@ -124,11 +125,17 @@ function AdminPage() {
   const handleDelete = async () => {
     if (!deleteTarget) return
     setDeleting(true)
+    setDeleteError(null)
     try {
       await removeHost(deleteTarget.id)
       setDeleteTarget(null)
-    } catch {
-      // Left open with the target set so the refusal can be read and retried.
+    } catch (err) {
+      // Shown, not just kept: the common refusal here names how many people
+      // are materialised on the host, and a Delete button that quietly does
+      // nothing is indistinguishable from one that is broken.
+      setDeleteError(
+        err instanceof FaberError ? err.message : "could not delete this host",
+      )
     } finally {
       setDeleting(false)
     }
@@ -330,7 +337,14 @@ function AdminPage() {
         onUpdate={editImage}
       />
 
-      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+      <AlertDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => {
+          if (open) return
+          setDeleteTarget(null)
+          setDeleteError(null)
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete {deleteTarget?.name}?</AlertDialogTitle>
@@ -341,6 +355,9 @@ function AdminPage() {
               instead stops new launches and leaves what is running alone.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {deleteError ? (
+            <p className="text-sm text-destructive">{deleteError}</p>
+          ) : null}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
