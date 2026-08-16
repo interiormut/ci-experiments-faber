@@ -5,6 +5,7 @@ import {
   ChevronDown,
   HardDrive,
   Pencil,
+  PlugZap,
   Plus,
   Power,
   Server,
@@ -22,6 +23,7 @@ import { useAppShell } from "@/components/shell/app-shell"
 import { Button } from "@/components/ui/button"
 import {
   GrantDialog,
+  ServiceHostAgentDialog,
   ServiceHostFormDialog,
   ServiceImageFormDialog,
 } from "@/components/admin/service-host-dialogs"
@@ -66,6 +68,8 @@ function AdminPage() {
     addHost,
     editHost,
     removeHost,
+    reloadHost,
+    revokeAgent,
     grant,
     revoke,
     addImage,
@@ -81,6 +85,20 @@ function AdminPage() {
   const [grantTarget, setGrantTarget] = React.useState<
     { host: ServiceHost; tenant: Tenant } | null
   >(null)
+
+  const [agentTarget, setAgentTarget] = React.useState<
+    { host: ServiceHost; fresh: boolean } | null
+  >(null)
+  // A host that was just registered, waiting for the form dialog to close
+  // before the install flow opens over it. Two dialogs open at once fight
+  // over focus, so they take turns.
+  const [pendingAgent, setPendingAgent] = React.useState<ServiceHost | null>(null)
+
+  React.useEffect(() => {
+    if (hostDialogOpen || !pendingAgent) return
+    setAgentTarget({ host: pendingAgent, fresh: true })
+    setPendingAgent(null)
+  }, [hostDialogOpen, pendingAgent])
 
   const [imageDialogOpen, setImageDialogOpen] = React.useState(false)
   const [editingImage, setEditingImage] = React.useState<ServiceImage | null>(null)
@@ -178,6 +196,7 @@ function AdminPage() {
                   tenants={tenants[host.id]}
                   onLoadTenants={() => loadTenants(host.id)}
                   onEdit={() => openEditHost(host)}
+                  onAgent={() => setAgentTarget({ host, fresh: false })}
                   onDelete={() => setDeleteTarget(host)}
                   onToggleDisabled={() =>
                     editHost(host.id, { disabled: !host.disabled_at }).catch(() => {
@@ -268,8 +287,28 @@ function AdminPage() {
         open={hostDialogOpen}
         onOpenChange={setHostDialogOpen}
         editing={editingHost}
-        onCreate={addHost}
+        onCreate={async (body) => {
+          const created = await addHost(body)
+          // Straight into the install flow, once this dialog is out of the
+          // way. The row alone is not a usable machine — faber cannot reach
+          // it until a daemon dials in — and an operator who stops here has
+          // registered a host that can do nothing.
+          setPendingAgent(created)
+          return created
+        }}
         onUpdate={editHost}
+      />
+
+      <ServiceHostAgentDialog
+        key={`agent-${agentTarget?.host.id ?? "none"}`}
+        open={!!agentTarget}
+        onOpenChange={(open) => !open && setAgentTarget(null)}
+        host={agentTarget?.host ?? null}
+        fresh={agentTarget?.fresh}
+        onConnected={(id) => {
+          void reloadHost(id)
+        }}
+        onRevoke={revokeAgent}
       />
 
       <GrantDialog
@@ -379,6 +418,7 @@ function HostCard({
   tenants,
   onLoadTenants,
   onEdit,
+  onAgent,
   onDelete,
   onToggleDisabled,
   onGrant,
@@ -387,6 +427,7 @@ function HostCard({
   tenants: Tenant[] | undefined
   onLoadTenants: () => Promise<Tenant[]>
   onEdit: () => void
+  onAgent: () => void
   onDelete: () => void
   onToggleDisabled: () => void
   onGrant: (tenant: Tenant) => void
@@ -394,6 +435,14 @@ function HostCard({
   const [open, setOpen] = React.useState(false)
   const [loading, setLoading] = React.useState(false)
   const draining = !!host.disabled_at
+  // Three states, not two, and they want different sentences. A host nobody
+  // has installed a daemon on was never finished; one that enrolled and is
+  // now silent is a machine that has gone away.
+  const daemon = host.agent.connected
+    ? "connected"
+    : host.agent.enrolled_at
+      ? "offline"
+      : "absent"
 
   const toggle = () => {
     const next = !open
@@ -414,6 +463,9 @@ function HostCard({
           <div className="flex flex-wrap items-center gap-2">
             <span className="truncate text-sm font-medium">{host.name}</span>
             {draining ? <Badge>draining</Badge> : null}
+            {daemon === "connected" ? null : (
+              <Badge>{daemon === "absent" ? "no daemon" : "daemon offline"}</Badge>
+            )}
             <Badge>
               {host.tenants} {host.tenants === 1 ? "tenant" : "tenants"}
             </Badge>
@@ -435,10 +487,22 @@ function HostCard({
                 {bytes(host.storage.available_bytes)} free on disk
               </p>
             </div>
+          ) : daemon === "absent" ? (
+            <div className="mt-3 flex flex-col items-start gap-2">
+              <p className="text-xs text-muted-foreground">
+                Registered, but nothing can run here yet: faber reaches this
+                machine through a daemon installed on it, and there is none.
+              </p>
+              <Button size="sm" variant="outline" onClick={onAgent}>
+                <PlugZap className="h-4 w-4" />
+                Install daemon
+              </Button>
+            </div>
           ) : (
             <p className="mt-3 text-xs text-muted-foreground">
-              Filesystem unreadable from here — faber is not running on this
-              machine.
+              The daemon is not connected, so faber cannot read this machine.
+              It dials in on its own — if it stays away, the machine or its
+              service is down.
             </p>
           )}
         </div>
@@ -452,6 +516,15 @@ function HostCard({
             onClick={onToggleDisabled}
           >
             <Power className="h-4 w-4" />
+          </Button>
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            aria-label={`Daemon on ${host.name}`}
+            title="Daemon"
+            onClick={onAgent}
+          >
+            <PlugZap className="h-4 w-4" />
           </Button>
           <Button size="icon-sm" variant="ghost" aria-label={`Edit ${host.name}`} onClick={onEdit}>
             <Pencil className="h-4 w-4" />

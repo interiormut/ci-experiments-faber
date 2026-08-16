@@ -378,6 +378,15 @@ export class FaberClient {
   }
 
   /**
+   * One service host, live — including whether its daemon is connected right
+   * now, which is read from the connection rather than from a column and is
+   * therefore the thing to poll while waiting for an install to land.
+   */
+  async serviceHost(id: Uuid): Promise<ServiceHost> {
+    return this.request("GET", `/api/admin/hosts/${encodeURIComponent(id)}`)
+  }
+
+  /**
    * Edits one, including the defaults every tenant without a grant resolves
    * to. Raising `defaults.storage_bytes` is a grant raise for all of them at
    * once and is refused if the filesystem cannot hold the result.

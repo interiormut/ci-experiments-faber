@@ -4,6 +4,7 @@ import * as React from "react"
 
 import {
   FaberError,
+  faber,
   type CreateServiceHostRequest,
   type CreateServiceImageRequest,
   type GrantRequest,
@@ -23,6 +24,7 @@ import {
   toInteger,
 } from "@/lib/hosts/limits"
 import { AnimatedField } from "@/components/ui/animated-field"
+import { AgentInstall } from "@/components/hosts/agent-install"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -31,6 +33,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/responsive-dialog"
+import { FlowDialog, FlowDialogHeading } from "@/components/ui/flow-dialog"
 
 /**
  * The four ceilings, as four fields.
@@ -143,13 +146,18 @@ const EMPTY_HOST: HostForm = {
  * Registering or editing a machine faber operates.
  *
  * The form asks for nothing about transport or exec mode: a service host is
- * faber's own machine talking to its own docker socket, which is what makes
- * writing a cgroup slice and a filesystem quota possible in the first place.
+ * reached through a daemon installed on it, talking to that machine's own
+ * docker socket, and that is what makes writing a cgroup slice and a
+ * filesystem quota possible in the first place.
  *
- * Nothing here prepares the machine. The controllers, the tenant slice, and a
- * data root on a filesystem with project quotas all have to exist beforehand —
- * their absence shows up later as a launch that fails confusingly, so the
- * hints say so at the point where somebody is typing the path.
+ * The row is half the registration. Saving it does not make the machine
+ * reachable — the daemon does, and installing it is the step after this one.
+ *
+ * Nothing here prepares the machine either. The controllers, the tenant
+ * slice, and a data root on a filesystem with project quotas all have to
+ * exist beforehand — their absence shows up later as a launch that fails
+ * confusingly, so the hints say so at the point where somebody is typing the
+ * path.
  */
 export function ServiceHostFormDialog({
   open,
@@ -229,7 +237,7 @@ export function ServiceHostFormDialog({
             value={form.docker_endpoint}
             onChange={(v) => setForm((f) => ({ ...f, docker_endpoint: v }))}
             placeholder="unix:///var/run/docker.sock"
-            hint="Named explicitly — faber never falls back to the process's own docker context."
+            hint="The socket on that machine's own filesystem, reached over its daemon. Named explicitly — faber never falls back to an ambient docker context."
             required
           />
 
@@ -274,6 +282,143 @@ export function ServiceHostFormDialog({
         </form>
       </DialogContent>
     </Dialog>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// The daemon
+// ---------------------------------------------------------------------------
+
+/**
+ * Installing the daemon that makes a service host reachable.
+ *
+ * The same flow a user gets for a machine of their own, with one difference
+ * that is the reason this is an administrator's dialog: the command installs
+ * a *system* service running as root. That authority is not a convenience —
+ * it is the only reason faber can write a cgroup limit or a project quota on
+ * the machine, and it is fixed at install because the daemon has no way to
+ * ask for more later.
+ *
+ * Re-entered whenever the operator asks, not only after creating a host: a
+ * machine that was rebuilt needs a new daemon, and issuing a command is how
+ * that starts.
+ */
+export function ServiceHostAgentDialog({
+  open,
+  onOpenChange,
+  host,
+  fresh = false,
+  onConnected,
+  onRevoke,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  host: ServiceHost | null
+  /**
+   * Whether the host was just created, rather than picked off the list.
+   *
+   * It decides whether a command is issued on arrival. Issuing supersedes the
+   * previous one, so doing it unasked would kill a command the operator may
+   * be halfway through running on the machine — and the failure would surface
+   * over there. A host that has just been created has no previous command to
+   * retire, so there is nothing to protect and one less click to make.
+   */
+  fresh?: boolean
+  onConnected: (id: Uuid) => void
+  onRevoke: (id: Uuid) => Promise<void>
+}) {
+  const connected = !!host?.agent.connected
+  const [view, setView] = React.useState<"install" | "present">(
+    connected ? "present" : "install",
+  )
+  const [revoking, setRevoking] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+
+  const hostId = host?.id ?? null
+  // Stable, so the install view's poll keeps its interval instead of
+  // restarting it on every parent render.
+  const issue = React.useCallback(async () => {
+    if (!hostId) throw new FaberError(0, "no host selected")
+    return faber.enrollServiceHostAgent(hostId)
+  }, [hostId])
+  const status = React.useCallback(async () => {
+    if (!hostId) throw new FaberError(0, "no host selected")
+    return (await faber.serviceHost(hostId)).agent
+  }, [hostId])
+  const handleConnected = React.useCallback(() => {
+    setView("present")
+    if (hostId) onConnected(hostId)
+  }, [hostId, onConnected])
+
+  if (!host) return null
+
+  const revoke = async () => {
+    setRevoking(true)
+    setError(null)
+    try {
+      await onRevoke(host.id)
+      setView("install")
+    } catch (err) {
+      setError(
+        err instanceof FaberError ? err.message : "failed to revoke the credential",
+      )
+    } finally {
+      setRevoking(false)
+    }
+  }
+
+  return (
+    <FlowDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      view={view}
+      title={`Daemon on ${host.name}`}
+    >
+      {view === "present" ? (
+        <div className="flex flex-col gap-4">
+          <FlowDialogHeading
+            title={`${host.name} is connected`}
+            description="The daemon dialed in and faber is holding the connection. If the machine reboots or the network drops it reconnects on its own — faber never dials this host."
+          />
+
+          <p className="rounded-lg border border-border bg-muted/40 px-3 py-2.5 text-xs text-muted-foreground">
+            This daemon runs as root on a machine several people share. Its
+            credential is worth what root there is worth: whoever holds it can
+            displace the running daemon and take over this host&apos;s launches,
+            limits included. Revoke it if the machine is being rebuilt or the
+            token may have leaked — tenants, their reservations, and their
+            directories are all left alone.
+          </p>
+
+          {error ? <p className="text-sm text-destructive">{error}</p> : null}
+
+          <DialogFooter className="sm:justify-between">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => void revoke()}
+              loading={revoking}
+              loadingText="Revoking"
+            >
+              Revoke credential
+            </Button>
+            <Button type="button" onClick={() => onOpenChange(false)}>
+              Done
+            </Button>
+          </DialogFooter>
+        </div>
+      ) : (
+        <AgentInstall
+          hostName={host.name}
+          description="Run this on the machine, as root. It installs a system service — that authority is what lets faber write each tenant's limits there."
+          open={open}
+          reentry={!fresh}
+          issue={issue}
+          status={status}
+          onConnected={handleConnected}
+        />
+      )}
+    </FlowDialog>
   )
 }
 

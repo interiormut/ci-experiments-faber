@@ -88,6 +88,35 @@ export function useServiceHosts() {
   }, [])
 
   /**
+   * Re-reads one host into the list.
+   *
+   * What a daemon connecting changes: `agent.connected` flips, and the
+   * storage section appears, because faber could not read the filesystem
+   * until there was something on the machine to ask.
+   */
+  const reloadHost = React.useCallback(async (id: Uuid): Promise<ServiceHost> => {
+    const fresh = await faber.serviceHost(id)
+    setHosts((prev) => prev.map((host) => (host.id === id ? fresh : host)))
+    return fresh
+  }, [])
+
+  /**
+   * Revokes a host's daemon credential and drops its connection.
+   *
+   * Not the same as draining: draining stops new launches and leaves the
+   * machine reachable, while this leaves the host registered and unreachable
+   * until a daemon enrols again. For a machine being rebuilt, or a token
+   * believed stolen.
+   */
+  const revokeAgent = React.useCallback(
+    async (id: Uuid): Promise<void> => {
+      await faber.revokeServiceHostAgent(id)
+      await reloadHost(id)
+    },
+    [reloadHost],
+  )
+
+  /**
    * Reloads the hosts alongside one host's tenants.
    *
    * Both halves, because a storage grant moves what the host has committed as
@@ -152,6 +181,8 @@ export function useServiceHosts() {
     addHost,
     editHost,
     removeHost,
+    reloadHost,
+    revokeAgent,
     grant,
     revoke,
     addImage,
