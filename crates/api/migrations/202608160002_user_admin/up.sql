@@ -1,0 +1,19 @@
+-- Who may operate the machines faber provides.
+--
+-- A nullable timestamp rather than a boolean, matching the other five state
+-- markers in this schema (`disabled_at`, `revoked_at`, `unregistered_at`,
+-- `released_at`, `retired_at`): NULL is "not an administrator", and a set
+-- value additionally answers "since when", which is worth having for free on
+-- the one flag in the system that widens what a session can reach.
+--
+-- No route writes this column, deliberately. A self-service path to granting
+-- it would be a privilege-escalation surface serving nobody, and the first
+-- administrator has to be made out of band regardless:
+--
+--   UPDATE users SET admin_since = now()
+--   WHERE identity_id = '<surge identity uuid>';
+--
+-- and, to take it away again:
+--
+--   UPDATE users SET admin_since = NULL WHERE id = '<faber user uuid>';
+ALTER TABLE users ADD COLUMN admin_since TIMESTAMPTZ;

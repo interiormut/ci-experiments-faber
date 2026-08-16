@@ -106,14 +106,14 @@ struct MeResponse {
     admin: bool,
 }
 
-async fn me(State(state): State<AppState>, AuthUser(user): AuthUser) -> Json<MeResponse> {
-    Json(me_response(&user, crate::auth::is_admin(&state, &user)))
+async fn me(State(_state): State<AppState>, AuthUser(user): AuthUser) -> Json<MeResponse> {
+    Json(me_response(&user))
 }
 
-fn me_response(user: &User, admin: bool) -> MeResponse {
+fn me_response(user: &User) -> MeResponse {
     MeResponse {
         id: user.id.to_string(),
-        admin,
+        admin: user.is_admin(),
     }
 }
 

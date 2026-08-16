@@ -131,24 +131,20 @@ impl FromRequestParts<AppState> for AuthUser {
     }
 }
 
-/// Whether this user may operate the machines faber provides.
-///
-/// A deployment fact, read from configuration — see `Config::admin_identities`
-/// for why it is not a column. The one place the question is answered, so that
-/// "who is an administrator" is a single grep rather than a predicate spread
-/// across handlers.
-pub fn is_admin(state: &AppState, user: &User) -> bool {
-    state.config.admin_identities.contains(&user.identity_id)
-}
-
 /// An authenticated user who administers faber's own hosts.
+///
+/// Read from `users.admin_since`, which no route writes: the flag is set by an
+/// operator with a SQL statement, spelled out in the migration that adds the
+/// column. That is the whole of the update path on purpose — a route able to
+/// grant this would be a privilege-escalation surface, and the first
+/// administrator has to be made out of band whatever else exists.
 ///
 /// Refuses rather than hides. Everywhere else an unreachable row is a 404,
 /// because whether someone else's session exists is itself information — but
 /// there is nothing to conceal here: the administrative routes are the same
-/// for every deployment, and a signed-in operator whose identity is missing
-/// from the allowlist is far better served by "you are not an administrator"
-/// than by a 404 that reads as a broken build.
+/// for every deployment, and a signed-in operator who has not been given the
+/// flag is far better served by "you are not an administrator" than by a 404
+/// that reads as a broken build.
 pub struct AdminUser(pub User);
 
 impl FromRequestParts<AppState> for AdminUser {
@@ -159,7 +155,7 @@ impl FromRequestParts<AppState> for AdminUser {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let AuthUser(user) = AuthUser::from_request_parts(parts, state).await?;
-        if !is_admin(state, &user) {
+        if !user.is_admin() {
             tracing::warn!(user = %user.id, "refused an administrative request");
             return Err(AppError::Forbidden(
                 "this account does not administer faber's hosts".to_owned(),
