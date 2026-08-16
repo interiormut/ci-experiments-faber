@@ -7,6 +7,7 @@ import {
   type CreateModelRequest,
   type CreatedSession,
   type FaberConfig,
+  type Me,
   type ModelConfig,
   type Session,
   type UpdateModelRequest,
@@ -16,6 +17,13 @@ import { AppSidebar, sessionNavKey } from "@/components/shell/app-sidebar"
 
 type AppShellContextValue = {
   config: FaberConfig | null
+  /**
+   * The signed-in user, or `null` until it arrives. Carries the one bit that
+   * decides whether faber's own machines are on screen at all — which is a
+   * question about rendering, never about permission: every administrative
+   * route checks it again for itself.
+   */
+  me: Me | null
   sessions: Session[]
   sessionsLoading: boolean
   models: ModelConfig[]
@@ -51,6 +59,7 @@ const NAV_KEY_BY_PATH: Record<string, string> = {
   "/credentials": "credentials",
   "/hosts": "hosts",
   "/environments": "environments",
+  "/admin": "admin",
 }
 
 /**
@@ -73,6 +82,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [models, setModels] = React.useState<ModelConfig[]>([])
   const [modelsLoaded, setModelsLoaded] = React.useState(false)
   const [config, setConfig] = React.useState<FaberConfig | null>(null)
+  const [me, setMe] = React.useState<Me | null>(null)
   const [creatingSession, setCreatingSession] = React.useState(false)
   const [createError, setCreateError] = React.useState<string | null>(null)
 
@@ -113,6 +123,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       .config()
       .then((value) => {
         if (!cancelled) setConfig(value)
+      })
+
+    void faber
+      .me()
+      .then((value) => {
+        if (!cancelled) setMe(value)
+      })
+      .catch(() => {
+        // Signed out, or the API is unreachable. Either way the nav stays as
+        // it is for a signed-out visitor rather than guessing at an answer.
       })
 
     return () => {
@@ -176,7 +196,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const value = React.useMemo<AppShellContextValue>(
     () => ({
-       config,
+      config,
+      me,
       sessions,
       sessionsLoading,
       models,
@@ -195,6 +216,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }),
     [
       config,
+      me,
       sessions,
       sessionsLoading,
       models,
@@ -223,6 +245,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           onSelectCredentials={() => navigate({ to: "/credentials" })}
           onSelectHosts={() => navigate({ to: "/hosts" })}
           onSelectEnvironments={() => navigate({ to: "/environments" })}
+          admin={me?.admin ?? false}
+          onSelectAdmin={() => navigate({ to: "/admin" })}
           onCreateSession={() => {
             void createSession().then((created) => {
               if (created) navigate({ to: "/session/$sessionId", params: { sessionId: created.id } })

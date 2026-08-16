@@ -5,11 +5,14 @@ import type {
   CreateHostRequest,
   CreateImageRequest,
   CreateModelRequest,
+  CreateServiceHostRequest,
+  CreateServiceImageRequest,
   CreateSessionRequest,
   CreateThreadRequest,
   CreatedSession,
   Credential,
   FaberConfig,
+  GrantRequest,
   Host,
   HostContainer,
   HostProbe,
@@ -20,16 +23,20 @@ import type {
   Me,
   ModelConfig,
   RecordProbeRequest,
+  ResolvedQuota,
   Run,
   EnvironmentCandidate,
   SendMessageRequest,
   SendMessageResponse,
+  ServiceHost,
+  ServiceImage,
   SessionEnvironment,
   Session,
   SpawnContainerRequest,
   SpineEntry,
   StreamEvent,
   StreamQuery,
+  Tenant,
   Thread,
   TranscriptEvent,
   TranscriptQuery,
@@ -37,6 +44,8 @@ import type {
   UpdateHostRequest,
   UpdateImageRequest,
   UpdateModelRequest,
+  UpdateServiceHostRequest,
+  UpdateServiceImageRequest,
   UpdateSessionRequest,
   Uuid,
   Workspace,
@@ -291,6 +300,117 @@ export class FaberClient {
 
   async deleteImage(id: Uuid): Promise<void> {
     await this.request("DELETE", `/api/images/${encodeURIComponent(id)}`)
+  }
+
+  // -------------------------------------------------------------------------
+  // Administration
+  // -------------------------------------------------------------------------
+  //
+  // Everything below answers a question no ordinary user can ask, and every
+  // one of these routes refuses with a 403 unless the caller administers
+  // faber's own machines. `me().admin` says whether to render the surface at
+  // all; it decides what is shown and never what is allowed.
+
+  /** Every service host, drained ones included. */
+  async listServiceHosts(): Promise<ServiceHost[]> {
+    return this.request("GET", "/api/admin/hosts")
+  }
+
+  /**
+   * Registers a machine faber operates.
+   *
+   * The machine has to have been prepared first — cgroup v2 with the
+   * controllers delegated down to faber's tenant slice, docker on the systemd
+   * cgroup driver, and `user_data_root` on a filesystem with project quotas.
+   * None of that is something faber does at runtime, and its absence surfaces
+   * as a confusing launch failure rather than as a refusal here.
+   */
+  async createServiceHost(body: CreateServiceHostRequest): Promise<ServiceHost> {
+    return this.request("POST", "/api/admin/hosts", { body })
+  }
+
+  /**
+   * Edits one, including the defaults every tenant without a grant resolves
+   * to. Raising `defaults.storage_bytes` is a grant raise for all of them at
+   * once and is refused if the filesystem cannot hold the result.
+   */
+  async updateServiceHost(
+    id: Uuid,
+    patch: UpdateServiceHostRequest,
+  ): Promise<ServiceHost> {
+    return this.request("PATCH", `/api/admin/hosts/${encodeURIComponent(id)}`, {
+      body: patch,
+    })
+  }
+
+  /**
+   * Drops the registration. Refused while anyone is materialised on the host —
+   * `updateServiceHost(id, { disabled: true })` is the reversible alternative
+   * and the one an operator usually wants.
+   */
+  async deleteServiceHost(id: Uuid): Promise<void> {
+    await this.request("DELETE", `/api/admin/hosts/${encodeURIComponent(id)}`)
+  }
+
+  /** Everyone materialised on a host, with their quota and live usage. */
+  async listTenants(hostId: Uuid): Promise<Tenant[]> {
+    return this.request(
+      "GET",
+      `/api/admin/hosts/${encodeURIComponent(hostId)}/users`,
+    )
+  }
+
+  /**
+   * Gives one user their own ceiling, replacing whatever they had.
+   *
+   * A whole-row replacement, which is why it is a PUT: the grant *is* the
+   * resolved quota, so a field left out grants unlimited rather than leaving
+   * the host default in place.
+   */
+  async grantQuota(
+    hostId: Uuid,
+    userId: Uuid,
+    body: GrantRequest,
+  ): Promise<ResolvedQuota> {
+    return this.request(
+      "PUT",
+      `/api/admin/hosts/${encodeURIComponent(hostId)}/users/${encodeURIComponent(userId)}/quota`,
+      { body },
+    )
+  }
+
+  /** Retires the grant, dropping the user back to the host's defaults. */
+  async revokeQuota(hostId: Uuid, userId: Uuid): Promise<ResolvedQuota> {
+    return this.request(
+      "DELETE",
+      `/api/admin/hosts/${encodeURIComponent(hostId)}/users/${encodeURIComponent(userId)}/quota`,
+    )
+  }
+
+  /**
+   * Templates faber provides. A service host runs these and nothing else, so a
+   * shared host with none is a machine nobody can spawn on.
+   */
+  async listServiceImages(): Promise<ServiceImage[]> {
+    return this.request("GET", "/api/admin/images")
+  }
+
+  async createServiceImage(body: CreateServiceImageRequest): Promise<ServiceImage> {
+    return this.request("POST", "/api/admin/images", { body })
+  }
+
+  async updateServiceImage(
+    id: Uuid,
+    patch: UpdateServiceImageRequest,
+  ): Promise<ServiceImage> {
+    return this.request("PATCH", `/api/admin/images/${encodeURIComponent(id)}`, {
+      body: patch,
+    })
+  }
+
+  /** Deletes the template. Containers spawned from it keep running. */
+  async deleteServiceImage(id: Uuid): Promise<void> {
+    await this.request("DELETE", `/api/admin/images/${encodeURIComponent(id)}`)
   }
 
   // -------------------------------------------------------------------------

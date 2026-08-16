@@ -35,6 +35,12 @@ export type JsonValue =
  */
 export interface Me {
   id: Uuid
+  /**
+   * Whether this caller operates faber's own machines. Decides what is
+   * *rendered* and nothing else — every `/api/admin` route checks it again
+   * server-side, so hiding the surface is a courtesy rather than the gate.
+   */
+  admin: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -507,4 +513,143 @@ export interface SessionEnvironment {
    * wrong.
    */
   removed_at: EpochSeconds | null
+}
+
+// ---------------------------------------------------------------------------
+// Administration
+// ---------------------------------------------------------------------------
+
+/**
+ * Four per-user ceilings on a shared machine. `null` is unlimited in every one
+ * of them — never "inherit".
+ *
+ * The same shape carries a host's defaults and one user's grant, because they
+ * are the same four numbers at two scopes. They are never merged: a grant
+ * replaces the defaults as a unit, so a `null` in a grant means unlimited and
+ * a client changing one number has to send the other three back.
+ */
+export interface Limits {
+  /** 1000 is one core. A hard ceiling — an idle machine lends nobody more. */
+  cpu_millis: number | null
+  memory_bytes: number | null
+  /** The one limit faber does not overcommit; raising it is checked against
+   *  what the filesystem actually holds. */
+  storage_bytes: number | null
+  /** Registered containers, running or not — a stopped one still holds the
+   *  directory its storage was reserved for. */
+  container_max: number | null
+}
+
+/** A machine faber operates rather than a user. */
+export interface ServiceHost {
+  id: Uuid
+  name: string
+  docker_endpoint: string | null
+  user_data_root: string | null
+  created_at: Timestamp
+  /** Set means draining: no new launches, whatever is running left alone. */
+  disabled_at: Timestamp | null
+  defaults: Limits
+  /** Users materialised here — holding a directory and a storage reservation,
+   *  not everyone who could arrive. */
+  tenants: number
+  /** `null` when faber cannot read the filesystem, which on a real service
+   *  host means the API is not running on the machine it operates. */
+  storage: ServiceHostStorage | null
+}
+
+export interface ServiceHostStorage {
+  total_bytes: number
+  available_bytes: number
+  /** Capacity less the reserve faber keeps free: the most that may be promised
+   *  at once. */
+  ceiling_bytes: number
+  /** Promised to materialised tenants, used or not. */
+  committed_bytes: number
+}
+
+export interface CreateServiceHostRequest {
+  name: string
+  /** `unix://` or `tcp://`. Explicit always — faber never falls back to the
+   *  process's ambient docker context. */
+  docker_endpoint: string
+  /** Absolute. Parent of the per-user directories whose project quotas carry
+   *  the storage limit. */
+  user_data_root: string
+  defaults?: Limits
+}
+
+export interface UpdateServiceHostRequest {
+  name?: string
+  docker_endpoint?: string
+  /** Refused once the host has tenants: their data lives under the current
+   *  root and faber does not move it. */
+  user_data_root?: string
+  /** Replaces all four at once. Omit to leave them alone. */
+  defaults?: Limits
+  /** `true` drains: no new launches, nothing already running is touched. */
+  disabled?: boolean
+}
+
+/** One user on one host: what they hold, what they are allowed, what they use. */
+export interface Tenant {
+  user_id: Uuid
+  /** Their stable 32-bit id — the project id carrying their storage quota and
+   *  the uid their containers run as. */
+  subject_id: number | null
+  materialised_at: Timestamp
+  containers: number
+  quota: ResolvedQuota
+  /** Read from the machine per request, stored nowhere. `null` means the
+   *  machine did not answer, not that usage is zero. */
+  usage: TenantUsage
+}
+
+export interface ResolvedQuota extends Limits {
+  /** Whether a grant supplied these rather than the host's defaults. */
+  granted: boolean
+  /** When a temporary grant lapses. Honoured the instant it passes, so it can
+   *  shrink a limit underneath work already running. */
+  expires_at: Timestamp | null
+  note: string | null
+}
+
+export interface TenantUsage {
+  memory_bytes: number | null
+  pids: number | null
+  storage_bytes: number | null
+}
+
+/**
+ * A grant, sent whole. Every field is the entire answer for that resource:
+ * omitting one grants unlimited rather than leaving the default in place.
+ */
+export interface GrantRequest extends Limits {
+  /** Omit for a standing grant. */
+  expires_at?: Timestamp | null
+  note?: string | null
+}
+
+/** A template faber provides. Service hosts run these and nothing else. */
+export interface ServiceImage {
+  id: Uuid
+  name: string
+  reference: string
+  default_mounts: JsonValue | null
+  default_root_path: string
+  created_at: Timestamp
+}
+
+export interface CreateServiceImageRequest {
+  name: string
+  reference: string
+  default_mounts?: JsonValue | null
+  default_root_path: string
+}
+
+export interface UpdateServiceImageRequest {
+  name?: string
+  reference?: string
+  default_mounts?: JsonValue | null
+  default_root_path?: string
 }

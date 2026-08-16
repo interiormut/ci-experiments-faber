@@ -11,6 +11,7 @@ import {
   Pencil,
   Plus,
   Server,
+  ShieldCheck,
   Trash2,
 } from "lucide-react"
 import { motion } from "framer-motion"
@@ -64,6 +65,13 @@ export type AppSidebarProps = {
   onSelectCredentials: () => void
   onSelectHosts: () => void
   onSelectEnvironments: () => void
+  /**
+   * Whether to offer faber's own machines. Purely what is rendered — the
+   * routes behind it refuse on their own, so a stale `false` hides a page and
+   * a stale `true` shows one that answers 403.
+   */
+  admin?: boolean
+  onSelectAdmin?: () => void
   onCreateSession: () => void
   onRenameSession: (id: Uuid, title: string) => Promise<Session>
   onDeleteSession: (id: Uuid) => Promise<void>
@@ -83,6 +91,8 @@ export function AppSidebar({
   onSelectCredentials,
   onSelectHosts,
   onSelectEnvironments,
+  admin = false,
+  onSelectAdmin,
   onCreateSession,
   onRenameSession,
   onDeleteSession,
@@ -143,6 +153,16 @@ export function AppSidebar({
                   active: activeNavKey === "environments",
                   onClick: onSelectEnvironments,
                 },
+                ...(admin && onSelectAdmin
+                  ? [
+                      {
+                        label: "Service hosts",
+                        icon: ShieldCheck,
+                        active: activeNavKey === "admin",
+                        onClick: onSelectAdmin,
+                      },
+                    ]
+                  : []),
               ],
             },
           ]}
