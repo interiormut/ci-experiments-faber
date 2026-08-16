@@ -12,6 +12,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Trash2,
+  UserMinus,
 } from "lucide-react"
 
 import { FaberError, type ServiceHost, type ServiceImage, type Tenant } from "@/lib/api"
@@ -72,6 +73,7 @@ function AdminPage() {
     revokeAgent,
     grant,
     revoke,
+    release,
     addImage,
     editImage,
     removeImage,
@@ -86,6 +88,12 @@ function AdminPage() {
   const [grantTarget, setGrantTarget] = React.useState<
     { host: ServiceHost; tenant: Tenant } | null
   >(null)
+
+  const [releaseTarget, setReleaseTarget] = React.useState<
+    { host: ServiceHost; tenant: Tenant } | null
+  >(null)
+  const [releasing, setReleasing] = React.useState(false)
+  const [releaseError, setReleaseError] = React.useState<string | null>(null)
 
   const [agentTarget, setAgentTarget] = React.useState<
     { host: ServiceHost; fresh: boolean } | null
@@ -138,6 +146,25 @@ function AdminPage() {
       )
     } finally {
       setDeleting(false)
+    }
+  }
+
+  const handleRelease = async () => {
+    if (!releaseTarget) return
+    setReleasing(true)
+    setReleaseError(null)
+    try {
+      await release(releaseTarget.host.id, releaseTarget.tenant.user_id)
+      setReleaseTarget(null)
+    } catch (err) {
+      // The two refusals here are both actionable and both invisible
+      // otherwise: containers still registered, and a machine that is not
+      // answering. Neither is something to retry blindly.
+      setReleaseError(
+        err instanceof FaberError ? err.message : "could not release this tenant",
+      )
+    } finally {
+      setReleasing(false)
     }
   }
 
@@ -211,6 +238,7 @@ function AdminPage() {
                     })
                   }
                   onGrant={(tenant) => setGrantTarget({ host, tenant })}
+                  onRelease={(tenant) => setReleaseTarget({ host, tenant })}
                 />
               ))}
             </ul>
@@ -375,6 +403,47 @@ function AdminPage() {
       </AlertDialog>
 
       <AlertDialog
+        open={!!releaseTarget}
+        onOpenChange={(open) => {
+          if (open) return
+          setReleaseTarget(null)
+          setReleaseError(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Release tenant {releaseTarget?.tenant.subject_id ?? "—"} from{" "}
+              {releaseTarget?.host.name}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This deletes their directory on that machine — everything they
+              have there, right now. There is no retention window and no export,
+              and nothing brings it back. What it returns is their storage
+              reservation, which the host can then promise to somebody else.
+              Their limits here survive, in case they ever come back.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {releaseError ? (
+            <p className="text-sm text-destructive">{releaseError}</p>
+          ) : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={releasing}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault()
+                void handleRelease()
+              }}
+              disabled={releasing}
+              className="bg-destructive text-white hover:bg-destructive/90"
+            >
+              {releasing ? "Releasing…" : "Delete their data"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
         open={!!deleteImageTarget}
         onOpenChange={(open) => !open && setDeleteImageTarget(null)}
       >
@@ -439,6 +508,7 @@ function HostCard({
   onDelete,
   onToggleDisabled,
   onGrant,
+  onRelease,
 }: {
   host: ServiceHost
   tenants: Tenant[] | undefined
@@ -448,6 +518,7 @@ function HostCard({
   onDelete: () => void
   onToggleDisabled: () => void
   onGrant: (tenant: Tenant) => void
+  onRelease: (tenant: Tenant) => void
 }) {
   const [open, setOpen] = React.useState(false)
   const [loading, setLoading] = React.useState(false)
@@ -586,6 +657,7 @@ function HostCard({
                   key={tenant.user_id}
                   tenant={tenant}
                   onGrant={() => onGrant(tenant)}
+                  onRelease={() => onRelease(tenant)}
                 />
               ))}
             </ul>
@@ -596,7 +668,15 @@ function HostCard({
   )
 }
 
-function TenantRow({ tenant, onGrant }: { tenant: Tenant; onGrant: () => void }) {
+function TenantRow({
+  tenant,
+  onGrant,
+  onRelease,
+}: {
+  tenant: Tenant
+  onGrant: () => void
+  onRelease: () => void
+}) {
   return (
     <li className="flex items-start justify-between gap-3">
       <div className="min-w-0 flex-1">
@@ -625,10 +705,21 @@ function TenantRow({ tenant, onGrant }: { tenant: Tenant; onGrant: () => void })
           </p>
         ) : null}
       </div>
-      <Button size="sm" variant="ghost" onClick={onGrant}>
-        <SlidersHorizontal className="h-4 w-4" />
-        Limits
-      </Button>
+      <div className="flex shrink-0 items-center gap-1">
+        <Button size="sm" variant="ghost" onClick={onGrant}>
+          <SlidersHorizontal className="h-4 w-4" />
+          Limits
+        </Button>
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          aria-label={`Release ${tenant.subject_id ?? "this tenant"}`}
+          title="Release"
+          onClick={onRelease}
+        >
+          <UserMinus className="h-4 w-4" />
+        </Button>
+      </div>
     </li>
   )
 }

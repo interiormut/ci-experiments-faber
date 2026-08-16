@@ -16,8 +16,14 @@ import { faber, type HostUsage, type Uuid } from "@/lib/api"
  * A failure is silent and leaves `usage` null. This is a supporting number
  * next to the grant, not the page: an error banner because a counter was
  * unreadable would be louder than what it says.
+ *
+ * `nonce` is how a caller says the machine has changed under it. There is no
+ * polling here on purpose — these numbers move when the user does something,
+ * and the one thing that moves `materialised` is the user giving up their
+ * footprint, which is exactly when the stale answer would still offer them a
+ * button to do it again.
  */
-export function useHostUsage(hostId: Uuid | null, enabled: boolean) {
+export function useHostUsage(hostId: Uuid | null, enabled: boolean, nonce = 0) {
   const [usage, setUsage] = React.useState<HostUsage | null>(null)
 
   React.useEffect(() => {
@@ -34,7 +40,7 @@ export function useHostUsage(hostId: Uuid | null, enabled: boolean) {
     return () => {
       cancelled = true
     }
-  }, [hostId, enabled])
+  }, [hostId, enabled, nonce])
 
   return usage
 }

@@ -304,6 +304,23 @@ export class FaberClient {
     return this.request("GET", `/api/hosts/${encodeURIComponent(hostId)}/usage`)
   }
 
+  /**
+   * Gives up the caller's own footprint on a service host, **destroying their
+   * work on it**.
+   *
+   * There is no retention window and no export: the storage quota goes to zero
+   * and the directory is deleted. Refused while they still have containers
+   * registered there, and refused when the machine is not reachable — the
+   * space is only given back once it has actually been given back.
+   *
+   * No user id anywhere, by design. The only materialisation reachable here is
+   * the caller's own; an administrator releasing somebody else goes through
+   * `releaseTenant`.
+   */
+  async releaseTenancy(hostId: Uuid): Promise<void> {
+    await this.request("DELETE", `/api/hosts/${encodeURIComponent(hostId)}/tenancy`)
+  }
+
   /** The host's observation log, newest first. */
   async listProbes(hostId: Uuid, query: ListProbesQuery = {}): Promise<HostProbe[]> {
     return this.request("GET", `/api/hosts/${encodeURIComponent(hostId)}/probes`, {
@@ -470,6 +487,26 @@ export class FaberClient {
     return this.request(
       "DELETE",
       `/api/admin/hosts/${encodeURIComponent(hostId)}/users/${encodeURIComponent(userId)}/quota`,
+    )
+  }
+
+  /**
+   * Releases one user's materialisation on a host, **destroying their data on
+   * it**.
+   *
+   * Immediate and total: the project quota goes to zero and their directory is
+   * removed, so there is nothing to restore afterwards. Refused while they
+   * still hold container registrations, and refused when the host's daemon is
+   * offline — the reservation is only returned once the space is.
+   *
+   * Any grant they hold survives. A grant is a decision about a person with
+   * its own lifecycle, so if they ever materialise here again it is still the
+   * ceiling they get; `revokeQuota` is how it is taken away.
+   */
+  async releaseTenant(hostId: Uuid, userId: Uuid): Promise<void> {
+    await this.request(
+      "DELETE",
+      `/api/admin/hosts/${encodeURIComponent(hostId)}/users/${encodeURIComponent(userId)}`,
     )
   }
 

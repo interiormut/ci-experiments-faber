@@ -4,6 +4,7 @@ import {
   Box,
   ChevronDown,
   Container,
+  Eraser,
   Layers,
   Pencil,
   Plus,
@@ -14,7 +15,7 @@ import {
   Users,
 } from "lucide-react"
 
-import { type Host, type HostContainer, type Image } from "@/lib/api"
+import { FaberError, type Host, type HostContainer, type Image } from "@/lib/api"
 import { useHosts } from "@/lib/hosts/use-hosts"
 import { useImages } from "@/lib/hosts/use-images"
 import { useHostUsage } from "@/lib/hosts/use-host-usage"
@@ -77,6 +78,7 @@ function EnvironmentsPage() {
     spawnContainer,
     editContainer,
     unregisterContainer,
+    releaseTenancy,
   } = useHosts()
   const images = useImages()
 
@@ -90,6 +92,14 @@ function EnvironmentsPage() {
     { host: Host; container: HostContainer; destroy: boolean } | null
   >(null)
   const [unregistering, setUnregistering] = React.useState(false)
+
+  const [releaseTarget, setReleaseTarget] = React.useState<Host | null>(null)
+  const [releasing, setReleasing] = React.useState(false)
+  const [releaseError, setReleaseError] = React.useState<string | null>(null)
+  // Bumped on a successful release so every row re-reads the machine. The
+  // host list is reloaded too, but `materialised` comes from the usage route
+  // and would otherwise keep offering a button for a directory that is gone.
+  const [releaseNonce, setReleaseNonce] = React.useState(0)
 
   const openAdd = (host: Host) => {
     setDialogHost(host)
@@ -125,6 +135,28 @@ function EnvironmentsPage() {
       // The dialog stays open with the target set so the user can retry.
     } finally {
       setUnregistering(false)
+    }
+  }
+
+  const handleRelease = async () => {
+    if (!releaseTarget) return
+    setReleasing(true)
+    setReleaseError(null)
+    try {
+      await releaseTenancy(releaseTarget.id)
+      setReleaseNonce((n) => n + 1)
+      setReleaseTarget(null)
+    } catch (err) {
+      // Both refusals are the user's to act on — containers still registered
+      // here, or a machine that is not answering right now — and neither is
+      // visible unless it is said.
+      setReleaseError(
+        err instanceof FaberError
+          ? err.message
+          : "could not give back your space on this machine",
+      )
+    } finally {
+      setReleasing(false)
     }
   }
 
@@ -165,6 +197,8 @@ function EnvironmentsPage() {
                   onUnregister={(container, destroy) =>
                     setUnregisterTarget({ host, container, destroy })
                   }
+                  onRelease={() => setReleaseTarget(host)}
+                  releaseNonce={releaseNonce}
                 />
               ))}
             </ul>
@@ -196,6 +230,48 @@ function EnvironmentsPage() {
         onCreate={addContainer}
         onUpdate={editContainer}
       />
+
+      <AlertDialog
+        open={!!releaseTarget}
+        onOpenChange={(open) => {
+          if (open) return
+          setReleaseTarget(null)
+          setReleaseError(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Delete your data on {releaseTarget?.name}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Your directory on that machine is removed — work and scratch
+              both, right now. Nothing is archived and nothing can bring it
+              back, so take anything you want off it first. Delete your
+              containers there before doing this; faber refuses while any of
+              them is still registered. Nothing else about your account
+              changes, and you can start again whenever you like — though
+              faber picks the machine afresh, so it may not be this one.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {releaseError ? (
+            <p className="text-sm text-destructive">{releaseError}</p>
+          ) : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={releasing}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault()
+                void handleRelease()
+              }}
+              disabled={releasing}
+              className="bg-destructive text-white hover:bg-destructive/90"
+            >
+              {releasing ? "Deleting…" : "Delete my data"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog
         open={!!unregisterTarget}
@@ -250,16 +326,20 @@ function HostEnvironments({
   onCreate,
   onEdit,
   onUnregister,
+  onRelease,
+  releaseNonce,
 }: {
   host: Host
   onAdd: () => void
   onCreate: () => void
   onEdit: (container: HostContainer) => void
   onUnregister: (container: HostContainer, destroy: boolean) => void
+  onRelease: () => void
+  releaseNonce: number
 }) {
   const disabled = !!host.disabled_at
   const tools = toolList(host.last_probe)
-  const usage = useHostUsage(host.id, host.service)
+  const usage = useHostUsage(host.id, host.service, releaseNonce)
 
   return (
     <li className="rounded-xl border border-border bg-card">
@@ -364,6 +444,23 @@ function HostEnvironments({
             <p className="mt-2 truncate font-mono text-[11px] text-muted-foreground">
               scratch: {usage.scratch_path}
             </p>
+          ) : null}
+
+          {/* Only once there is something to give back. Before the first
+              launch there is no directory on the machine, and offering to
+              delete one would be offering to delete nothing. */}
+          {usage?.materialised ? (
+            <div className="mt-3 border-t border-border pt-3">
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-auto px-0 text-xs text-muted-foreground hover:text-destructive"
+                onClick={onRelease}
+              >
+                <Eraser className="h-3.5 w-3.5" />
+                Give back my space on this machine
+              </Button>
+            </div>
           ) : null}
         </div>
       ) : null}

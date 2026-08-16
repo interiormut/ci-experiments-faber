@@ -148,6 +148,22 @@ export function useServiceHosts() {
     [refreshHost],
   )
 
+  /**
+   * Releases one tenant, destroying their data on that machine.
+   *
+   * Through `refreshHost` rather than a local filter for the reason that
+   * function's own comment gives: this moves what the host has committed as
+   * well as who is on it, and the committed figure is what an operator reads
+   * before deciding whether the next grant fits.
+   */
+  const release = React.useCallback(
+    async (hostId: Uuid, userId: Uuid): Promise<void> => {
+      await faber.releaseTenant(hostId, userId)
+      await refreshHost(hostId)
+    },
+    [refreshHost],
+  )
+
   const addImage = React.useCallback(
     async (body: CreateServiceImageRequest): Promise<ServiceImage> => {
       const created = await faber.createServiceImage(body)
@@ -185,6 +201,7 @@ export function useServiceHosts() {
     revokeAgent,
     grant,
     revoke,
+    release,
     addImage,
     editImage,
     removeImage,
