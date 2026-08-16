@@ -24,6 +24,7 @@ use diesel_async::RunQueryDsl;
 use environment::docker::{Daemon, LocalSocket};
 use environment::ssh::forward::DOCKER_SOCKET;
 use environment::ssh::{HostKey, SshCredential, SshForwarded, SshSession};
+use environment::tenancy::Tenancy;
 use environment::{Blobs, DockerTarget, LocalTarget, Machine, Registry, Root, SshTarget};
 use environment::{Denial, Fault};
 use uuid::Uuid;
@@ -136,6 +137,34 @@ pub async fn reach_daemon(
     })?;
 
     Ok(Arc::new(LocalSocket::new(endpoint).map_err(fault)?))
+}
+
+/// Opens the path faber writes a service host's tenant limits over.
+///
+/// The same connection [`reach_daemon`] returns the container daemon on, for
+/// an agent host — which is the whole of the invariant that replaced the old
+/// `unix://` constraint. That constraint existed to stand in for "the limits
+/// and the containers are on one machine", because an endpoint scheme was
+/// the only available proxy for it; here the property is direct, since both
+/// ride one `AgentLink` and cannot be pointed at different machines.
+///
+/// A `local` service host still resolves — it is what a development checkout
+/// has — and an `ssh` one does not: faber has never written limits over a
+/// user's own SSH credential, and the transport that may is the one whose
+/// privilege was fixed by an install faber's operator performed.
+pub async fn reach_tenancy(state: &AppState, host: &Host) -> ApiResult<Tenancy> {
+    if host.transport == Transport::Agent.as_str() {
+        return Ok(Tenancy::over_agent(agent_session(state, host)?));
+    }
+
+    if host.transport == Transport::Local.as_str() {
+        return Ok(Tenancy::local());
+    }
+
+    Err(AppError::BadRequest(format!(
+        "faber does not write tenant limits over '{}' transport",
+        host.transport
+    )))
 }
 
 /// The live session for an agent-transport host, or `Unreachable`.
@@ -566,7 +595,7 @@ async fn bind_one(
     // Resolved before the connection goes back: the grant is a database fact
     // and belongs to this bind, while the *usage* beside it is read from the
     // machine every time the agent asks.
-    let allowance = crate::service_hosts::allowance(&mut conn, &host_row, user_id).await?;
+    let allowance = crate::service_hosts::allowance(&mut conn, state, &host_row, user_id).await?;
     drop(conn);
 
     if let Some(container) = container {

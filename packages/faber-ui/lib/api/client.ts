@@ -362,6 +362,11 @@ export class FaberClient {
   /**
    * Registers a machine faber operates.
    *
+   * The row is half the registration. A service host is reached through a
+   * daemon installed on it, so a host created here is unreachable until
+   * {@link enrollServiceHostAgent}'s command has been run on the machine —
+   * `agent.connected` is what says whether that has happened.
+   *
    * The machine has to have been prepared first — cgroup v2 with the
    * controllers delegated down to faber's tenant slice, docker on the systemd
    * cgroup driver, and `user_data_root` on a filesystem with project quotas.
@@ -393,6 +398,35 @@ export class FaberClient {
    */
   async deleteServiceHost(id: Uuid): Promise<void> {
     await this.request("DELETE", `/api/admin/hosts/${encodeURIComponent(id)}`)
+  }
+
+  /**
+   * Issues the one-time command that installs a service host's daemon.
+   *
+   * Not the same call as {@link enrollAgentHost}, and deliberately: that one
+   * is gated on owning the host, which no service host has an owner to
+   * satisfy, and the command it returns installs a user-scoped daemon. This
+   * one is gated on administering faber and returns a command that installs
+   * a *system* daemon — the authority that lets faber write a cgroup limit
+   * and a project quota on the machine.
+   *
+   * Re-issuing supersedes an unredeemed token. It does not revoke a daemon
+   * already enrolled; {@link revokeServiceHostAgent} does that.
+   */
+  async enrollServiceHostAgent(id: Uuid): Promise<AgentEnrollment> {
+    return this.request("POST", `/api/admin/hosts/${encodeURIComponent(id)}/agent`)
+  }
+
+  /**
+   * Revokes a service host's daemon credential and drops its connection.
+   *
+   * For a machine being rebuilt or a token believed stolen — not for taking
+   * a host out of service, which is `updateServiceHost(id, { disabled: true })`
+   * and leaves what is running alone. Tenants, reservations, and directories
+   * are untouched; the host simply has no daemon until one enrolls again.
+   */
+  async revokeServiceHostAgent(id: Uuid): Promise<void> {
+    await this.request("DELETE", `/api/admin/hosts/${encodeURIComponent(id)}/agent`)
   }
 
   /** Everyone materialised on a host, with their quota and live usage. */

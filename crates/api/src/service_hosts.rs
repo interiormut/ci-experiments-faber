@@ -18,6 +18,15 @@
 //! aggregates are a property of the parent cgroup and the XFS project quota,
 //! and are read live — the same rule that keeps host liveness out of the
 //! schema.
+//!
+//! **The machine is at the other end of a link, and the reads that decide an
+//! admission happen before the lock.** A service host is reached through the
+//! agent daemon installed on it, so every one of the calls below that touches
+//! the machine is a round trip rather than a syscall. That is why
+//! [`storage_ceiling`] is read by the caller and passed *into* [`admit`]:
+//! holding the per-(host, user) advisory lock across a network call would let
+//! one wedged link hold a database transaction open for a full command
+//! timeout.
 
 use chrono::{DateTime, Utc};
 use diesel::{
@@ -25,6 +34,7 @@ use diesel::{
 };
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+use environment::tenancy::Tenancy;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -336,6 +346,7 @@ pub async fn ensure_host_user(
     host: &Host,
     user_id: Uuid,
     quota: &Quota,
+    ceiling: i64,
 ) -> ApiResult<HostUser> {
     if let Some(existing) = live_host_user(conn, host.id, user_id).await? {
         return Ok(existing);
@@ -343,11 +354,13 @@ pub async fn ensure_host_user(
 
     let wanted = quota.storage_bytes.unwrap_or(0);
     if wanted > 0 {
-        let root = data_root(host)?;
-        // A blocking `statvfs` inside the admission transaction. It is one
-        // syscall against a local filesystem, and it has to be inside: the
-        // reservation it decides is only sound while the lock is held.
-        let ceiling = storage_ceiling(&root)?;
+        // The ceiling was read before the lock was taken and is deliberately
+        // a moment stale. Nothing is lost by that: the lock is per-(host,
+        // user), so it never serialised this check against another user's
+        // launch in the first place — the filesystem's size was always being
+        // read concurrently with someone else's reservation. What *is*
+        // serialised is the sum below, which is the part that must not
+        // interleave with itself.
         let committed = projected_storage(conn, host, None).await?;
 
         if committed + wanted > ceiling {
@@ -409,9 +422,22 @@ pub async fn tenants(conn: &mut AsyncPgConnection, host_id: Uuid) -> ApiResult<V
 /// that fills the disk — storage is the single resource faber refuses to
 /// overcommit, because running out of it is global and cannot be repaired by
 /// the user who caused it.
-pub fn storage_ceiling(root: &Path) -> ApiResult<i64> {
-    let capacity = environment::tenancy::capacity(root).map_err(crate::environments::fault)?;
-    Ok((capacity.total_bytes as f64 * (1.0 - STORAGE_RESERVE_RATIO)) as i64)
+pub async fn storage_ceiling(tenancy: &Tenancy, root: &Path) -> ApiResult<i64> {
+    let capacity = tenancy
+        .capacity(root)
+        .await
+        .map_err(crate::environments::fault)?;
+    Ok(ceiling_of(capacity))
+}
+
+/// The same number from a reading already taken.
+///
+/// Split from [`storage_ceiling`] because the read is a round trip now: a
+/// caller that already has the filesystem's size — an operator report showing
+/// both what the disk holds and what has been promised out of it — would
+/// otherwise ask the host the same question twice, once per host listed.
+pub fn ceiling_of(capacity: environment::tenancy::Capacity) -> i64 {
+    (capacity.total_bytes as f64 * (1.0 - STORAGE_RESERVE_RATIO)) as i64
 }
 
 /// Storage promised on this host, summed over materialised users.
@@ -463,12 +489,13 @@ pub async fn projected_storage(
 /// be exactly backwards.
 pub async fn check_storage_capacity(
     conn: &mut AsyncPgConnection,
+    tenancy: &Tenancy,
     current: &Host,
     prospective: &Host,
     grant: Option<(Uuid, Option<i64>)>,
 ) -> ApiResult<()> {
     let root = data_root(prospective)?;
-    let ceiling = storage_ceiling(&root)?;
+    let ceiling = storage_ceiling(tenancy, &root).await?;
 
     let after = projected_storage(conn, prospective, grant).await?;
     if after <= ceiling {
@@ -493,10 +520,8 @@ pub async fn check_storage_capacity(
 /// way: `faber.slice` bounds the tenant tree in the kernel, and this check
 /// exists so the first failure is a clean refusal rather than an OOM kill
 /// somewhere unrelated.
-pub async fn check_memory_floor() -> ApiResult<()> {
-    let memory = environment::tenancy::memory()
-        .await
-        .map_err(crate::environments::fault)?;
+pub async fn check_memory_floor(tenancy: &Tenancy) -> ApiResult<()> {
+    let memory = tenancy.memory().await.map_err(crate::environments::fault)?;
 
     let floor = (memory.total_bytes as f64 * MEMORY_FLOOR_RATIO) as u64;
     if memory.available_bytes < floor {
@@ -522,6 +547,10 @@ pub struct Admitted {
 /// launch that then fails on the machine tombstones it with
 /// `unregistered_at`. `container_ref` therefore has to be a name faber chooses
 /// up front and passes to `docker run`, not the id the daemon returns.
+///
+/// `ceiling` arrives already read, from [`storage_ceiling`], because reading
+/// it is a round trip to the host and this function holds a database lock for
+/// its whole body. Nothing about the check weakens: see [`ensure_host_user`].
 #[allow(clippy::too_many_arguments)]
 pub async fn admit(
     conn: &mut AsyncPgConnection,
@@ -531,6 +560,7 @@ pub async fn admit(
     container_name: &str,
     root_path: &str,
     image_id: Uuid,
+    ceiling: i64,
 ) -> ApiResult<Admitted> {
     let host = host.clone();
     let container_ref = container_ref.to_owned();
@@ -559,7 +589,7 @@ pub async fn admit(
                 }
             }
 
-            ensure_host_user(conn, &host, user_id, &resolved.quota).await?;
+            ensure_host_user(conn, &host, user_id, &resolved.quota, ceiling).await?;
 
             let container_id = Uuid::now_v7();
             diesel::insert_into(host_container::table)
@@ -647,13 +677,13 @@ const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 /// Deliberately not a reconciler. It reacts to one event — a grant lapsing —
 /// and does nothing else; drift of any other kind is repaired by the next
 /// container launch, which rewrites the same limits idempotently.
-pub fn spawn_expiry_sweeper(db: crate::db::DbPool) {
+pub fn spawn_expiry_sweeper(state: crate::state::AppState) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(SWEEP_INTERVAL);
         loop {
             ticker.tick().await;
 
-            let mut conn = match db.get().await {
+            let mut conn = match state.db.get().await {
                 Ok(conn) => conn,
                 Err(error) => {
                     tracing::warn!(%error, "quota sweep could not get a connection");
@@ -665,7 +695,7 @@ pub fn spawn_expiry_sweeper(db: crate::db::DbPool) {
                 Ok(pairs) if pairs.is_empty() => {}
                 Ok(pairs) => {
                     tracing::info!(count = pairs.len(), "retiring expired quota grants");
-                    reapply(&mut conn, &pairs).await;
+                    reapply(&mut conn, &state, &pairs).await;
                 }
                 Err(error) => tracing::warn!(%error, "quota sweep failed"),
             }
@@ -677,15 +707,27 @@ pub fn spawn_expiry_sweeper(db: crate::db::DbPool) {
 ///
 /// Idempotent, and a missed sweep is repaired by the next one or by the next
 /// container launch — which is the whole reason there is no reconciler daemon.
-pub async fn reapply(conn: &mut AsyncPgConnection, pairs: &[(Uuid, Uuid)]) {
+/// A host whose daemon is not connected fails here every sweep until it
+/// returns, and that is the right noise: the limits it is failing to write are
+/// the ones a lapsed grant should have taken away.
+pub async fn reapply(
+    conn: &mut AsyncPgConnection,
+    state: &crate::state::AppState,
+    pairs: &[(Uuid, Uuid)],
+) {
     for (host_id, user_id) in pairs {
-        if let Err(error) = reapply_one(conn, *host_id, *user_id).await {
+        if let Err(error) = reapply_one(conn, state, *host_id, *user_id).await {
             tracing::warn!(%host_id, %user_id, %error, "could not reapply limits after expiry");
         }
     }
 }
 
-async fn reapply_one(conn: &mut AsyncPgConnection, host_id: Uuid, user_id: Uuid) -> ApiResult<()> {
+async fn reapply_one(
+    conn: &mut AsyncPgConnection,
+    state: &crate::state::AppState,
+    host_id: Uuid,
+    user_id: Uuid,
+) -> ApiResult<()> {
     let host_row: Host = host::table
         .filter(host::id.eq(host_id))
         .select(Host::as_select())
@@ -699,7 +741,8 @@ async fn reapply_one(conn: &mut AsyncPgConnection, host_id: Uuid, user_id: Uuid)
 
     let subject = ensure_subject(conn, user_id).await?;
     let resolved = resolve_quota(conn, &host_row, user_id).await?;
-    apply(&host_row, subject, &resolved.quota).await
+    let tenancy = crate::environments::reach_tenancy(state, &host_row).await?;
+    apply(&tenancy, &host_row, subject, &resolved.quota).await
 }
 
 /// Writes a user's limits onto the machine: the slice, then the project quota.
@@ -708,13 +751,15 @@ async fn reapply_one(conn: &mut AsyncPgConnection, host_id: Uuid, user_id: Uuid)
 /// after a grant changes, and after an expiry sweep. Repetition is the repair
 /// path, so a failure here is a failure of *this* launch and never a reason to
 /// go looking for drift elsewhere.
-pub async fn apply(host: &Host, subject: i32, quota: &Quota) -> ApiResult<()> {
-    environment::tenancy::ensure_slice(subject, &quota.limits())
+pub async fn apply(tenancy: &Tenancy, host: &Host, subject: i32, quota: &Quota) -> ApiResult<()> {
+    tenancy
+        .ensure_slice(subject, &quota.limits())
         .await
         .map_err(crate::environments::fault)?;
 
     let root = data_root(host)?;
-    environment::tenancy::ensure_user_data(&root, subject, quota.storage_bytes)
+    tenancy
+        .ensure_user_data(&root, subject, quota.storage_bytes)
         .await
         .map_err(crate::environments::fault)?;
 
@@ -734,6 +779,7 @@ pub async fn apply(host: &Host, subject: i32, quota: &Quota) -> ApiResult<()> {
 #[allow(dead_code)]
 pub async fn release_host_user(
     conn: &mut AsyncPgConnection,
+    tenancy: &Tenancy,
     host: &Host,
     user_id: Uuid,
 ) -> ApiResult<()> {
@@ -749,7 +795,8 @@ pub async fn release_host_user(
     };
     let root = data_root(host)?;
 
-    environment::tenancy::release_user_data(&root, subject)
+    tenancy
+        .release_user_data(&root, subject)
         .await
         .map_err(crate::environments::fault)?;
 
@@ -783,8 +830,18 @@ pub async fn release_host_user(
 ///
 /// Returns the grant only. Usage is read from the machine each time the agent
 /// asks, which is why nothing here measures anything.
+/// The [`Tenancy`] is attached here rather than derived at measure time
+/// because the bound target's own transport reaches *into the container*: a
+/// cgroup counter read through it is the container's view of itself, and the
+/// question is what the tenant is using on the host.
+///
+/// The `host.service()` guard stays. An agent installed under a user's own
+/// account cannot write a limit or read a tenant quota — that is SR10, and it
+/// is the backstop — but this is the gate, and faber should not be
+/// *attempting* either against a machine somebody else owns.
 pub async fn allowance(
     conn: &mut AsyncPgConnection,
+    state: &crate::state::AppState,
     host: &Host,
     user_id: Uuid,
 ) -> ApiResult<Option<environment::tenancy::Allowance>> {
@@ -803,6 +860,7 @@ pub async fn allowance(
         subject,
         data_root: data_root(host)?,
         expires_at: resolved.expires_at.map(|at| at.to_rfc3339()),
+        tenancy: crate::environments::reach_tenancy(state, host).await?,
     }))
 }
 

@@ -1290,6 +1290,16 @@ async fn spawn_on_service_host(
         ("dev.faber.image".to_owned(), template.name.clone()),
     ];
 
+    // Before the lock, deliberately: the host's filesystem is at the far end
+    // of the agent link, and a round trip inside a held advisory lock can
+    // hold a transaction open for a full command timeout. The number it
+    // yields is a moment stale by the time the lock is taken, and nothing
+    // rests on it being fresher — see `service_hosts::ensure_host_user`.
+    let tenancy = crate::environments::reach_tenancy(state, parent).await?;
+    let ceiling =
+        crate::service_hosts::storage_ceiling(&tenancy, &crate::service_hosts::data_root(parent)?)
+            .await?;
+
     let mut conn = state.db.get().await?;
     // Everything the database decides, decided at once under the (host, user)
     // lock: the count check, the storage reservation, and the row itself.
@@ -1301,6 +1311,7 @@ async fn spawn_on_service_host(
         &name,
         root_path,
         template.id,
+        ceiling,
     )
     .await?;
 
@@ -1308,7 +1319,8 @@ async fn spawn_on_service_host(
     // and a transaction held open across a docker pull is a connection held
     // open across a docker pull.
     let launched = launch_on_machine(
-        state, user_id, parent, template, &admitted, &name, root_path, &command, &env, &labels,
+        state, user_id, parent, template, &admitted, &tenancy, &name, root_path, &command, &env,
+        &labels,
     )
     .await;
 
@@ -1335,6 +1347,7 @@ async fn launch_on_machine(
     parent: &Host,
     template: &Image,
     admitted: &crate::service_hosts::Admitted,
+    tenancy: &environment::tenancy::Tenancy,
     name: &str,
     root_path: &str,
     command: &[String],
@@ -1344,11 +1357,11 @@ async fn launch_on_machine(
     // A floor check, and the first thing that runs on the machine: refusing
     // cleanly beats letting the launch succeed and having the kernel pick a
     // victim somewhere unrelated a minute later.
-    crate::service_hosts::check_memory_floor().await?;
+    crate::service_hosts::check_memory_floor(tenancy).await?;
 
     // Idempotent, and repeated on every launch by design — this is the repair
     // path for a limit that drifted, which is why there is no reconciler.
-    crate::service_hosts::apply(parent, admitted.subject, &admitted.quota).await?;
+    crate::service_hosts::apply(tenancy, parent, admitted.subject, &admitted.quota).await?;
 
     let paths = crate::service_hosts::user_paths(parent, admitted.subject)?;
     let engine_mounts: Vec<engine::Mount> = crate::service_hosts::mounts(&paths, root_path)
@@ -1414,7 +1427,8 @@ async fn launch_on_machine(
     // is placed in it, systemd may have nothing to set properties on; after,
     // it always does. The write is idempotent, so paying for it twice buys the
     // guarantee that the limits are on the slice the container is actually in.
-    if let Err(error) = crate::service_hosts::apply(parent, admitted.subject, &admitted.quota).await
+    if let Err(error) =
+        crate::service_hosts::apply(tenancy, parent, admitted.subject, &admitted.quota).await
     {
         tracing::warn!(%error, subject = admitted.subject, "could not reapply limits after start");
     }
@@ -1674,7 +1688,8 @@ async fn usage(
         return Ok(Json(UsageResponse::default()));
     }
 
-    let Some(allowance) = crate::service_hosts::allowance(&mut conn, &parent, user.id).await?
+    let Some(allowance) =
+        crate::service_hosts::allowance(&mut conn, &state, &parent, user.id).await?
     else {
         return Ok(Json(UsageResponse::default()));
     };

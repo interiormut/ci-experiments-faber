@@ -68,10 +68,10 @@ fn generate_token() -> String {
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
-struct EnrollResponse {
+pub struct EnrollResponse {
     /// One-time; never stored or shown again after the daemon exchanges it.
-    token: String,
-    expires_at: chrono::DateTime<Utc>,
+    pub token: String,
+    pub expires_at: chrono::DateTime<Utc>,
     /// A copy-pasteable one-liner, mirroring the pattern of Cloudflare
     /// Tunnel or Tailscale: it fetches the installer script from this API,
     /// which downloads the daemon binary this API serves and hands it the
@@ -81,7 +81,7 @@ struct EnrollResponse {
     /// process list. That is the accepted cost of the pattern — the same one
     /// Tailscale and Cloudflare take — and it is bounded by the token being
     /// single-use and valid for an hour.
-    install_command: String,
+    pub install_command: String,
 }
 
 /// The caller's own agent host, or the error that says why it isn't one.
@@ -122,12 +122,44 @@ async fn enroll(
 ) -> ApiResult<(StatusCode, Json<EnrollResponse>)> {
     let mut conn = state.db.get().await?;
     let target = owned_agent_host(&mut conn, user.id, id, "agent.enroll.load_host").await?;
+    let issued = issue_enrollment(&state, &mut conn, target.id, Privilege::User).await?;
+    Ok((StatusCode::CREATED, Json(issued)))
+}
 
+/// What authority the daemon this token enrolls will run with.
+///
+/// Not a negotiation and not something the daemon reports: it is a word in
+/// the command an operator runs, and it decides whether the installer writes
+/// a `systemctl --user` unit or a system one. It is here because the two
+/// callers of [`issue_enrollment`] differ in exactly this and in nothing
+/// else — a user enrolling their own machine, and an administrator enrolling
+/// one faber operates.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Privilege {
+    User,
+    System,
+}
+
+/// Issues a bootstrap token for a host and builds the command that redeems
+/// it.
+///
+/// Shared by the user-facing route above and the administrator-facing one in
+/// `routes::admin`, which is where the separability service-host credentials
+/// need comes from: a service host's credential can only be issued through a
+/// route gated on `AdminUser` against a host with no owner, and a user's
+/// only through one gated on owning it. Two issuance paths, one table, and
+/// no flag that could disagree with either.
+pub async fn issue_enrollment(
+    state: &AppState,
+    conn: &mut diesel_async::AsyncPgConnection,
+    host_id: Uuid,
+    privilege: Privilege,
+) -> ApiResult<EnrollResponse> {
     // Before the token is issued, not after: an install command faber cannot
     // build is a token that would sit there redeemable with no way to
     // redeem it, and superseding the previous enrollment below would have
     // already invalidated whatever the operator was holding.
-    let base = super::install::public_url(&state)?;
+    let base = super::install::public_url(state)?;
 
     let token = generate_token();
     let expires_at = Utc::now() + ENROLLMENT_TTL;
@@ -139,35 +171,85 @@ async fn enroll(
     // says — this token was never exchanged, it was superseded.
     diesel::update(
         agent_enrollment::table
-            .filter(agent_enrollment::host_id.eq(target.id))
+            .filter(agent_enrollment::host_id.eq(host_id))
             .filter(agent_enrollment::consumed_at.is_null()),
     )
     .set(agent_enrollment::expires_at.eq(Utc::now()))
-    .execute(&mut conn)
+    .execute(conn)
     .await
     .map_err(|err| AppError::db(err, "agent.enroll.supersede"))?;
 
     diesel::insert_into(agent_enrollment::table)
         .values(&NewAgentEnrollment {
             id: Uuid::now_v7(),
-            host_id: target.id,
+            host_id,
             token_hash: &hash_token(&token),
             expires_at,
         })
-        .execute(&mut conn)
+        .execute(conn)
         .await
         .map_err(|err| AppError::db(err, "agent.enroll.insert"))?;
 
-    Ok((
-        StatusCode::CREATED,
-        Json(EnrollResponse {
-            install_command: format!(
-                "curl -fsSL {base}/api/agent/install.sh | sh -s -- --token {token}"
-            ),
-            token,
-            expires_at,
-        }),
-    ))
+    // `sudo sh` rather than `sh`, and `--system` passed through: a service
+    // host's daemon writes cgroup limits and project quotas, which is
+    // authority the installing shell has to already hold. The daemon never
+    // asks for it later, and the installer refuses rather than proceeding
+    // with less.
+    let install_command = match privilege {
+        Privilege::User => {
+            format!("curl -fsSL {base}/api/agent/install.sh | sh -s -- --token {token}")
+        }
+        Privilege::System => format!(
+            "curl -fsSL {base}/api/agent/install.sh | sudo sh -s -- --system --token {token}"
+        ),
+    };
+
+    Ok(EnrollResponse {
+        install_command,
+        token,
+        expires_at,
+    })
+}
+
+/// Revokes every live credential for a host and drops the connection one of
+/// them authenticated.
+///
+/// The row is tombstoned rather than deleted, for the same reason a re-issue
+/// tombstones: what was issued and when stays answerable. Eviction is
+/// best-effort and this-replica-only (X44.7).
+pub async fn revoke_credential(
+    state: &AppState,
+    conn: &mut diesel_async::AsyncPgConnection,
+    host_id: Uuid,
+) -> ApiResult<usize> {
+    let revoked = diesel::update(
+        agent_credential::table
+            .filter(agent_credential::host_id.eq(host_id))
+            .filter(agent_credential::revoked_at.is_null()),
+    )
+    .set(agent_credential::revoked_at.eq(Some(Utc::now())))
+    .execute(conn)
+    .await
+    .map_err(|err| AppError::db(err, "agent.revoke"))?;
+
+    state.agents.evict(host_id).await;
+    Ok(revoked)
+}
+
+/// When a host's daemon last exchanged a bootstrap token for the credential
+/// it reconnects with, if it ever has.
+pub async fn enrolled_at(
+    conn: &mut diesel_async::AsyncPgConnection,
+    host_id: Uuid,
+) -> ApiResult<Option<chrono::DateTime<Utc>>> {
+    agent_credential::table
+        .filter(agent_credential::host_id.eq(host_id))
+        .filter(agent_credential::revoked_at.is_null())
+        .select(agent_credential::issued_at)
+        .first(conn)
+        .await
+        .optional()
+        .map_err(|err| AppError::db(err, "agent.enrolled_at"))
 }
 
 // ---------------------------------------------------------------------------
@@ -196,18 +278,9 @@ async fn status(
     let mut conn = state.db.get().await?;
     let target = owned_agent_host(&mut conn, user.id, id, "agent.status.load_host").await?;
 
-    let enrolled_at: Option<chrono::DateTime<Utc>> = agent_credential::table
-        .filter(agent_credential::host_id.eq(target.id))
-        .filter(agent_credential::revoked_at.is_null())
-        .select(agent_credential::issued_at)
-        .first(&mut conn)
-        .await
-        .optional()
-        .map_err(|err| AppError::db(err, "agent.status.load_credential"))?;
-
     Ok(Json(StatusResponse {
         connected: state.agents.get(target.id).is_some(),
-        enrolled_at,
+        enrolled_at: enrolled_at(&mut conn, target.id).await?,
     }))
 }
 

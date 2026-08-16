@@ -648,9 +648,26 @@ export interface ServiceHost {
   /** Users materialised here — holding a directory and a storage reservation,
    *  not everyone who could arrive. */
   tenants: number
-  /** `null` when faber cannot read the filesystem, which on a real service
-   *  host means the API is not running on the machine it operates. */
+  /** `null` when faber cannot read the filesystem — most often because no
+   *  daemon is connected, which {@link ServiceHost.agent} says plainly. */
   storage: ServiceHostStorage | null
+  agent: ServiceHostAgent
+}
+
+/**
+ * Whether the machine is reachable, and whether it ever was.
+ *
+ * A service host is reached through the daemon installed on it — the same
+ * connection its containers are launched over is the one its tenant limits
+ * are written over — so a host with no daemon is a registration and nothing
+ * more. Neither field is stored: `connected` is read from the live
+ * connection each time it is asked for.
+ */
+export interface ServiceHostAgent {
+  connected: boolean
+  /** When a daemon exchanged its bootstrap token, or `null` if nobody has run
+   *  the install command yet. */
+  enrolled_at: Timestamp | null
 }
 
 export interface ServiceHostStorage {
@@ -665,8 +682,9 @@ export interface ServiceHostStorage {
 
 export interface CreateServiceHostRequest {
   name: string
-  /** `unix://` or `tcp://`. Explicit always — faber never falls back to the
-   *  process's ambient docker context. */
+  /** The daemon's unix socket **on the host's own filesystem**, not this
+   *  machine's: `unix:///var/run/docker.sock` or an absolute path. Explicit
+   *  always — faber never falls back to an ambient docker context. */
   docker_endpoint: string
   /** Absolute. Parent of the per-user directories whose project quotas carry
    *  the storage limit. */
@@ -676,6 +694,7 @@ export interface CreateServiceHostRequest {
 
 export interface UpdateServiceHostRequest {
   name?: string
+  /** The daemon's unix socket on the host's own filesystem. */
   docker_endpoint?: string
   /** Refused once the host has tenants: their data lives under the current
    *  root and faber does not move it. */

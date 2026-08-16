@@ -1,0 +1,29 @@
+-- Service hosts over agent transport.
+-- See internal-docs/service-hosts-over-agent.md (SR9).
+--
+-- `host_service_needs_endpoint` required a service host's docker_endpoint to
+-- be a `unix://` socket. The invariant it enforced survives; its enforcement
+-- mechanism does not, and it is worth writing down which is which.
+--
+-- What it was for: faber writes cgroup limits and XFS project quotas for
+-- each tenant, and those writes must land on the machine the tenant's
+-- containers are actually running on. A service host reached over `tcp://`
+-- would have had every limit written on the API's own machine while the
+-- containers ran somewhere else — not weaker enforcement, none at all, and
+-- silently. "A service host is faber's own machine" was an assumption
+-- everywhere else and a constraint here, and an endpoint scheme was the only
+-- stand-in available for "same machine".
+--
+-- What replaces it: the limits are no longer written by the API process at
+-- all. They are written over the same agent connection the host's docker
+-- socket is forwarded on, so "the agent that runs a host's containers is the
+-- agent that writes its limits" is structural — one link serves both, and
+-- they cannot be pointed at different machines. Checking the scheme would
+-- now be enforcing the proxy after the thing itself became checkable.
+--
+-- This does *not* make any endpoint acceptable. `reach_daemon` still refuses
+-- anything but a unix socket path on an agent host, because the forward
+-- opens a `direct-streamlocal` channel and there is nothing else for it to
+-- dial. What changed is whose machine that path is on: the agent's, not the
+-- API's.
+ALTER TABLE host DROP CONSTRAINT host_service_needs_endpoint;

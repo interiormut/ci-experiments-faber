@@ -25,6 +25,7 @@
 
 pub mod files;
 pub mod forward;
+pub mod probe;
 pub mod spawn;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -114,10 +115,7 @@ impl SshSession {
         credential: &SshCredential,
         host_key: HostKey,
     ) -> Result<(Self, String), Fault> {
-        let key = decode_secret_key(
-            &credential.private_key,
-            credential.passphrase.as_deref(),
-        )
+        let key = decode_secret_key(&credential.private_key, credential.passphrase.as_deref())
             .map_err(|error| {
                 Fault::Denied(Denial::Malformed {
                     what: "ssh key".into(),
@@ -485,9 +483,7 @@ mod tests {
                     .await
                     .expect("sh must be on PATH for this test");
                 let _ = handle.data(channel, output.stdout).await;
-                let _ = handle
-                    .extended_data(channel, 1, output.stderr)
-                    .await;
+                let _ = handle.extended_data(channel, 1, output.stderr).await;
                 let code = output.status.code().unwrap_or(1) as u32;
                 let _ = handle.exit_status_request(channel, code).await;
                 let _ = handle.eof(channel).await;
@@ -509,16 +505,51 @@ mod tests {
             // subsystem to answer that one call — not a stub that ignores
             // the request, which is what left this test hanging on a
             // 20-second `Fault::Unreachable` timeout before this existed.
-            if name != "sftp" {
+            //
+            // `faber-probe` is the other one this fixture answers — enough
+            // of the daemon's read subsystem to prove the client half
+            // encodes a request the far side can read and parses the answer
+            // back into a struct. A name it does not know is refused, which
+            // is exactly what an older daemon does and what the client is
+            // expected to report as version skew rather than as a parse
+            // failure.
+            if !matches!(name, "sftp" | "faber-probe") {
                 session.channel_failure(channel)?;
                 return Ok(());
             }
             session.channel_success(channel)?;
             let stream_channel = self.pending.remove(&channel);
+            let probe = name == "faber-probe";
             tokio::spawn(async move {
-                if let Some(channel) = stream_channel {
+                let Some(channel) = stream_channel else {
+                    return;
+                };
+                if !probe {
                     russh_sftp::server::run(channel.into_stream(), TestSftp).await;
+                    return;
                 }
+
+                use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+                let (reader, mut writer) = tokio::io::split(channel.into_stream());
+                let mut asked = String::new();
+                let _ = tokio::io::BufReader::new(reader)
+                    .read_line(&mut asked)
+                    .await;
+                // Echoed back so the assertion can check what was sent
+                // without a second channel: the request has to name the op
+                // and the path, or the daemon would be answering about the
+                // wrong filesystem.
+                let answer = format!(
+                    "{{\"total_bytes\":1000,\"available_bytes\":400,\"error\":{}}}\n",
+                    if asked.contains("\"op\":\"capacity\"") && asked.contains("/srv/faber") {
+                        "null".to_owned()
+                    } else {
+                        format!("\"unexpected request: {}\"", asked.trim())
+                    }
+                );
+                let _ = writer.write_all(answer.as_bytes()).await;
+                let _ = writer.flush().await;
+                let _ = writer.shutdown().await;
             });
             Ok(())
         }
@@ -590,8 +621,8 @@ mod tests {
         tokio::spawn(async move {
             let running =
                 russh::server::run_stream(server_config, server_side, TestDaemon::default())
-                .await
-                .expect("daemon side of the handshake");
+                    .await
+                    .expect("daemon side of the handshake");
             let _ = running.await;
         });
 
@@ -621,10 +652,52 @@ mod tests {
             .expect("the far end actually ran the command");
         assert_eq!(exit.outcome, crate::exec::Outcome::Completed { code: 0 });
 
-        let stdout = blobs.get(&exit.stdout.span.blob).expect("stdout was stored");
+        let stdout = blobs
+            .get(&exit.stdout.span.blob)
+            .expect("stdout was stored");
         assert_eq!(
             String::from_utf8_lossy(&stdout).trim(),
             "agent-transport-works"
         );
+    }
+
+    #[tokio::test]
+    async fn a_machine_read_crosses_the_link_as_a_struct() {
+        use crate::tenancy::Reads;
+
+        let (client_side, server_side) = tokio::io::duplex(64 * 1024);
+        let server_config = Arc::new(russh::server::Config {
+            keys: vec![
+                russh::keys::PrivateKey::from_openssh(TEST_HOST_KEY_PEM)
+                    .expect("fixture key parses"),
+            ],
+            ..Default::default()
+        });
+        tokio::spawn(async move {
+            let running =
+                russh::server::run_stream(server_config, server_side, TestDaemon::default())
+                    .await
+                    .expect("daemon side of the handshake");
+            let _ = running.await;
+        });
+
+        let (session, _) = SshSession::from_stream(
+            client_side,
+            "test-daemon",
+            HostKey::Verify(TEST_HOST_FINGERPRINT.to_owned()),
+        )
+        .await
+        .expect("from_stream authenticates with no SshCredential");
+
+        // The value an admission decision is made on, arriving with its
+        // fields intact rather than as text to be parsed — which is the
+        // whole reason this is a subsystem and not `stat -f`.
+        let reads = probe::AgentReads::new(Arc::new(session));
+        let capacity = reads
+            .capacity("/srv/faber")
+            .await
+            .expect("the far side answered the read it was asked");
+        assert_eq!(capacity.total_bytes, 1000);
+        assert_eq!(capacity.available_bytes, 400);
     }
 }

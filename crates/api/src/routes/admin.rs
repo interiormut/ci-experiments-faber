@@ -58,6 +58,10 @@ pub fn router() -> Router<AppState> {
             "/api/admin/hosts/{id}",
             get(fetch_host).patch(update_host).delete(delete_host),
         )
+        .route(
+            "/api/admin/hosts/{id}/agent",
+            post(enroll_agent).delete(revoke_agent),
+        )
         .route("/api/admin/hosts/{id}/users", get(list_tenants))
         .route(
             "/api/admin/hosts/{id}/users/{user_id}/quota",
@@ -146,10 +150,25 @@ struct ServiceHostResponse {
     /// Users materialised here — the ones holding a directory and a storage
     /// reservation, not everyone who could arrive.
     tenants: i64,
-    /// What the filesystem says, read live. `null` when faber cannot read it,
-    /// which on a correctly deployed service host means the machine is not
-    /// this one — the API is expected to run on the host it operates.
+    /// What the filesystem says, read live and asked of the host's own
+    /// daemon. `null` when faber cannot read it — most often because no
+    /// daemon is connected, which `agent` below says plainly.
     storage: Option<StorageResponse>,
+    agent: AgentResponse,
+}
+
+/// Whether the machine is actually reachable, and whether it ever was.
+///
+/// Read from the live connection registry rather than from a column, on the
+/// same rule that keeps host liveness out of the schema: a connection that
+/// died is simply gone from the registry, so there is no stale value to
+/// serve. The two fields answer different questions — `enrolled_at` is null
+/// until somebody runs the install command, and `connected` is false whenever
+/// the daemon is not on the wire *right now*.
+#[derive(Serialize)]
+struct AgentResponse {
+    connected: bool,
+    enrolled_at: Option<DateTime<Utc>>,
 }
 
 /// The number an operator actually needs before making a grant: not "how full
@@ -273,10 +292,18 @@ fn validate_name(name: &str) -> ApiResult<()> {
     Ok(())
 }
 
-fn validate_endpoint(endpoint: &str) -> ApiResult<()> {
-    if !endpoint.starts_with("unix://") && !endpoint.starts_with("tcp://") {
+/// A service host's endpoint names a socket on the *agent's* machine, so
+/// `tcp://` has nothing to dial: the forward opens a `direct-streamlocal`
+/// channel, which is a unix socket by definition. The old table CHECK said
+/// the same thing for a different reason — it stood in for "the limits and
+/// the containers are on one machine" — and that reason is now carried by
+/// the connection itself. This one is only about what can be reached.
+fn validate_service_endpoint(endpoint: &str) -> ApiResult<()> {
+    if !endpoint.starts_with("unix://") && !endpoint.starts_with('/') {
         return Err(AppError::BadRequest(
-            "docker_endpoint must start with 'unix://' or 'tcp://'".into(),
+            "docker_endpoint must name the daemon's unix socket on the host's own \
+             filesystem, as 'unix:///var/run/docker.sock' or an absolute path"
+                .into(),
         ));
     }
     Ok(())
@@ -337,14 +364,22 @@ async fn service_host(conn: &mut AsyncPgConnection, id: Uuid) -> ApiResult<Host>
 
 /// What the filesystem holds and what has already been promised out of it.
 ///
-/// Best effort: `capacity` is a `statvfs` on the machine this process runs on,
-/// which is the service host itself in a real deployment and is not in a
-/// development checkout. A report missing this section is far better than a
-/// list route that fails because a path does not exist locally.
-async fn storage_view(conn: &mut AsyncPgConnection, host: &Host) -> Option<StorageResponse> {
+/// Best effort, and now for a second reason as well as the first: the read is
+/// a `statvfs` on the host, asked of the daemon installed there, so a host
+/// nobody has enrolled yet or whose daemon is not connected has no answer to
+/// give. A report missing this section is far better than a list route that
+/// fails because one machine of several is offline.
+async fn storage_view(
+    conn: &mut AsyncPgConnection,
+    state: &AppState,
+    host: &Host,
+) -> Option<StorageResponse> {
     let root = host.user_data_root.as_deref()?;
-    let capacity = environment::tenancy::capacity(std::path::Path::new(root)).ok()?;
-    let ceiling = service_hosts::storage_ceiling(std::path::Path::new(root)).ok()?;
+    let tenancy = crate::environments::reach_tenancy(state, host).await.ok()?;
+    let capacity = tenancy.capacity(std::path::Path::new(root)).await.ok()?;
+    // Derived from the reading just taken rather than asked for again: the
+    // two are the same `statvfs`, and this route runs once per host listed.
+    let ceiling = service_hosts::ceiling_of(capacity);
     let committed = service_hosts::projected_storage(conn, host, None)
         .await
         .ok()?;
@@ -359,10 +394,15 @@ async fn storage_view(conn: &mut AsyncPgConnection, host: &Host) -> Option<Stora
 
 async fn host_response(
     conn: &mut AsyncPgConnection,
+    state: &AppState,
     host: &Host,
 ) -> ApiResult<ServiceHostResponse> {
     let tenants = service_hosts::tenants(conn, host.id).await?.len() as i64;
-    let storage = storage_view(conn, host).await;
+    let storage = storage_view(conn, state, host).await;
+    let agent = AgentResponse {
+        connected: state.agents.get(host.id).is_some(),
+        enrolled_at: crate::agent::routes::enrolled_at(conn, host.id).await?,
+    };
 
     Ok(ServiceHostResponse {
         id: host.id,
@@ -374,6 +414,7 @@ async fn host_response(
         defaults: Limits::from(host),
         tenants,
         storage,
+        agent,
     })
 }
 
@@ -383,12 +424,18 @@ async fn host_response(
 
 /// Registers a machine faber operates.
 ///
-/// Written as `local` + `docker` because that is what a service host is today:
-/// faber runs on the machine and talks to its daemon over a socket, which is
-/// what makes writing a cgroup slice and an XFS project quota possible at all.
-/// The schema does not constrain the combination — a service host reached over
-/// ssh is plausible later — so widening this is a change to this route and not
-/// a migration.
+/// Written as `agent` + `docker`. A service host is a machine faber reaches
+/// through the daemon installed on it, not the machine the API process
+/// happens to be running on — that premise died when the API became a
+/// container, where `systemctl` and `xfs_quota` are absent from the image and
+/// `/sys/fs/cgroup` is the container's own subtree rather than the host's.
+/// `docker_endpoint` therefore names the socket *on the agent's machine*.
+///
+/// The row is only half the registration. A host created here has no daemon
+/// until an administrator runs the command `POST .../agent/enrollment`
+/// returns, on the machine itself, as root. Until then the host exists and is
+/// unreachable, which the storage section of its report shows by being
+/// absent.
 ///
 /// The machine has to be prepared first: cgroup v2 with the controllers
 /// delegated down to faber's tenant slice, docker on the systemd cgroup
@@ -410,7 +457,7 @@ async fn create_host(
                 .into(),
         ));
     }
-    validate_endpoint(endpoint)?;
+    validate_service_endpoint(endpoint)?;
 
     let data_root = input.user_data_root.trim();
     if data_root.is_empty() {
@@ -428,7 +475,7 @@ async fn create_host(
         // ownership is a bug surface.
         user_id: None,
         name,
-        transport: Transport::Local.as_str(),
+        transport: Transport::Agent.as_str(),
         exec_mode: ExecMode::Docker.as_str(),
         ssh_address: None,
         ssh_key_ref: None,
@@ -459,7 +506,7 @@ async fn create_host(
             other => AppError::db(other, "admin.hosts.create"),
         })?;
 
-    let body = host_response(&mut conn, &inserted).await?;
+    let body = host_response(&mut conn, &state, &inserted).await?;
     Ok((StatusCode::CREATED, Json(body)))
 }
 
@@ -482,7 +529,7 @@ async fn list_hosts(
 
     let mut responses = Vec::with_capacity(hosts.len());
     for found in &hosts {
-        responses.push(host_response(&mut conn, found).await?);
+        responses.push(host_response(&mut conn, &state, found).await?);
     }
     Ok(Json(responses))
 }
@@ -494,7 +541,7 @@ async fn fetch_host(
 ) -> ApiResult<Json<ServiceHostResponse>> {
     let mut conn = state.db.get().await?;
     let found = service_host(&mut conn, id).await?;
-    Ok(Json(host_response(&mut conn, &found).await?))
+    Ok(Json(host_response(&mut conn, &state, &found).await?))
 }
 
 /// Edits a service host, including the defaults every tenant without a grant
@@ -521,7 +568,7 @@ async fn update_host(
     }
     let endpoint = trimmed(input.docker_endpoint.as_deref());
     if let Some(endpoint) = endpoint {
-        validate_endpoint(endpoint)?;
+        validate_service_endpoint(endpoint)?;
     }
     let data_root = trimmed(input.user_data_root.as_deref());
     if let Some(root) = data_root {
@@ -554,7 +601,9 @@ async fn update_host(
             default_container_max: limits.container_max,
             ..current.clone()
         };
-        service_hosts::check_storage_capacity(&mut conn, &current, &prospective, None).await?;
+        let tenancy = crate::environments::reach_tenancy(&state, &current).await?;
+        service_hosts::check_storage_capacity(&mut conn, &tenancy, &current, &prospective, None)
+            .await?;
     }
 
     let patch = UpdateHost {
@@ -588,10 +637,10 @@ async fn update_host(
     })?;
 
     if input.defaults.is_some() {
-        reapply_all(&mut conn, &updated).await;
+        reapply_all(&mut conn, &state, &updated).await;
     }
 
-    Ok(Json(host_response(&mut conn, &updated).await?))
+    Ok(Json(host_response(&mut conn, &state, &updated).await?))
 }
 
 /// Drops the registration. The machine is untouched, and so is everything on
@@ -631,6 +680,83 @@ async fn delete_host(
 }
 
 // ---------------------------------------------------------------------------
+// The daemon on a service host
+// ---------------------------------------------------------------------------
+
+/// Issues the one-time command that installs a service host's daemon.
+///
+/// The user-facing counterpart of this route lives in `agent::routes` and is
+/// gated on owning the host, which by construction can never match a service
+/// host — `user_id IS NULL` matches no owner. So this is not a convenience
+/// wrapper: without it a service host created by `create_host` would have no
+/// way to acquire a daemon at all.
+///
+/// That split is also the whole of the separability service-host credentials
+/// need. Their blast radius is genuinely larger than a user host's — the
+/// daemon on the other end runs as root on a machine several tenants share —
+/// so issuing one has to be an administrator's act and revoking one has to be
+/// possible without touching anybody else's. Both fall out of the route
+/// gating rather than out of a second table or a flag on `agent_credential`
+/// that could disagree with the host it points at.
+///
+/// The command it hands back installs a *system* unit and says so out loud,
+/// because that authority is the only reason the daemon can write a cgroup
+/// limit or a project quota. Re-issuing supersedes an unredeemed token; it
+/// does not revoke a daemon already enrolled, which is what the DELETE below
+/// is for.
+async fn enroll_agent(
+    State(state): State<AppState>,
+    AdminUser(_): AdminUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<(StatusCode, Json<crate::agent::routes::EnrollResponse>)> {
+    let mut conn = state.db.get().await?;
+    let found = service_host(&mut conn, id).await?;
+
+    if found.transport != Transport::Agent.as_str() {
+        return Err(AppError::BadRequest(
+            "this host is not reached over an agent daemon".into(),
+        ));
+    }
+
+    let issued = crate::agent::routes::issue_enrollment(
+        &state,
+        &mut conn,
+        found.id,
+        crate::agent::routes::Privilege::System,
+    )
+    .await?;
+
+    Ok((StatusCode::CREATED, Json(issued)))
+}
+
+/// Revokes a service host's daemon credential and drops its connection.
+///
+/// Distinct from draining the host (`disabled_at`) and from deleting the
+/// registration: this says the credential itself should stop working — a
+/// machine being rebuilt, or a token believed stolen. A stolen service-host
+/// token matters more than a user's, because "newest wins" preemption means
+/// whoever holds it can displace the real daemon and receive that host's
+/// launches, including the tenant limits faber believes it is enforcing.
+///
+/// Nothing else changes. The tenants, their reservations, and their
+/// directories are all untouched; the host simply has no daemon until one
+/// enrolls again.
+async fn revoke_agent(
+    State(state): State<AppState>,
+    AdminUser(_): AdminUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    let mut conn = state.db.get().await?;
+    let found = service_host(&mut conn, id).await?;
+
+    let revoked = crate::agent::routes::revoke_credential(&state, &mut conn, found.id).await?;
+    if revoked == 0 {
+        return Err(AppError::NotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------------------
 // Tenants and grants
 // ---------------------------------------------------------------------------
 
@@ -651,6 +777,13 @@ async fn list_tenants(
     let rows = service_hosts::tenants(&mut conn, found.id).await?;
 
     let data_root = found.user_data_root.clone().map(std::path::PathBuf::from);
+    // One connection to the host for the whole listing, and `None` if it has
+    // no daemon on the wire: a tenant list that fails outright because a
+    // machine is offline tells an operator less than one whose usage columns
+    // are empty.
+    let tenancy = crate::environments::reach_tenancy(&state, &found)
+        .await
+        .ok();
 
     let mut responses = Vec::with_capacity(rows.len());
     for tenant in rows {
@@ -664,8 +797,8 @@ async fn list_tenants(
         // property of the cgroup and the project quota, and a copy in the
         // database would be the same cached-liveness mistake the host schema
         // already refuses.
-        let usage = match (data_root.as_deref(), subject) {
-            (Some(root), Some(subject)) => environment::tenancy::usage(root, subject).await,
+        let usage = match (tenancy.as_ref(), data_root.as_deref(), subject) {
+            (Some(tenancy), Some(root), Some(subject)) => tenancy.usage(root, subject).await,
             _ => Default::default(),
         };
 
@@ -750,8 +883,10 @@ async fn grant_quota(
     // way the same number moves. It only bites for a tenant already
     // materialised — nothing is reserved for a user who has never launched
     // anything, and their first launch runs the check itself.
+    let tenancy = crate::environments::reach_tenancy(&state, &found).await?;
     service_hosts::check_storage_capacity(
         &mut conn,
+        &tenancy,
         &found,
         &found,
         Some((target, input.limits.storage_bytes)),
@@ -793,7 +928,7 @@ async fn grant_quota(
     })
     .await?;
 
-    reapply_one(&mut conn, &found, target).await;
+    reapply_one(&mut conn, &state, &found, target).await;
     resolved_response(&mut conn, &found, target).await.map(Json)
 }
 
@@ -811,8 +946,10 @@ async fn revoke_quota(
     let found = service_host(&mut conn, id).await?;
     let target = known_user(&mut conn, user_id).await?;
 
+    let tenancy = crate::environments::reach_tenancy(&state, &found).await?;
     service_hosts::check_storage_capacity(
         &mut conn,
+        &tenancy,
         &found,
         &found,
         Some((target, found.default_storage_bytes)),
@@ -824,7 +961,7 @@ async fn revoke_quota(
         return Err(AppError::NotFound);
     }
 
-    reapply_one(&mut conn, &found, target).await;
+    reapply_one(&mut conn, &state, &found, target).await;
     resolved_response(&mut conn, &found, target).await.map(Json)
 }
 
@@ -895,9 +1032,9 @@ async fn resolved_response(
 /// is the source of truth; the machine is brought back in line by the next
 /// launch, which reapplies the same limits idempotently — the same reason
 /// there is no reconciler daemon.
-async fn reapply_one(conn: &mut AsyncPgConnection, host: &Host, user_id: Uuid) {
+async fn reapply_one(conn: &mut AsyncPgConnection, state: &AppState, host: &Host, user_id: Uuid) {
     match service_hosts::live_host_user(conn, host.id, user_id).await {
-        Ok(Some(_)) => service_hosts::reapply(conn, &[(host.id, user_id)]).await,
+        Ok(Some(_)) => service_hosts::reapply(conn, state, &[(host.id, user_id)]).await,
         Ok(None) => {}
         Err(error) => {
             tracing::warn!(host = %host.id, %user_id, %error, "could not tell whether a grant needs applying")
@@ -907,7 +1044,7 @@ async fn reapply_one(conn: &mut AsyncPgConnection, host: &Host, user_id: Uuid) {
 
 /// The same, for every materialised tenant — what a change to the host's
 /// defaults touches.
-async fn reapply_all(conn: &mut AsyncPgConnection, host: &Host) {
+async fn reapply_all(conn: &mut AsyncPgConnection, state: &AppState, host: &Host) {
     let rows = match service_hosts::tenants(conn, host.id).await {
         Ok(rows) => rows,
         Err(error) => {
@@ -920,7 +1057,7 @@ async fn reapply_all(conn: &mut AsyncPgConnection, host: &Host) {
         .iter()
         .map(|tenant| (host.id, tenant.user_id))
         .collect();
-    service_hosts::reapply(conn, &pairs).await;
+    service_hosts::reapply(conn, state, &pairs).await;
 }
 
 // ---------------------------------------------------------------------------

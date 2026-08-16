@@ -113,7 +113,7 @@ async fn main() {
         agents: Default::default(),
     };
 
-    service_hosts::spawn_expiry_sweeper(state.db.clone());
+    service_hosts::spawn_expiry_sweeper(state.clone());
 
     let cors_origins = config
         .cors_origins
