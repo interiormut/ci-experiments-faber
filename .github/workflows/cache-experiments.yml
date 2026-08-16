@@ -12,6 +12,7 @@ on:
           - both
           - layer
           - target-mount
+          - chef-layer
 
 jobs:
   build:
