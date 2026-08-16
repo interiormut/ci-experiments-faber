@@ -28,7 +28,10 @@ use crate::{
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/health", get(|| async { Json(json!({ "ok": true })) }))
+        .route(
+            "/health",
+            get(|| async { Json(json!({ "ok": true, "experiment": "source-change" })) }),
+        )
         .route("/api/config", get(config))
         .route("/api/me", get(me))
         .route("/api/logout", post(logout))
