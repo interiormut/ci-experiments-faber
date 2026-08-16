@@ -605,7 +605,21 @@ pub async fn admit(
                 })
                 .execute(conn)
                 .await
-                .map_err(|err| AppError::db(err, "service_hosts.admit.insert_container"))?;
+                .map_err(|err| match err {
+                    // The name is taken by a container that is still live —
+                    // the user's own, or another tenant's, since the index is
+                    // per host. Their mistake to fix, so it is theirs to read:
+                    // before the index went partial this arrived as a bare
+                    // unique violation, and half the time from a tombstone
+                    // they had no way to see.
+                    diesel::result::Error::DatabaseError(
+                        diesel::result::DatabaseErrorKind::UniqueViolation,
+                        _,
+                    ) => AppError::BadRequest(format!(
+                        "'{container_ref}' is already in use on this host"
+                    )),
+                    other => AppError::db(other, "service_hosts.admit.insert_container"),
+                })?;
 
             Ok(Admitted {
                 subject,
@@ -870,11 +884,18 @@ pub async fn allowance(
     }))
 }
 
+/// Where a tenant's scratch directory lands inside the container.
+///
+/// Named because the spawn path has to refuse a `root_path` that would land
+/// on top of it: two mounts with one destination is a launch the daemon
+/// refuses, and refusing it up there is cheaper than a tombstoned row here.
+pub const SCRATCH_PATH: &str = "/scratch";
+
 /// The mounts every container on a service host gets.
 pub fn mounts(paths: &environment::tenancy::UserPaths, root_path: &str) -> Vec<(String, String)> {
     vec![
         (path_string(&paths.work), root_path.to_owned()),
-        (path_string(&paths.scratch), "/scratch".to_owned()),
+        (path_string(&paths.scratch), SCRATCH_PATH.to_owned()),
     ]
 }
 
@@ -995,6 +1016,64 @@ mod tests {
                 ))
             ),
             "a second service host named 'build' was accepted",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_withdrawn_launch_gives_its_name_back() {
+        let Some(mut conn) = connection().await else {
+            return;
+        };
+        let user = a_user(&mut conn).await;
+        let host_id = insert_host(&mut conn, None, "shared").await.unwrap();
+
+        async fn register(
+            conn: &mut AsyncPgConnection,
+            host_id: Uuid,
+            user_id: Uuid,
+            id: Uuid,
+        ) -> Result<usize, diesel::result::Error> {
+            diesel::insert_into(host_container::table)
+                .values(&crate::models::host::NewHostContainer {
+                    id,
+                    host_id,
+                    user_id,
+                    container_ref: "faber-work",
+                    name: Some("work"),
+                    root_path: "/workspace",
+                    managed_at: Some(Utc::now()),
+                    image_id: None,
+                })
+                .execute(conn)
+                .await
+        }
+
+        // A launch that died on the machine: the row was written under the
+        // admission lock, then withdrawn when docker refused.
+        let failed = Uuid::now_v7();
+        register(&mut conn, host_id, user, failed).await.unwrap();
+        withdraw(&mut conn, failed).await;
+
+        // The retry has to work. Before the uniqueness went partial this was
+        // a bare unique violation against a tombstone the user's listing does
+        // not show, so the name was gone for good and the reason invisible.
+        let second = Uuid::now_v7();
+        register(&mut conn, host_id, user, second)
+            .await
+            .expect("a name held only by a withdrawn launch was still claimed");
+
+        // And the invariant that matters is untouched: two *live* rows may
+        // not name one container on one host.
+        let third = register(&mut conn, host_id, user, Uuid::now_v7()).await;
+        assert!(
+            matches!(
+                third,
+                Err(diesel::result::Error::DatabaseError(
+                    diesel::result::DatabaseErrorKind::UniqueViolation,
+                    _
+                ))
+            ),
+            "two live registrations were allowed to share a ref on one host",
         );
     }
 

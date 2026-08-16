@@ -1070,6 +1070,29 @@ async fn resolve_template(
         return Err(AppError::BadRequest("root_path must be absolute".into()));
     }
 
+    // The root path is a bind mount destination, and the daemon refuses a few
+    // of them. Refusing here rather than letting the launch carry a raw docker
+    // error back is not only a better message: a service-host launch has
+    // already written its admission row by the time the daemon is asked, so
+    // every attempt that dies down there costs a tombstone.
+    if root_path.trim_end_matches('/').is_empty() {
+        return Err(AppError::BadRequest(
+            "root_path cannot be '/' — it is a mount destination, and the \
+             daemon will not mount over a container's own root"
+                .into(),
+        ));
+    }
+    // Only on a shared host, where faber chooses the mounts and one of them is
+    // already `/scratch`. On a host the user owns there is no second mount to
+    // collide with.
+    if parent.service() && root_path.trim_end_matches('/') == crate::service_hosts::SCRATCH_PATH {
+        return Err(AppError::BadRequest(format!(
+            "root_path cannot be '{}' on a shared host — your scratch \
+             directory is mounted there",
+            crate::service_hosts::SCRATCH_PATH
+        )));
+    }
+
     Ok((template, root_path))
 }
 
@@ -1245,9 +1268,16 @@ async fn spawn_container(
 /// daemon hands back: the row has to name something before the daemon has been
 /// asked anything.
 ///
-/// The residue of a failure here is a tombstoned row, which is visible and
-/// costs nothing. The residue of the other ordering would be an unattributable
-/// container running on the machine everyone shares.
+/// The residue of a failure here is a tombstoned row, which costs nothing.
+/// The residue of the other ordering would be an unattributable container
+/// running on the machine everyone shares.
+///
+/// "Costs nothing" is a claim about the schema and was false for a while: the
+/// uniqueness on `(host_id, container_ref)` did not exclude tombstones, so a
+/// failed launch kept its name permanently, and the listing filters tombstones
+/// out — so the name was held by a row the user could not see. The index is
+/// partial now (`host_container_ref_live`). Anything else that reads a
+/// tombstone as live puts the cost back.
 async fn spawn_on_service_host(
     state: &AppState,
     user_id: Uuid,
