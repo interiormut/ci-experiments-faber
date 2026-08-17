@@ -59,9 +59,15 @@ const MEMORY_FLOOR_RATIO: f64 = 0.15;
 /// bomb hits a wall. Empirical, and the first number here to want tuning.
 const DEFAULT_PIDS_MAX: i32 = 4096;
 
-/// Per-container upper-layer cap, a *secondary* mechanism to the project
-/// quota. Safe to state as a per-container number only because the count
-/// limit exists: worst case is `container_max × this`.
+/// Per-container upper-layer cap, and the *only* bound on that layer. Safe to
+/// state as a per-container number only because the count limit exists: worst
+/// case is `container_max × this`.
+///
+/// It was a secondary mechanism while the root filesystem was read-only and the
+/// writable layer was not a real write path. A tenant with root writes to it
+/// constantly, and it sits outside the bind mount and so outside the project
+/// quota, which sees nothing of it. This number was chosen as a backstop and
+/// deserves re-choosing now that it is not one.
 pub const CONTAINER_LAYER_BYTES: i64 = 10 * 1024 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
@@ -783,16 +789,33 @@ pub async fn apply(tenancy: &Tenancy, host: &Host, subject: i32, quota: &Quota) 
 /// The host uid a tenant's container-root maps to, which is who their directory
 /// is given to.
 ///
-/// A CHECK constraint makes this present on every service host, so reaching the
-/// error means the row was written around the schema. Same shape as
-/// [`data_root`]: internal rather than a 400, because no request can cause it
-/// and nobody in the session can act on it.
+/// The CHECK constraint that requires this is `NOT VALID`, so it binds every
+/// row written since it was added and says nothing about rows that predate it.
+/// A service host provisioned before the daemon-wide user namespace arrived
+/// therefore reaches here with a null, and it is the one case that is neither
+/// a bug nor a bad request: the machine is real, the row is real, and what is
+/// missing is a number only an operator can read off that machine.
+///
+/// So it refuses with the fix named rather than with [`AppError::Internal`].
+/// The alternative — chowning a tenant's tree to a guessed uid — produces
+/// containers that start and cannot write, which is the failure this column was
+/// added to make impossible.
 fn container_root_uid(host: &Host) -> ApiResult<u32> {
     host.container_root_uid
         .and_then(|uid| u32::try_from(uid).ok())
         .ok_or_else(|| {
-            tracing::error!(host = %host.id, "service host has no usable container_root_uid");
-            AppError::Internal
+            tracing::error!(
+                host = %host.id,
+                name = %host.name,
+                "service host has no container_root_uid; launches refused until it is set"
+            );
+            AppError::ServiceUnavailable(format!(
+                "service host '{}' is not configured for user-namespace remapping: its \
+                 container_root_uid is unset. An operator sets it from `grep dockremap \
+                 /etc/subuid` on that machine, after configuring the docker daemon with \
+                 userns-remap.",
+                host.name
+            ))
         })
 }
 

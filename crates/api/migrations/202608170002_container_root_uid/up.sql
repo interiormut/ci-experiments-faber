@@ -47,5 +47,28 @@ COMMENT ON COLUMN host.container_root_uid IS
 -- correct owner for a tenant directory, and the failure would otherwise arrive
 -- as a container that cannot write its own workspace rather than as a refusal
 -- at provisioning.
+--
+-- `NOT VALID`, which is the whole of what this comment is about.
+--
+-- A deployment may already have service hosts, and there is no value this
+-- migration could give them. The right number is the first subuid of that
+-- machine's docker remap user — a fact about a machine the database has never
+-- seen and cannot ask. Backfilling a plausible-looking default (docker's usual
+-- 231072, say) would be worse than leaving it null: the row would satisfy the
+-- constraint, faber would chown tenant trees to a uid that machine's containers
+-- do not run as, and every container would start successfully and be unable to
+-- write. That is precisely the silent failure this column exists to prevent,
+-- and a guessed value walks straight into it while looking correct.
+--
+-- So the constraint holds for every row written or updated from now on, and
+-- says nothing about rows that predate it. An existing service host keeps its
+-- null and is refused at launch, loudly and with the fix named, until an
+-- operator reads `/etc/subuid` on that machine and sets the column.
+--
+-- Once every service host has one:
+--
+--   ALTER TABLE host VALIDATE CONSTRAINT host_service_needs_container_root_uid;
+--
+-- which takes no exclusive lock and is safe to run against a live deployment.
 ALTER TABLE host ADD CONSTRAINT host_service_needs_container_root_uid
-  CHECK (user_id IS NOT NULL OR container_root_uid IS NOT NULL);
+  CHECK (user_id IS NOT NULL OR container_root_uid IS NOT NULL) NOT VALID;

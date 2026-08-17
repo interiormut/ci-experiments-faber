@@ -773,7 +773,67 @@ promote by UUID.
 4. Promote an administrator (§7).
 5. Prepare and register service hosts (§6).
 
-### Upgrades
+### Upgrading a deployment that already has a service host
+
+**Read this before rolling the image if you have a service host provisioned.**
+
+The user-namespace change is not backward compatible with a host prepared
+before it. A host that was serving under the old model has a docker daemon
+without `userns-remap` and a `host` row without `container_root_uid`, and the
+new code needs both. Nothing about the upgrade repairs that automatically,
+because the value it would need — the first subuid of that machine's remap user
+— is a fact about a machine the database has never seen. Guessing it would
+produce tenant directories owned by a uid the containers do not run as, so every
+container would start successfully and be unable to write.
+
+So the migration adds its constraint `NOT VALID`: it binds every row written
+from then on and says nothing about rows that predate it. **The migration
+applies cleanly against an existing service host, and that host's launches are
+then refused** with an error naming the fix, until you do this:
+
+1. **Prepare the daemon** on that machine — add `"userns-remap": "default"` and
+   `"icc": false` to `/etc/docker/daemon.json` and restart docker, per
+   [§6.3](#63-docker). Restarting into `userns-remap` relocates existing image
+   and container layers under a subdirectory of `/var/lib/docker`; images will
+   need re-pulling.
+
+2. **Confirm `/var/lib/docker` has `prjquota`** ([§6.5](#65-filesystem)). It was
+   conditional before and is not now.
+
+3. **Read the remap base and record it:**
+
+   ```sh
+   grep dockremap /etc/subuid       # on the host
+   ```
+
+   ```sql
+   -- against Faber's database
+   UPDATE host SET container_root_uid = 231072 WHERE user_id IS NULL AND name = 'shared-1';
+   ```
+
+   Or `PATCH /api/admin/hosts/{id}` with `{"container_root_uid": 231072}`.
+
+4. **Existing tenant directories are re-owned on the next launch.** Faber's
+   `chown -R` is idempotent and runs on every launch, so no manual `chown` is
+   needed — but the first launch after the change walks each tenant's whole
+   tree, which is slow in proportion to its size.
+
+5. **Verify** with [§6.8](#68-verification), then close the constraint:
+
+   ```sql
+   ALTER TABLE host VALIDATE CONSTRAINT host_service_needs_container_root_uid;
+   ```
+
+   This takes no exclusive lock and is safe against a live deployment. After it,
+   a service host without the column is rejected by the database rather than at
+   launch.
+
+One behavioural change to expect on that host regardless: containers now run as
+**root** (`0:0`), overriding any `USER` in a service image, and the root
+filesystem is no longer read-only. Both are the point of the change, but an
+image that assumed either will behave differently.
+
+### Ordinary upgrades
 
 The API applies pending migrations at boot, so an upgrade is a normal image
 roll — with the single-process caveat from §2 about concurrent starts.
