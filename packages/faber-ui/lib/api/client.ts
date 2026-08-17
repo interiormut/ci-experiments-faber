@@ -386,9 +386,10 @@ export class FaberClient {
    *
    * The machine has to have been prepared first — cgroup v2 with the
    * controllers delegated down to faber's tenant slice, docker on the systemd
-   * cgroup driver, and `user_data_root` on a filesystem with project quotas.
-   * None of that is something faber does at runtime, and its absence surfaces
-   * as a confusing launch failure rather than as a refusal here.
+   * cgroup driver and with `--userns-remap` configured, and `user_data_root`
+   * on a filesystem with project quotas. None of that is something faber does
+   * at runtime, and its absence surfaces as a confusing launch failure rather
+   * than as a refusal here.
    */
   async createServiceHost(body: CreateServiceHostRequest): Promise<ServiceHost> {
     return this.request("POST", "/api/admin/hosts", { body })

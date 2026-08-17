@@ -122,6 +122,11 @@ struct CreateHostRequest {
     /// project quota that is their storage limit, so this has to be on a
     /// filesystem mounted with project quotas on.
     user_data_root: String,
+    /// What the daemon's `--userns-remap` maps container uid 0 to — the first
+    /// subuid of its remap user, as `/etc/subuid` records it. Tenant
+    /// directories are given to this uid, so a wrong number means every
+    /// container is refused its own workspace.
+    container_root_uid: u32,
     #[serde(default)]
     defaults: Limits,
 }
@@ -131,6 +136,10 @@ struct UpdateHostRequest {
     name: Option<String>,
     docker_endpoint: Option<String>,
     user_data_root: Option<String>,
+    /// Changing this re-owns every tenant directory on the next launch, which
+    /// is what makes it a correction rather than a migration: the daemon's
+    /// mapping is the truth and this column is only a record of it.
+    container_root_uid: Option<u32>,
     /// Replaces all four defaults at once. Omitted leaves them; sent, every
     /// field is the whole answer, including the `null`s.
     defaults: Option<Limits>,
@@ -145,6 +154,10 @@ struct ServiceHostResponse {
     name: String,
     docker_endpoint: Option<String>,
     user_data_root: Option<String>,
+    /// What faber believes the daemon's userns-remap maps container root to.
+    /// Faber records it and never reads it off the machine, so an operator
+    /// comparing this against `/etc/subuid` is the check that it is right.
+    container_root_uid: Option<i64>,
     created_at: DateTime<Utc>,
     /// Set means draining: no new launches, existing containers untouched.
     disabled_at: Option<DateTime<Utc>>,
@@ -324,6 +337,28 @@ fn validate_data_root(root: &str) -> ApiResult<()> {
     Ok(())
 }
 
+/// Zero is the one value here that must be refused, because it is not a
+/// mistyped uid — it is host root, and it is precisely the state
+/// `--userns-remap` exists to leave. A host recorded with it would chown every
+/// tenant tree to root and then hand containers a workspace they cannot write,
+/// which is the silent failure the CHECK constraint was added to prevent and
+/// would sail straight past it.
+///
+/// Nothing narrower is checked. A remap base is conventionally far above the
+/// system range, but "conventionally" is not a rule faber gets to enforce
+/// against somebody's `/etc/subuid`, and §7 of the runbook compares the two
+/// directly.
+fn validate_container_root_uid(uid: u32) -> ApiResult<()> {
+    if uid == 0 {
+        return Err(AppError::BadRequest(
+            "container_root_uid must not be 0: that is host root, which means the daemon \
+             has no userns-remap configured"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Limits are ceilings, and a ceiling of zero is a host nobody can use. A
 /// negative one is a typo the database would take.
 fn validate_limits(limits: &Limits) -> ApiResult<()> {
@@ -411,6 +446,7 @@ async fn host_response(
         name: host.name.clone(),
         docker_endpoint: host.docker_endpoint.clone(),
         user_data_root: host.user_data_root.clone(),
+        container_root_uid: host.container_root_uid,
         created_at: host.created_at,
         disabled_at: host.disabled_at,
         defaults: Limits::from(host),
@@ -468,6 +504,7 @@ async fn create_host(
         ));
     }
     validate_data_root(data_root)?;
+    validate_container_root_uid(input.container_root_uid)?;
     validate_limits(&input.defaults)?;
 
     let new_host = NewHost {
@@ -492,6 +529,7 @@ async fn create_host(
         default_storage_bytes: input.defaults.storage_bytes,
         default_container_max: input.defaults.container_max,
         user_data_root: Some(data_root),
+        container_root_uid: Some(i64::from(input.container_root_uid)),
     };
 
     let mut conn = state.db.get().await?;
@@ -590,6 +628,9 @@ async fn update_host(
             ));
         }
     }
+    if let Some(uid) = input.container_root_uid {
+        validate_container_root_uid(uid)?;
+    }
     if let Some(ref limits) = input.defaults {
         validate_limits(limits)?;
     }
@@ -612,6 +653,7 @@ async fn update_host(
         name,
         docker_endpoint: endpoint.map(Some),
         user_data_root: data_root.map(Some),
+        container_root_uid: input.container_root_uid.map(|uid| Some(i64::from(uid))),
         default_cpu_millis: input.defaults.map(|l| l.cpu_millis),
         default_memory_bytes: input.defaults.map(|l| l.memory_bytes),
         default_storage_bytes: input.defaults.map(|l| l.storage_bytes),

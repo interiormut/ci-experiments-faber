@@ -29,10 +29,16 @@
 //!   with no accounting code. Summing per-container limits in userspace would
 //!   reimplement what the parent slice does in the kernel and then drift from
 //!   it.
-//! * **Storage** — one XFS project quota per user directory. Not
-//!   `--storage-opt size=`, which caps a container's upper layer only, is
-//!   ignored by volumes entirely, and gives N containers N × limit rather than
-//!   the aggregate that was asked for.
+//! * **Storage** — one XFS project quota per user directory. The *aggregate*
+//!   is only ever this: `--storage-opt size=` caps a container's upper layer
+//!   only, is ignored by volumes entirely, and gives N containers N × limit
+//!   rather than the sum that was asked for. It is not a substitute and never
+//!   was. It is, however, no longer optional either — the read-only root
+//!   filesystem that used to keep the writable layer out of play went away
+//!   with the pinned uid, so the layer cap is now the only thing bounding a
+//!   write path the project quota cannot see. Two mechanisms bounding two
+//!   different things, and the count limit is what makes the second aggregate
+//!   at all.
 //!
 //! Both apply functions are idempotent and are meant to be called on every
 //! launch. That is the repair path, and it is why there is no reconciler
@@ -254,6 +260,18 @@ impl Tenancy {
     /// deletes whatever is largest — which is regularly `.git`, a downloaded
     /// dataset, or a build cache that took forty minutes to warm.
     ///
+    /// `container_root_uid` is what the daemon's `--userns-remap` maps
+    /// container uid 0 to, and it is who the tree is given to — so root inside
+    /// a tenant's container owns the workspace it is handed. It is passed in
+    /// rather than read off the machine for the reason at the top of this
+    /// module: what faber does to a host comes from configuration, never from
+    /// the machine's own idea of itself.
+    ///
+    /// A tenant who wants a non-root process to write here does it themselves,
+    /// with `chmod` inside their container. Owning the tree is what makes that
+    /// possible and is the whole of what faber owes them; faber cannot guess
+    /// which uids an image drops privileges to.
+    ///
     /// Idempotent: the directories are created if absent, and the project id
     /// and limit are rewritten every time. Shrinking below current usage is
     /// allowed and yields `EDQUOT` on new writes with existing data preserved.
@@ -262,6 +280,7 @@ impl Tenancy {
         data_root: &Path,
         subject: i32,
         storage_bytes: Option<i64>,
+        container_root_uid: u32,
     ) -> Result<UserPaths, Fault> {
         let paths = UserPaths::under(data_root, subject);
 
@@ -279,12 +298,25 @@ impl Tenancy {
         )
         .await?;
 
-        // The subject id is the host-side uid as well as the project id — one
-        // integer, so a container's files on disk and a line in an audit log
-        // name the same user without a translation table.
-        let owner = format!("{subject}:{subject}");
+        // Given to the uid the container's root maps to, not to `subject`.
+        // The tenant is root inside their container and has to be able to
+        // write their own workspace; a tree owned by anyone else refuses them
+        // at the mount boundary, which is the same wall the read-only root and
+        // the pinned uid used to be.
+        //
+        // What this gives up is that `subject` no longer names the owner on
+        // disk. It cannot: the remap is daemon-wide, so this uid is the same
+        // for every tenant, and correlating a file to a user now goes through
+        // the path and the project id rather than through `stat`. The project
+        // id is the one that matters and is unaffected — XFS accounts by
+        // directory tree, so a write under any uid still bills this tenant.
+        let owner = format!("{container_root_uid}:{container_root_uid}");
         self.run("chown", &["-R".to_owned(), owner, path_arg(&paths.home)?])
             .await?;
+        // Still 700. The mode is no longer what separates tenants — the remap
+        // makes every tenant's container-root one uid, so mode bits between
+        // them stopped meaning anything — but the owner is now the container's
+        // root, so 700 is exactly "the tenant, and nobody else on the machine".
         self.run("chmod", &["700".to_owned(), path_arg(&paths.home)?])
             .await?;
 

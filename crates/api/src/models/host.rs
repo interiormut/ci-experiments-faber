@@ -101,6 +101,12 @@ pub struct Host {
     /// Parent of the per-user directories a service host quotas. Required for
     /// a service host by CHECK, and meaningless for an owned one.
     pub user_data_root: Option<String>,
+    /// The host uid that container uid 0 maps to under the daemon's
+    /// `--userns-remap`, and therefore the owner faber gives a tenant's
+    /// directory. Required for a service host by CHECK; `None` on an owned
+    /// host, where faber confines nothing and the daemon's mapping is the
+    /// owner's business.
+    pub container_root_uid: Option<i64>,
 }
 
 impl Host {
@@ -135,6 +141,9 @@ pub struct NewHost<'a> {
     /// Required for a service host by CHECK — the parent of the per-user
     /// directories whose project quotas carry the storage limit.
     pub user_data_root: Option<&'a str>,
+    /// Required for a service host by CHECK — what the daemon's userns-remap
+    /// maps container uid 0 to, which is who ends up owning those directories.
+    pub container_root_uid: Option<i64>,
 }
 
 #[derive(AsChangeset, Default)]
@@ -160,6 +169,9 @@ pub struct UpdateHost<'a> {
     pub default_storage_bytes: Option<Option<i64>>,
     pub default_container_max: Option<Option<i32>>,
     pub user_data_root: Option<Option<&'a str>>,
+    /// Doubly optional like the rest, but the inner `None` is refused for a
+    /// service host by CHECK rather than meaning anything here.
+    pub container_root_uid: Option<Option<i64>>,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]

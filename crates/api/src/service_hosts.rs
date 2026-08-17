@@ -773,11 +773,27 @@ pub async fn apply(tenancy: &Tenancy, host: &Host, subject: i32, quota: &Quota) 
 
     let root = data_root(host)?;
     tenancy
-        .ensure_user_data(&root, subject, quota.storage_bytes)
+        .ensure_user_data(&root, subject, quota.storage_bytes, container_root_uid(host)?)
         .await
         .map_err(crate::environments::fault)?;
 
     Ok(())
+}
+
+/// The host uid a tenant's container-root maps to, which is who their directory
+/// is given to.
+///
+/// A CHECK constraint makes this present on every service host, so reaching the
+/// error means the row was written around the schema. Same shape as
+/// [`data_root`]: internal rather than a 400, because no request can cause it
+/// and nobody in the session can act on it.
+fn container_root_uid(host: &Host) -> ApiResult<u32> {
+    host.container_root_uid
+        .and_then(|uid| u32::try_from(uid).ok())
+        .ok_or_else(|| {
+            tracing::error!(host = %host.id, "service host has no usable container_root_uid");
+            AppError::Internal
+        })
 }
 
 /// Releases a user's materialisation on a host, returning the reservation.
@@ -967,8 +983,8 @@ mod tests {
         let id = Uuid::now_v7();
         diesel::sql_query(
             "INSERT INTO host (id, user_id, name, transport, exec_mode, docker_endpoint, \
-             user_data_root) VALUES ($1, $2, $3, 'local', 'docker', 'unix:///var/run/docker.sock', \
-             '/srv/faber')",
+             user_data_root, container_root_uid) VALUES ($1, $2, $3, 'local', 'docker', \
+             'unix:///var/run/docker.sock', '/srv/faber', 231072)",
         )
         .bind::<diesel::sql_types::Uuid, _>(id)
         .bind::<diesel::sql_types::Nullable<diesel::sql_types::Uuid>, _>(owner)

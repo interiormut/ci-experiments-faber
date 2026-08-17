@@ -70,6 +70,7 @@ diesel::table! {
         default_storage_bytes -> Nullable<Int8>,
         default_container_max -> Nullable<Int4>,
         user_data_root -> Nullable<Text>,
+        container_root_uid -> Nullable<Int8>,
     }
 }
 

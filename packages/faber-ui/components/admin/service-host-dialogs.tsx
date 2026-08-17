@@ -132,6 +132,7 @@ type HostForm = {
   name: string
   docker_endpoint: string
   user_data_root: string
+  container_root_uid: string
   defaults: LimitsForm
 }
 
@@ -139,6 +140,7 @@ const EMPTY_HOST: HostForm = {
   name: "",
   docker_endpoint: "unix:///var/run/docker.sock",
   user_data_root: "",
+  container_root_uid: "",
   defaults: EMPTY_LIMITS,
 }
 
@@ -178,6 +180,7 @@ export function ServiceHostFormDialog({
           name: editing.name,
           docker_endpoint: editing.docker_endpoint ?? "",
           user_data_root: editing.user_data_root ?? "",
+          container_root_uid: editing.container_root_uid?.toString() ?? "",
           defaults: limitsForm(editing.defaults),
         }
       : EMPTY_HOST,
@@ -194,10 +197,26 @@ export function ServiceHostFormDialog({
     setSubmitting(true)
     setError(null)
     try {
+      // `Number("")` is 0, not NaN, so an empty field would otherwise submit
+      // as host root — which is exactly the value the server refuses, and the
+      // one that means no remap is configured at all. Emptiness is checked
+      // before the number is.
+      //
+      // Nothing else about the number is checked here: whether it matches the
+      // daemon's mapping is a fact about the machine, and the only honest
+      // check for that is on the machine.
+      const remapRootText = form.container_root_uid.trim()
+      const remapRoot = Number(remapRootText)
+      if (!remapRootText || !Number.isInteger(remapRoot) || remapRoot <= 0) {
+        setError("container root uid must be a whole number above zero")
+        return
+      }
+
       const body = {
         name: form.name.trim(),
         docker_endpoint: form.docker_endpoint.trim(),
         user_data_root: form.user_data_root.trim(),
+        container_root_uid: remapRoot,
         defaults: limitsFrom(form.defaults),
       }
       if (editing) {
@@ -254,6 +273,16 @@ export function ServiceHostFormDialog({
                 : "One directory per tenant lives here, each carrying the project quota that is their storage limit."
             }
             required={!editing}
+          />
+
+          <AnimatedField
+            id="service-host-container-root-uid"
+            label="Container root uid"
+            value={form.container_root_uid}
+            onChange={(v) => setForm((f) => ({ ...f, container_root_uid: v }))}
+            placeholder="231072"
+            hint="What the daemon's --userns-remap maps container uid 0 to: the first subuid of its remap user, from that machine's /etc/subuid. Tenant directories are given to it, so a wrong number leaves every container unable to write its own workspace."
+            required
           />
 
           <div className="rounded-lg border border-border p-3">

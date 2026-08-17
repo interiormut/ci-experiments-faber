@@ -568,12 +568,14 @@ async fn create(
         docker_endpoint,
         root_path: host_root,
         // Limits and a tenant data root belong to a host faber operates.
-        // Nobody shares this one, so there is nobody to bound.
+        // Nobody shares this one, so there is nobody to bound — and the
+        // daemon's uid mapping, whatever it is, is the owner's own business.
         default_cpu_millis: None,
         default_memory_bytes: None,
         default_storage_bytes: None,
         default_container_max: None,
         user_data_root: None,
+        container_root_uid: None,
     };
 
     let inserted: Host = diesel::insert_into(host::table)
@@ -1407,7 +1409,6 @@ async fn launch_on_machine(
         .collect();
 
     let slice = environment::tenancy::slice_name(admitted.subject);
-    let subject = format!("{}:{}", admitted.subject, admitted.subject);
     let create = engine::Create {
         name: Some(name),
         image: &template.reference,
@@ -1418,8 +1419,6 @@ async fn launch_on_machine(
         labels,
         confinement: Some(engine::Confinement {
             cgroup_parent: &slice,
-            user: &subject,
-            read_only_root: true,
             // Sized against the memory grant, because tmpfs charges the memory
             // cgroup: a quarter of the grant is room to work without letting
             // `/tmp` be the whole of it.

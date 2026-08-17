@@ -641,6 +641,10 @@ export interface ServiceHost {
   name: string
   docker_endpoint: string | null
   user_data_root: string | null
+  /** What faber believes the daemon's `--userns-remap` maps container uid 0
+   *  to. Faber records it and never reads it off the machine, so comparing
+   *  this against the host's `/etc/subuid` is the check that it is right. */
+  container_root_uid: number | null
   created_at: Timestamp
   /** Set means draining: no new launches, whatever is running left alone. */
   disabled_at: Timestamp | null
@@ -689,6 +693,11 @@ export interface CreateServiceHostRequest {
   /** Absolute. Parent of the per-user directories whose project quotas carry
    *  the storage limit. */
   user_data_root: string
+  /** The first subuid of the daemon's `--userns-remap` user, as `/etc/subuid`
+   *  records it — the host uid a tenant's container-root maps to. Tenant
+   *  directories are given to it, so a wrong number leaves every container
+   *  unable to write its own workspace. */
+  container_root_uid: number
   defaults?: Limits
 }
 
@@ -699,6 +708,10 @@ export interface UpdateServiceHostRequest {
   /** Refused once the host has tenants: their data lives under the current
    *  root and faber does not move it. */
   user_data_root?: string
+  /** A correction, not a migration: the daemon's mapping is the truth and this
+   *  only records it. Changing it re-owns every tenant directory on the next
+   *  launch. */
+  container_root_uid?: number
   /** Replaces all four at once. Omit to leave them alone. */
   defaults?: Limits
   /** `true` drains: no new launches, nothing already running is touched. */
