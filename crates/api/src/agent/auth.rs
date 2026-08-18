@@ -17,7 +17,9 @@ use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, SelectableHelper};
 use diesel_async::RunQueryDsl;
 use sha2::{Digest, Sha256};
 
-use crate::{error::AppError, models::agent::AgentCredential, schema::agent_credential, state::AppState};
+use crate::{
+    error::AppError, models::agent::AgentCredential, schema::agent_credential, state::AppState,
+};
 
 /// Turns a bearer token into the value stored in `token_hash`. SHA-256
 /// rather than a slow KDF, deliberately: this hashes a 256-bit CSPRNG value,

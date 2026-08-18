@@ -184,7 +184,11 @@ pub struct Capabilities {
     pub vision: bool,
     /// See [`ModelConfig::reasoning_history`] — that reader is the one the run
     /// path uses, since it has to answer for a row that carries nothing here.
-    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub reasoning_history: Option<llm::ReasoningHistory>,
 }
 
@@ -274,7 +278,10 @@ mod tests {
             config.advanced_options(),
             llm::AdvancedOptions {
                 reasoning_split: true,
-                extra: serde_json::json!({ "top_k": 5 }).as_object().unwrap().clone(),
+                extra: serde_json::json!({ "top_k": 5 })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
             }
         );
     }

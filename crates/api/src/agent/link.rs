@@ -188,7 +188,9 @@ impl AsyncWrite for WsStream {
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let result = Pin::new(&mut self.ws).poll_flush(cx).map_err(io::Error::other);
+        let result = Pin::new(&mut self.ws)
+            .poll_flush(cx)
+            .map_err(io::Error::other);
         if result.is_ready() {
             // Whatever was queued — including a ping sent from `poll_read`
             // that didn't flush on its first attempt — just did.
@@ -198,6 +200,8 @@ impl AsyncWrite for WsStream {
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.ws).poll_close(cx).map_err(io::Error::other)
+        Pin::new(&mut self.ws)
+            .poll_close(cx)
+            .map_err(io::Error::other)
     }
 }

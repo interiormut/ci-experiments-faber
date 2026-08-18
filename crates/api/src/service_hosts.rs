@@ -779,7 +779,12 @@ pub async fn apply(tenancy: &Tenancy, host: &Host, subject: i32, quota: &Quota) 
 
     let root = data_root(host)?;
     tenancy
-        .ensure_user_data(&root, subject, quota.storage_bytes, container_root_uid(host)?)
+        .ensure_user_data(
+            &root,
+            subject,
+            quota.storage_bytes,
+            container_root_uid(host)?,
+        )
         .await
         .map_err(crate::environments::fault)?;
 
