@@ -535,6 +535,17 @@ async fn execute(
         harness::Surface::definitions(),
         Arc::clone(&surface).invoker(),
     );
+    // Presentation policy and persistence are API-owned. The harness merely
+    // carries this projection alongside its other generic tool surfaces.
+    let present = Arc::new(crate::presentation::tool::PresentTool::new(
+        state.clone(),
+        user_id,
+        session_id,
+    ));
+    toolbox.add(
+        crate::presentation::tool::PresentTool::definitions(),
+        present.invoker(),
+    );
     if let Some(engine) = &state.search {
         let web = Arc::new(harness::Web::new(Arc::clone(engine)));
         toolbox.add(harness::Web::definitions(), web.invoker());

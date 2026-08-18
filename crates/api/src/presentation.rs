@@ -31,6 +31,7 @@ use crate::{
 
 pub mod proxy;
 pub mod resolve;
+pub mod tool;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {
