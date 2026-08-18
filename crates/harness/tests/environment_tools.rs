@@ -63,7 +63,7 @@ fn the_shipped_harness_runs_a_granted_tool_without_defining_one() {
         tool_call_reply(
             "call_1",
             "read",
-            r#"{"target":"build","path":"/hello.txt"}"#,
+            r#"{"execute_in":"build","path":"/hello.txt"}"#,
         ),
         text_reply("the file says: from the environment"),
     ]));
@@ -116,7 +116,7 @@ fn a_command_that_exits_nonzero_comes_back_as_a_result_the_model_can_act_on() {
         tool_call_reply(
             "call_1",
             "exec",
-            r#"{"target":"build","command":"echo nope >&2; exit 2"}"#,
+            r#"{"execute_in":"build","command":"echo nope >&2; exit 2"}"#,
         ),
         text_reply("it exited 2"),
     ]));
@@ -153,7 +153,7 @@ fn a_call_against_an_unbound_label_is_denied_rather_than_answered_empty() {
     let dir = TempDir::new("unbound");
 
     let client = Arc::new(Scripted::sequence(vec![
-        tool_call_reply("call_1", "exec", r#"{"target":"staging","command":"true"}"#),
+        tool_call_reply("call_1", "exec", r#"{"execute_in":"staging","command":"true"}"#),
         text_reply("staging is not bound"),
     ]));
 
@@ -189,7 +189,7 @@ fn the_tool_loop_commits_the_whole_exchange_and_not_just_its_last_turn() {
     let dir = TempDir::new("lineage");
 
     let client = Arc::new(Scripted::sequence(vec![
-        tool_call_reply("call_1", "targets", "{}"),
+        tool_call_reply("call_1", "bound_environments", "{}"),
         text_reply("one environment is bound"),
     ]));
 

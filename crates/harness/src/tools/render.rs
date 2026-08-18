@@ -185,7 +185,7 @@ pub fn stats(target: &str, applied: &[Stat]) -> String {
 /// runs somewhere with a ceiling.
 pub struct Target<'a> {
     pub manifest: &'a Manifest,
-    /// Read live at the moment `targets` was called, never at bind — which is
+    /// Read live at the moment `bound_environments` was called, never at bind — which is
     /// the whole point of reporting it here rather than in the manifest.
     pub allowance: Option<environment::tenancy::AllowanceReport>,
 }

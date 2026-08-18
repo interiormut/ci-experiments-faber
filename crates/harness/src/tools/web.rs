@@ -587,7 +587,7 @@ mod tests {
     fn search_takes_no_target() {
         let tool = &Web::definitions()[0];
         assert_eq!(tool.name, "search");
-        assert!(tool.input_schema["properties"].get("target").is_none());
+        assert!(tool.input_schema["properties"].get("execute_in").is_none());
         assert!(tool.description.len() < 400, "{}", tool.description.len());
     }
 }

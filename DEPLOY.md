@@ -695,7 +695,7 @@ The first must print `0` and then `apt-ok`. The second must **fail** the ping;
 printing `REACHABLE` means one tenant can reach another's containers over IP and
 the host is not fit to serve.
 
-The `targets` tool reports the same numbers back from inside a run, read live on
+The `bound_environments` tool reports the same numbers back from inside a run, read live on
 every call, which is the fastest way to confirm the whole chain end to end.
 
 ### 6.9 Releasing a tenant is destructive, immediately

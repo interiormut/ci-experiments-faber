@@ -17,9 +17,9 @@
 //! - **Invalid input never comes back as an empty result.** A missing
 //!   parameter, a parameter of the wrong type, and a genuinely empty answer are
 //!   three different things and never share a rendering.
-//! - **The target is required and never defaulted** — see [`schema`].
+//! - **The execution environment is required and never defaulted** — see [`schema`].
 //! - **The agent cannot bind.** There is no bind, unbind, or discover verb, and
-//!   `targets` enumerates what is bound rather than what exists on the machine.
+//!   `bound_environments` enumerates what is bound rather than what exists on the machine.
 //!   Binding is the user's, and it reaches the run as data.
 //!
 //! The registry is read-only here on purpose. Bindings are established by the
@@ -98,7 +98,7 @@ impl Surface {
     }
 
     async fn route(&self, name: &str, input: Value) -> Result<String, String> {
-        if name == "targets" {
+        if name == "bound_environments" {
             // Each live target is asked for its ceiling here rather than at
             // bind, so the numbers are the machine's as of this call.
             let mut targets = Vec::new();
@@ -111,7 +111,7 @@ impl Surface {
             return Ok(render::manifests(&targets));
         }
 
-        let label = Label::from(string(&input, "target")?);
+        let label = Label::from(string(&input, "execute_in")?);
         let target = self
             .registry
             .target(&label)
@@ -126,7 +126,7 @@ impl Surface {
             "read" => self.read(target.as_ref(), &input).await,
             "patch" => self.patch(target.as_ref(), &input).await,
             other => Err(format!(
-                "`{other}` is not one of this surface's tools; `targets` lists what is bound"
+                "`{other}` is not one of this surface's tools; `bound_environments` lists what is bound"
             )),
         }
     }
@@ -521,18 +521,18 @@ mod tests {
     async fn a_call_against_a_label_nothing_bound_is_not_bound() {
         let surface = empty_surface();
         let result = surface
-            .invoke("exec", json!({ "target": "build", "command": "true" }))
+            .invoke("exec", json!({ "execute_in": "build", "command": "true" }))
             .await;
         assert!(result.is_error);
         assert!(result.content.contains("not_bound"));
     }
 
     #[tokio::test]
-    async fn a_missing_target_is_a_named_validation_error_rather_than_an_empty_answer() {
+    async fn a_missing_execute_in_is_a_named_validation_error_rather_than_an_empty_answer() {
         let surface = empty_surface();
         let result = surface.invoke("exec", json!({ "command": "true" })).await;
         assert!(result.is_error);
-        assert!(result.content.contains("`target` is required"));
+        assert!(result.content.contains("`execute_in` is required"));
         assert!(!result.content.is_empty());
     }
 
@@ -541,7 +541,7 @@ mod tests {
         let dir = TempDir::new("wrong-type");
         let surface = bound_surface(&dir.0).await;
         let result = surface
-            .invoke("exec", json!({ "target": "build", "command": 7 }))
+            .invoke("exec", json!({ "execute_in": "build", "command": 7 }))
             .await;
         assert!(result.is_error);
         assert!(result.content.contains("`command` must be a string"));
@@ -555,7 +555,7 @@ mod tests {
         let result = surface
             .invoke(
                 "read",
-                json!({ "target": "build", "path": "/a", "offset": 40 }),
+                json!({ "execute_in": "build", "path": "/a", "offset": 40 }),
             )
             .await;
         assert!(result.is_error);
@@ -569,7 +569,7 @@ mod tests {
         let result = surface
             .invoke(
                 "exec",
-                json!({ "target": "build", "command": "echo out; echo err >&2; exit 3" }),
+                json!({ "execute_in": "build", "command": "echo out; echo err >&2; exit 3" }),
             )
             .await;
 
@@ -590,7 +590,7 @@ mod tests {
         let result = surface
             .invoke(
                 "read",
-                json!({ "target": "build", "path": "/../etc/passwd" }),
+                json!({ "execute_in": "build", "path": "/../etc/passwd" }),
             )
             .await;
         assert!(result.is_error);
@@ -608,7 +608,7 @@ mod tests {
             .invoke(
                 "patch",
                 json!({
-                    "target": "build",
+                    "execute_in": "build",
                     "ops": [{ "op": "add", "path": "/notes.txt", "content": "one\ntwo\n" }],
                 }),
             )
@@ -617,7 +617,7 @@ mod tests {
         assert!(written.content.contains("build:/notes.txt"));
 
         let read = surface
-            .invoke("read", json!({ "target": "build", "path": "/notes.txt" }))
+            .invoke("read", json!({ "execute_in": "build", "path": "/notes.txt" }))
             .await;
         assert!(!read.is_error, "{}", read.content);
         assert!(read.content.contains("two"));
@@ -626,7 +626,7 @@ mod tests {
             .invoke(
                 "patch",
                 json!({
-                    "target": "build",
+                    "execute_in": "build",
                     "ops": [{
                         "op": "update", "path": "/notes.txt",
                         "old": "two", "new": "three",
@@ -638,7 +638,7 @@ mod tests {
 
         // What `list` used to answer, from the verb that stayed.
         let listed = surface
-            .invoke("exec", json!({ "target": "build", "command": "ls" }))
+            .invoke("exec", json!({ "execute_in": "build", "command": "ls" }))
             .await;
         assert!(!listed.is_error, "{}", listed.content);
         assert!(listed.content.contains("notes.txt"));
@@ -652,7 +652,7 @@ mod tests {
             .invoke(
                 "patch",
                 json!({
-                    "target": "build",
+                    "execute_in": "build",
                     "ops": [{ "op": "add", "path": "/twice.txt", "content": "a\na\n" }],
                 }),
             )
@@ -662,7 +662,7 @@ mod tests {
             .invoke(
                 "patch",
                 json!({
-                    "target": "build",
+                    "execute_in": "build",
                     "ops": [{ "op": "update", "path": "/twice.txt", "old": "a", "new": "b" }],
                 }),
             )
@@ -674,7 +674,7 @@ mod tests {
             .invoke(
                 "patch",
                 json!({
-                    "target": "build",
+                    "execute_in": "build",
                     "ops": [{
                         "op": "update", "path": "/twice.txt",
                         "old": "a", "new": "b", "all": true,
@@ -688,7 +688,7 @@ mod tests {
     #[tokio::test]
     async fn targets_answers_on_an_empty_registry_without_pretending_it_can_bind_one() {
         let surface = empty_surface();
-        let result = surface.invoke("targets", json!({})).await;
+        let result = surface.invoke("bound_environments", json!({})).await;
         assert!(!result.is_error);
         assert!(result.content.contains("No environments are bound"));
         // The surface must not offer a way out of this that the agent does not
@@ -718,11 +718,11 @@ mod tests {
             .into_iter()
             .map(|tool| tool.name)
             .collect();
-        assert_eq!(names.first().map(String::as_str), Some("targets"));
+        assert_eq!(names.first().map(String::as_str), Some("bound_environments"));
         assert_eq!(names.last().map(String::as_str), Some("search"));
 
         let invoker = toolbox.invoker();
-        let listed = invoker("targets".to_owned(), json!({}))
+        let listed = invoker("bound_environments".to_owned(), json!({}))
             .await
             .expect("a granted tool");
         assert!(listed.content.contains("build"));
@@ -761,7 +761,7 @@ mod tests {
     async fn targets_publishes_the_manifest_the_model_has_to_reason_about() {
         let dir = TempDir::new("manifest");
         let surface = bound_surface(&dir.0).await;
-        let result = surface.invoke("targets", json!({})).await;
+        let result = surface.invoke("bound_environments", json!({})).await;
         assert!(!result.is_error);
         assert!(result.content.contains("build"));
         assert!(result.content.contains("root"));

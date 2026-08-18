@@ -28,11 +28,11 @@ export type ToolDisplay = {
 
 /**
  * Verb phrases rather than bare nouns, because the row is a record of
- * something that happened. `targets` is the odd one out — it names no subject,
+ * something that happened. `bound_environments` is the odd one out — it names no subject,
  * so its title has to carry the whole sentence.
  */
 const TITLES: Record<string, string> = {
-  targets: "List environments",
+  bound_environments: "List environments",
   exec: "Run command",
   start: "Start process",
   output: "Read process output",
@@ -60,17 +60,17 @@ function summarize(name: string, input: unknown): string | undefined {
   const args = asObject(input)
   if (!args) return undefined
 
-  // Every tool but `targets` requires one, so naming it on each row would put
+  // Every tool but `bound_environments` requires one, so naming it on each row would put
   // the same token down the whole timeline for the ordinary single-environment
   // session — and at the front of the line, the part truncation spares. It is
   // the fallback subject instead: better than an empty second line when the
   // call has nothing else to identify it.
-  return describe(name, args) ?? str(args.target)
+  return describe(name, args) ?? str(args.execute_in)
 }
 
 function describe(name: string, args: Record<string, JsonValue>): string | undefined {
   switch (name) {
-    case "targets":
+    case "bound_environments":
       return undefined
 
     case "exec":

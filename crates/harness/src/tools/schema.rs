@@ -3,18 +3,18 @@
 //! Three properties this file exists to hold still.
 //!
 //! **The schema is a constant.** It is not built from the bindings, not
-//! filtered by what any target can do, and not rebuilt when a target is bound
+//! filtered by what any environment can do, and not rebuilt when an environment is bound
 //! mid-session. Tool definitions sit near the top of the request and every
 //! byte after them is cached against them, so a schema that varied with the
 //! binding set would invalidate the whole prefix each time a user added an
 //! environment — and would make binding mid-run impossible rather than merely
 //! expensive. Capability lives in the manifest, which is data at the end of
-//! the context, and a call against a target that cannot answer it is denied
+//! the context, and a call against an environment that cannot answer it is denied
 //! with the capability named.
 //!
-//! **`target` is required on every call and never defaulted.** It is a plain
+//! **`execute_in` is required on every call and never defaulted.** It is a plain
 //! string, not an enum of bound labels — an enum would put the bindings back
-//! into the schema through the side door. A defaulted target means a forgotten
+//! into the schema through the side door. A defaulted environment means a forgotten
 //! parameter silently routes to a machine the model was not thinking about,
 //! and the failures that produces are the destructive ones: an `rm -rf`, a
 //! migration, a service restart on the wrong host. An omitted required
@@ -32,12 +32,12 @@
 
 use serde_json::{Value, json};
 
-/// The label of the target a call runs against. Repeated on every tool
+/// The label of the environment a call runs against. Repeated on every tool
 /// because every tool needs it and none of them may infer it.
-fn target_property() -> Value {
+fn execute_in_property() -> Value {
     json!({
         "type": "string",
-        "description": "The bound environment to run against. Call `targets` to list them.",
+        "description": "The bound environment to execute in. Call `bound_environments` to list them.",
     })
 }
 
@@ -60,10 +60,10 @@ fn path_property(extra: &str) -> Value {
 
 fn tool(name: &str, description: &str, mut properties: Value, required: &[&str]) -> llm::ToolDef {
     if let Value::Object(fields) = &mut properties {
-        fields.insert("target".to_owned(), target_property());
+        fields.insert("execute_in".to_owned(), execute_in_property());
     }
     let mut required: Vec<&str> = required.to_vec();
-    required.insert(0, "target");
+    required.insert(0, "execute_in");
 
     llm::ToolDef {
         name: name.to_owned(),
@@ -92,7 +92,7 @@ fn tool(name: &str, description: &str, mut properties: Value, required: &[&str])
 /// past-the-end apart), and the one mutation verb.
 pub fn definitions() -> Vec<llm::ToolDef> {
     vec![
-        targets(),
+        bound_environments(),
         exec(),
         start(),
         output(),
@@ -103,11 +103,11 @@ pub fn definitions() -> Vec<llm::ToolDef> {
     ]
 }
 
-/// The only tool with no `target`, because it is the one that answers what the
+/// The only tool with no `execute_in`, because it is the one that answers what the
 /// targets are.
-fn targets() -> llm::ToolDef {
+fn bound_environments() -> llm::ToolDef {
     llm::ToolDef {
-        name: "targets".to_owned(),
+        name: "bound_environments".to_owned(),
         description: "List the bound environments: os, arch, shell, root, which verbs each \
                       answers, which tools were found on it, whether it can reach the network, \
                       and whether its root is container-enforced."
@@ -302,20 +302,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_tool_but_targets_requires_a_target_it_cannot_default() {
+    fn every_tool_but_targets_requires_an_environment_it_cannot_default() {
         for tool in definitions() {
             let required = tool.input_schema["required"].as_array().cloned();
-            if tool.name == "targets" {
-                assert!(required.is_none(), "`targets` takes no parameters");
+            if tool.name == "bound_environments" {
+                assert!(required.is_none(), "`bound_environments` takes no parameters");
                 continue;
             }
             let required = required.expect("every other tool has required parameters");
             assert!(
-                required.iter().any(|name| name == "target"),
-                "`{}` must require a target",
+                required.iter().any(|name| name == "execute_in"),
+                "`{}` must require execute_in",
                 tool.name
             );
-            let property = &tool.input_schema["properties"]["target"];
+            let property = &tool.input_schema["properties"]["execute_in"];
             // A plain string, never an enum: an enum of bound labels would put
             // the binding set back into the prefix, which is exactly what
             // makes mid-session binding cheap to avoid.
