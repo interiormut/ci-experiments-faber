@@ -16,11 +16,14 @@ mod db;
 mod environments;
 mod error;
 mod models;
+#[allow(dead_code)]
+mod presentation;
 mod resolve;
 mod routes;
 mod run;
 mod schema;
 mod service_hosts;
+mod ssh_pool;
 mod state;
 mod websearch;
 
@@ -111,6 +114,8 @@ async fn main() {
         runs: Default::default(),
         interrupts: Default::default(),
         agents: Default::default(),
+        ssh: Default::default(),
+        presentation_addresses: Default::default(),
     };
 
     service_hosts::spawn_expiry_sweeper(state.clone());

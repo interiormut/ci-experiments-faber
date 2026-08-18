@@ -18,11 +18,16 @@ test-provider = ["surge/test-provider"]
 llm = { path = "../llm" }
 harness = { path = "../harness" }
 environment = { path = "../environment" }
+proxies = { path = "../proxies" }
 search = { path = "../search" }
 axum = { version = "0.8", features = ["macros", "ws"] }
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
 bytes = "1"
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures = "0.3"
+async-trait = "0.1"
 async-stream = "0.3"
 url = "2"
 sha2 = "0.10"
@@ -55,8 +60,3 @@ base64 = "0.22"
 surge = { git = "https://github.com/panitdev/surge", rev = "37b17b8fad3093eb8ed633b21016659ccdf6c4b3", features = [
   "router",
 ] }
-
-[dev-dependencies]
-# Only for test doubles of `environment`'s object-safe traits: the crate
-# itself never implements one.
-async-trait = "0.1"

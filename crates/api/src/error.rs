@@ -15,6 +15,9 @@ pub enum AppError {
     #[error("service unavailable: {0}")]
     ServiceUnavailable(String),
 
+    #[error("bad gateway: {0}")]
+    BadGateway(String),
+
     #[error("not found")]
     NotFound,
 
@@ -121,6 +124,7 @@ impl AppError {
             AppError::Harness(_) => {}
             AppError::Unauthorized(_)
             | AppError::ServiceUnavailable(_)
+            | AppError::BadGateway(_)
             | AppError::NotFound
             | AppError::Forbidden(_)
             | AppError::BadRequest(_)
@@ -145,6 +149,7 @@ impl IntoResponse for AppError {
         let (status, msg): (StatusCode, String) = match &self {
             AppError::Unauthorized(_) => (StatusCode::UNAUTHORIZED, "unauthorized".to_owned()),
             AppError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
+            AppError::BadGateway(msg) => (StatusCode::BAD_GATEWAY, msg.clone()),
             AppError::NotFound => (StatusCode::NOT_FOUND, "not found".to_owned()),
             AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),

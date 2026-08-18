@@ -5,7 +5,9 @@ use crate::{
     agent::AgentRegistry,
     config::Config,
     db::DbPool,
+    presentation::resolve::ContainerAddressCache,
     run::{InterruptRegistry, RunRegistry},
+    ssh_pool::SshSessionPool,
 };
 
 /// 32-byte master key for envelope encryption. Never printed — Debug is intentionally redacted.
@@ -54,6 +56,9 @@ pub struct AppState {
     /// same reason `runs` is — a bind only finds a daemon whose connection
     /// landed on this process, and faber runs as one.
     pub agents: Arc<AgentRegistry>,
+    /// Authenticated SSH sessions shared across binds and preview channels.
+    pub ssh: Arc<SshSessionPool>,
+    pub presentation_addresses: Arc<ContainerAddressCache>,
 }
 
 /// Required by `surge::AuthSession`, which resolves the provider off the router state.

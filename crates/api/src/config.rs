@@ -36,6 +36,13 @@ pub struct Config {
     /// command unservable, which is why it is an `Option` rather than a
     /// default that would be silently wrong.
     pub public_url: Option<String>,
+    /// Host suffix used by dormant live-preview URL construction. Production
+    /// deployments set this to a separate registrable domain.
+    pub preview_domain: String,
+    /// `http` for local development; production preview domains use `https`.
+    pub preview_scheme: String,
+    pub preview_connect_timeout: Duration,
+    pub preview_header_timeout: Duration,
     /// Where the agent daemon binaries served to enrolling hosts live, one
     /// file per architecture. The image bakes them in; a dev checkout has
     /// them wherever cargo put them.
@@ -93,6 +100,22 @@ impl Config {
                 .ok()
                 .map(|value| value.trim().trim_end_matches('/').to_owned())
                 .filter(|value| !value.is_empty()),
+            preview_domain: env::var("FABER_PREVIEW_DOMAIN")
+                .unwrap_or_else(|_| "localhost".to_owned())
+                .trim()
+                .trim_start_matches('.')
+                .to_owned(),
+            preview_scheme: env::var("FABER_PREVIEW_SCHEME").unwrap_or_else(|_| "http".to_owned()),
+            preview_connect_timeout: env::var("FABER_PREVIEW_CONNECT_TIMEOUT_SECS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .map(Duration::from_secs)
+                .unwrap_or_else(|| Duration::from_secs(10)),
+            preview_header_timeout: env::var("FABER_PREVIEW_HEADER_TIMEOUT_SECS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .map(Duration::from_secs)
+                .unwrap_or_else(|| Duration::from_secs(30)),
             // The image copies the binaries here; a dev checkout falls back
             // to cargo's release directory, so `cargo run` can serve an
             // installer script built from a local `cargo build --release -p

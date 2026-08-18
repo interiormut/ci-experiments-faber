@@ -530,6 +530,7 @@ async fn create_host(
         default_container_max: input.defaults.container_max,
         user_data_root: Some(data_root),
         container_root_uid: Some(i64::from(input.container_root_uid)),
+        preview_network: None,
     };
 
     let mut conn = state.db.get().await?;

@@ -71,6 +71,20 @@ diesel::table! {
         default_container_max -> Nullable<Int4>,
         user_data_root -> Nullable<Text>,
         container_root_uid -> Nullable<Int8>,
+        preview_network -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
+    presentation (id) {
+        id -> Uuid,
+        session_id -> Uuid,
+        environment_label -> Text,
+        port -> Int4,
+        token -> Text,
+        upstream_host_mode -> Text,
+        created_at -> Timestamptz,
+        revoked_at -> Nullable<Timestamptz>,
     }
 }
 
@@ -306,6 +320,7 @@ diesel::joinable!(host_probe -> host_container (container_id));
 diesel::joinable!(image -> users (user_id));
 diesel::joinable!(models -> users (user_id));
 diesel::joinable!(models -> credentials (credential_id));
+diesel::joinable!(presentation -> session (session_id));
 diesel::joinable!(run -> thread (thread_id));
 diesel::joinable!(session -> workspace (workspace_id));
 diesel::joinable!(session_environment -> session (session_id));
@@ -334,6 +349,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     host_user_quota,
     image,
     models,
+    presentation,
     run,
     session,
     session_environment,

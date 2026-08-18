@@ -107,6 +107,9 @@ pub struct Host {
     /// host, where faber confines nothing and the daemon's mapping is the
     /// owner's business.
     pub container_root_uid: Option<i64>,
+    /// Docker network selected when resolving a container for live preview.
+    /// If absent, only an unambiguous single attached network is accepted.
+    pub preview_network: Option<String>,
 }
 
 impl Host {
@@ -144,6 +147,7 @@ pub struct NewHost<'a> {
     /// Required for a service host by CHECK — what the daemon's userns-remap
     /// maps container uid 0 to, which is who ends up owning those directories.
     pub container_root_uid: Option<i64>,
+    pub preview_network: Option<&'a str>,
 }
 
 #[derive(AsChangeset, Default)]
@@ -172,6 +176,7 @@ pub struct UpdateHost<'a> {
     /// Doubly optional like the rest, but the inner `None` is refused for a
     /// service host by CHECK rather than meaning anything here.
     pub container_root_uid: Option<Option<i64>>,
+    pub preview_network: Option<Option<&'a str>>,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]

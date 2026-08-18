@@ -22,6 +22,7 @@ pub struct ResolvedModel {
 /// dependency the wrong way — the foreign keys run from the harness toward
 /// environments, so resolution belongs on this side of that line.
 pub struct ResolvedHostKey {
+    pub credential_id: Uuid,
     pub address: String,
     pub user: String,
     pub private_key: String,
@@ -135,6 +136,7 @@ pub async fn resolve_host_key(
     .map_err(|_| AppError::Internal)?;
 
     Ok(ResolvedHostKey {
+        credential_id: cred.id,
         address: address.to_owned(),
         user: user.to_owned(),
         private_key: String::from_utf8(key_bytes).map_err(|_| AppError::Internal)?,

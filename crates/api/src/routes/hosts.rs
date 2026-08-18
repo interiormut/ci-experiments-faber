@@ -576,6 +576,7 @@ async fn create(
         default_container_max: None,
         user_data_root: None,
         container_root_uid: None,
+        preview_network: None,
     };
 
     let inserted: Host = diesel::insert_into(host::table)

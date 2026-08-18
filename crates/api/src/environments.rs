@@ -9,11 +9,11 @@
 //! docker context describe the operator and would send one user's work out
 //! under another's identity. None of them is read here, and none should be.
 //!
-//! Two things are deliberately not cached: the SSH session and the daemon
-//! connection. A `Daemon` opens a fresh connection per call by design, and a
-//! session held between requests is a session that has to be invalidated when
-//! a user rotates a key — reconnecting costs one round trip and owes nobody an
-//! invalidation story.
+//! Daemon connections remain one-call streams. SSH sessions are shared by the
+//! process-wide pool because commands, Docker forwarding, and live previews
+//! are all channels on the same authenticated transport. The pool identity
+//! includes the credential id, address, account, and pinned host key, so a key
+//! rotation or host reconfiguration cannot silently reuse the old session.
 
 use std::sync::Arc;
 
@@ -23,7 +23,7 @@ use diesel::{
 use diesel_async::RunQueryDsl;
 use environment::docker::{Daemon, LocalSocket};
 use environment::ssh::forward::DOCKER_SOCKET;
-use environment::ssh::{HostKey, SshCredential, SshForwarded, SshSession};
+use environment::ssh::{SshForwarded, SshSession};
 use environment::tenancy::Tenancy;
 use environment::{Blobs, DockerTarget, LocalTarget, Machine, Registry, Root, SshTarget};
 use environment::{Denial, Fault};
@@ -36,7 +36,6 @@ use crate::{
         now_epoch,
         session::{NewSessionEnvironment, SessionEnvironment},
     },
-    resolve::resolve_host_key,
     schema::{host, host_container, session_environment},
     state::AppState,
 };
@@ -62,24 +61,7 @@ pub async fn reach_daemon(
     }
 
     if host.transport == Transport::Ssh.as_str() {
-        let resolved = resolve_host_key(state, user_id, host).await?;
-        let credential = SshCredential {
-            user: resolved.user,
-            private_key: resolved.private_key,
-            passphrase: None,
-        };
-        // First contact accepts what answers and records it; everything after
-        // verifies against what was recorded. There is no third option — a
-        // service holding many users' keys cannot afford one.
-        let expectation = match &resolved.host_key {
-            Some(fingerprint) => HostKey::Verify(fingerprint.clone()),
-            None => HostKey::AcceptNew,
-        };
-
-        let (session, fingerprint) =
-            SshSession::connect(&resolved.address, &credential, expectation)
-                .await
-                .map_err(fault)?;
+        let session = state.ssh.get(state, user_id, host).await?;
 
         // The socket path is on the *far* side, so a `tcp://` endpoint is not
         // a thing this forward can dial: `direct-streamlocal` opens a unix
@@ -99,9 +81,7 @@ pub async fn reach_daemon(
             }
         };
 
-        record_host_key(state, host, &fingerprint).await?;
-
-        return Ok(Arc::new(SshForwarded::new(Arc::new(session), socket)));
+        return Ok(Arc::new(SshForwarded::new(session, socket)));
     }
 
     if host.transport == Transport::Agent.as_str() {
@@ -186,7 +166,11 @@ fn agent_session(state: &AppState, host: &Host) -> ApiResult<Arc<SshSession>> {
 /// Only when the column is still null, and never on a mismatch: a host that
 /// presents a different key is refused by the verifier above and never reaches
 /// here, which is what keeps this from being a trust-on-every-use.
-async fn record_host_key(state: &AppState, host: &Host, fingerprint: &str) -> ApiResult<()> {
+pub(crate) async fn record_host_key(
+    state: &AppState,
+    host: &Host,
+    fingerprint: &str,
+) -> ApiResult<()> {
     if host.ssh_host_key.is_some() || fingerprint.is_empty() {
         return Ok(());
     }
@@ -629,28 +613,10 @@ async fn bind_one(
     let root = Root::new(&root_path).map_err(|denial| fault(denial.into()))?;
 
     if host_row.transport == Transport::Ssh.as_str() {
-        let resolved = resolve_host_key(state, user_id, &host_row).await?;
-        let credential = SshCredential {
-            user: resolved.user,
-            private_key: resolved.private_key,
-            passphrase: None,
-        };
-        let expectation = match &resolved.host_key {
-            Some(fingerprint) => HostKey::Verify(fingerprint.clone()),
-            None => HostKey::AcceptNew,
-        };
-        let (machine, fingerprint) = SshTarget::bind(
-            row.label.clone(),
-            &resolved.address,
-            &credential,
-            expectation,
-            root,
-            blobs,
-        )
-        .await
-        .map_err(fault)?;
-        record_host_key(state, &host_row, &fingerprint).await?;
-        return Ok(machine);
+        let session = state.ssh.get(state, user_id, &host_row).await?;
+        return SshTarget::bind_session(row.label.clone(), session, root, blobs)
+            .await
+            .map_err(fault);
     }
 
     if host_row.transport == Transport::Agent.as_str() {

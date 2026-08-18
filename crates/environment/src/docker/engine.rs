@@ -32,6 +32,60 @@ pub struct ExecState {
     pub exit_code: Option<i64>,
 }
 
+/// Network facts needed to address a service inside a container.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContainerNetworks {
+    /// Docker's network mode (`default`, `bridge`, `host`, `none`, or a named
+    /// network). The caller owns policy for which modes it will publish.
+    pub mode: String,
+    /// Attached network name and non-empty IP address pairs.
+    pub addresses: Vec<(String, String)>,
+}
+
+/// Reads only the network portion of one container's inspect response.
+pub async fn container_networks(
+    daemon: &Arc<dyn Daemon>,
+    container: &str,
+) -> Result<ContainerNetworks, Fault> {
+    let mut wire = Wire::new(daemon.connect().await?);
+    let head = wire
+        .request(
+            "GET",
+            &format!("{API}/containers/{}/json", encode(container)),
+            None,
+            false,
+        )
+        .await?;
+    let payload = wire.body(&head).await?;
+    if !head.ok() {
+        return Err(refused(head.status, &payload, container));
+    }
+
+    parse_container_networks(&payload)
+}
+
+fn parse_container_networks(payload: &[u8]) -> Result<ContainerNetworks, Fault> {
+    let value: Value = serde_json::from_slice(payload)
+        .map_err(|_| Fault::Unreachable("the daemon sent unreadable container state".into()))?;
+    let mode = value
+        .pointer("/HostConfig/NetworkMode")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let mut addresses = value
+        .pointer("/NetworkSettings/Networks")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|networks| networks.iter())
+        .filter_map(|(name, network)| {
+            let address = network.get("IPAddress")?.as_str()?.trim();
+            (!address.is_empty()).then(|| (name.clone(), address.to_owned()))
+        })
+        .collect::<Vec<_>>();
+    addresses.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(ContainerNetworks { mode, addresses })
+}
+
 /// Creates an exec and returns its id. Does not start it.
 pub async fn exec_create(
     daemon: &Arc<dyn Daemon>,
@@ -569,5 +623,28 @@ mod tests {
     fn a_missing_path_is_not_found_whatever_the_body_says() {
         let fault = refused(404, b"", "/nope");
         assert!(matches!(fault, Fault::Denied(Denial::NotFound { .. })));
+    }
+
+    #[test]
+    fn container_network_inspection_keeps_named_nonempty_addresses() {
+        let networks = parse_container_networks(
+            br#"{
+                "HostConfig":{"NetworkMode":"bridge"},
+                "NetworkSettings":{"Networks":{
+                    "z":{"IPAddress":"10.2.0.3"},
+                    "empty":{"IPAddress":""},
+                    "a":{"IPAddress":"10.1.0.3"}
+                }}
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(networks.mode, "bridge");
+        assert_eq!(
+            networks.addresses,
+            vec![
+                ("a".into(), "10.1.0.3".into()),
+                ("z".into(), "10.2.0.3".into())
+            ]
+        );
     }
 }

@@ -4,6 +4,8 @@ pub mod credential;
 pub mod exchange;
 pub mod host;
 pub mod model_config;
+#[allow(dead_code)]
+pub mod presentation;
 pub mod run;
 pub mod session;
 pub mod span;

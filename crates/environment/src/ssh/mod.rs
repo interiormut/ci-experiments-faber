@@ -277,6 +277,28 @@ impl SshSession {
         self.handle.is_closed()
     }
 
+    /// Opens a TCP connection from the far side of this SSH session.
+    ///
+    /// The destination is selected and authorised by the caller. Keeping the
+    /// russh handle private makes this the narrow seam needed by live HTTP
+    /// previews without exposing arbitrary SSH operations to consumers.
+    pub async fn open_tcp(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Result<impl AsyncRead + AsyncWrite + Send + Unpin + use<>, Fault> {
+        let channel = self
+            .handle
+            .channel_open_direct_tcpip(host, u32::from(port), "127.0.0.1", 0)
+            .await
+            .map_err(|error| {
+                Fault::Unreachable(format!(
+                    "could not reach `{host}:{port}` on the far side: {error}"
+                ))
+            })?;
+        Ok(channel.into_stream())
+    }
+
     /// Closes the connection out from under every clone of this session.
     ///
     /// Dropping an `Arc<SshSession>` only closes the underlying handle once
