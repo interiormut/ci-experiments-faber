@@ -272,6 +272,20 @@ pub fn token_from_host<'a>(host: &'a str, domain: &str) -> Option<&'a str> {
     (!token.contains('.') && valid_token(token)).then_some(token)
 }
 
+/// Whether `host` belongs to the preview wildcard. This intentionally does
+/// not validate the token: unknown and malformed capability hosts must reach
+/// the presentation handler and receive the same 404 rather than falling
+/// through to an API route.
+pub fn is_preview_host(host: &str, domain: &str) -> bool {
+    let host = host.split(':').next().unwrap_or_default();
+    let suffix = format!(".{domain}");
+    host.len() > "p-".len() + suffix.len()
+        && host
+            .get(.."p-".len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("p-"))
+        && host.ends_with(&suffix)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,6 +381,14 @@ mod tests {
             token_from_host("p-short.preview.test", "preview.test"),
             None
         );
+    }
+
+    #[test]
+    fn preview_host_matcher_keeps_malformed_capabilities_on_the_preview_path() {
+        assert!(is_preview_host("p-short.preview.test", "preview.test"));
+        assert!(is_preview_host("p-token.preview.test:3001", "preview.test"));
+        assert!(!is_preview_host("preview.test", "preview.test"));
+        assert!(!is_preview_host("other.preview.test", "preview.test"));
     }
 
     #[tokio::test]

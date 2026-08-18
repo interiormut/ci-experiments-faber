@@ -1,3 +1,10 @@
+use axum::{
+    body::Body,
+    extract::{ConnectInfo, State},
+    http::{Request, header::HOST},
+    middleware::{self, Next},
+    response::Response,
+};
 use base64::Engine as _;
 use diesel::Connection;
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
@@ -151,8 +158,15 @@ async fn main() {
     // `baseUrl` must match.
     let app = routes::router()
         .layer(cors)
-        .with_state(state)
+        .with_state(state.clone())
         .nest("/api/surge", browser_router)
+        // Preview hosts are a separate origin and must be resolved before the
+        // API router considers their paths. The dispatcher only reads durable
+        // presentation state; it deliberately has no lifecycle routes.
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            dispatch_preview_host,
+        ))
         .layer(TraceLayer::new_for_http());
 
     let addr = format!("0.0.0.0:{}", config.api_port);
@@ -168,6 +182,29 @@ async fn main() {
     )
     .await
     .unwrap();
+}
+
+/// Sends wildcard preview hosts to the live-server proxy and leaves every
+/// other host on the ordinary API router.
+async fn dispatch_preview_host(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let preview_host = request
+        .headers()
+        .get(HOST)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|host| presentation::is_preview_host(host, &state.config.preview_domain));
+    if !preview_host {
+        return next.run(request).await;
+    }
+
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<std::net::SocketAddr>>()
+        .map(|ConnectInfo(peer)| *peer);
+    presentation::proxy::handle(state, peer, request).await
 }
 
 /// Builds the remote provider that talks to `surge-server`.
