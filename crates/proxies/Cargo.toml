@@ -1,0 +1,15 @@
+[package]
+name = "proxies"
+version = "0.1.0"
+edition = "2024"
+
+# A leaf crate for moving bytes between network peers.  Authorization,
+# destination selection, and protocol-specific request handling belong to its
+# caller; this crate owns only dialing and bidirectional relaying.
+[dependencies]
+async-trait = "0.1"
+thiserror = "1"
+tokio = { version = "1", features = ["io-util", "net"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
