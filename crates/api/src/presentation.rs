@@ -10,7 +10,6 @@
 //! activation should dispatch the configured preview host here before the
 //! existing API router, without adding a listing endpoint.
 
-use base64::Engine as _;
 use chrono::Utc;
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, SelectableHelper};
 use diesel_async::scoped_futures::ScopedFutureExt;
@@ -245,13 +244,15 @@ async fn lock_target(conn: &mut diesel_async::AsyncPgConnection, target: &Target
 fn mint_token() -> String {
     let mut bytes = [0_u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    // Hostnames are case-insensitive, so the token must not contain case.
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn valid_token(token: &str) -> bool {
-    base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(token)
-        .is_ok_and(|bytes| bytes.len() == 32)
+    token.len() == 64
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn presentation_url(state: &AppState, token: &str) -> String {
@@ -361,7 +362,12 @@ mod tests {
         for _ in 0..1_000 {
             let token = mint_token();
             assert!(valid_token(&token));
-            assert_eq!(token.len(), 43);
+            assert_eq!(token.len(), 64);
+            assert!(
+                token
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            );
             assert!(found.insert(token));
         }
     }
@@ -376,6 +382,13 @@ mod tests {
         assert_eq!(
             token_from_host(&format!("p-{token}.preview.test:3001"), "preview.test"),
             Some(token.as_str())
+        );
+        assert_eq!(
+            token_from_host(
+                &format!("p-{}.preview.test", token.to_uppercase()),
+                "preview.test"
+            ),
+            None
         );
         assert_eq!(token_from_host("preview.test", "preview.test"), None);
         assert_eq!(

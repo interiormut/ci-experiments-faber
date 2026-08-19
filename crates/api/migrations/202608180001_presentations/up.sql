@@ -31,4 +31,4 @@ COMMENT ON TABLE presentation IS
   'Generations of unguessable capability URLs for live HTTP services. Possession grants access.';
 
 COMMENT ON COLUMN presentation.token IS
-  '32 cryptographically random bytes encoded as unpadded base64url; retained after revocation so known revoked URLs resolve to 410.';
+  '32 cryptographically random bytes encoded as 64 lowercase hexadecimal characters; retained after revocation so known revoked URLs resolve to 410.';
