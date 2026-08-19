@@ -229,8 +229,16 @@ impl russh::server::Handler for Handler {
         reply: ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
-        let address = format!("{host_to_connect}:{port_to_connect}");
-        match TcpStream::connect(&address).await {
+        // The SSH wire format calls this a u32, while TCP ports are u16.
+        // Passing a `(host, port)` pair to Tokio also keeps IPv6 literals
+        // unambiguous; formatting `::1:8080` as one string would not.
+        let Ok(port) = u16::try_from(port_to_connect) else {
+            tracing::warn!(%host_to_connect, %port_to_connect, "preview TCP target has an invalid port");
+            reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+            return Ok(());
+        };
+        let address = format!("{host_to_connect}:{port}");
+        match TcpStream::connect((host_to_connect, port)).await {
             Ok(mut socket) => {
                 reply.accept().await;
                 tokio::spawn(async move {
