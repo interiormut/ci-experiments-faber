@@ -20,8 +20,9 @@ COPY crates/llm/Cargo.toml crates/llm/Cargo.toml
 COPY crates/readable/Cargo.toml crates/readable/Cargo.toml
 COPY crates/search/Cargo.toml crates/search/Cargo.toml
 COPY crates/traefik/Cargo.toml crates/traefik/Cargo.toml
-RUN mkdir -p crates/{api,environment,faber-agent,harness,readable,search,llm,traefik}/src \
-    && mkdir -p crates/harness/examples \
+RUN mkdir -p crates/api/src crates/environment/src crates/faber-agent/src \
+    crates/harness/src crates/harness/examples crates/readable/src \
+    crates/search/src crates/llm/src crates/traefik/src \
     && touch crates/api/src/main.rs \
              crates/environment/src/lib.rs \
              crates/faber-agent/src/main.rs \
