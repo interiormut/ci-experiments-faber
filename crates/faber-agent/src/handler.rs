@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use portable_pty::PtySize;
 use russh::server::{Auth, ChannelOpenHandle, Msg, Session};
 use russh::{Channel, ChannelId, Pty};
+use tokio::net::TcpStream;
 
 use crate::exec::{self, Stdin};
 
@@ -209,6 +210,36 @@ impl russh::server::Handler for Handler {
             }
             Err(error) => {
                 tracing::warn!(%socket_path, %error, "could not reach the local socket");
+                reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// Live previews use SSH direct-tcpip channels over the agent's outbound
+    /// WebSocket. The agent opens the target locally and relays the channel;
+    /// the API side only chooses the address after resolving the presentation.
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        host_to_connect: &str,
+        port_to_connect: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let address = format!("{host_to_connect}:{port_to_connect}");
+        match TcpStream::connect(&address).await {
+            Ok(mut socket) => {
+                reply.accept().await;
+                tokio::spawn(async move {
+                    let mut stream = channel.into_stream();
+                    let _ = tokio::io::copy_bidirectional(&mut stream, &mut socket).await;
+                });
+            }
+            Err(error) => {
+                tracing::warn!(%address, %error, "could not reach preview TCP target");
                 reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
             }
         }
