@@ -31,7 +31,7 @@ pub fn router() -> Router<AppState> {
         .route(
             "/health",
             get(|| async {
-                Json(json!({ "ok": true, "experiment": "source-change-2" }))
+                Json(json!({ "ok": true, "experiment": "source-change-3" }))
             }),
         )
         .route("/api/config", get(config))
