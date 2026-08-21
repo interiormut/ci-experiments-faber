@@ -1,0 +1,98 @@
+# syntax=docker/dockerfile:1
+
+FROM rust:bookworm AS chef
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libpq-dev pkg-config musl-tools \
+    && rm -rf /var/lib/apt/lists/* \
+    && cargo install cargo-chef --locked \
+    && rustup target add x86_64-unknown-linux-musl
+
+FROM chef AS planner
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates/api/Cargo.toml crates/api/Cargo.toml
+COPY crates/environment/Cargo.toml crates/environment/Cargo.toml
+COPY crates/faber-agent/Cargo.toml crates/faber-agent/Cargo.toml
+COPY crates/harness/Cargo.toml crates/harness/Cargo.toml
+COPY crates/llm/Cargo.toml crates/llm/Cargo.toml
+COPY crates/readable/Cargo.toml crates/readable/Cargo.toml
+COPY crates/search/Cargo.toml crates/search/Cargo.toml
+COPY crates/traefik/Cargo.toml crates/traefik/Cargo.toml
+
+RUN mkdir -p crates/api/src crates/environment/src crates/faber-agent/src \
+    crates/harness/src crates/harness/examples crates/llm/src \
+    crates/readable/src crates/search/src crates/traefik/src \
+    && touch crates/api/src/main.rs crates/environment/src/lib.rs crates/faber-agent/src/main.rs \
+        crates/harness/src/lib.rs crates/harness/examples/run.rs crates/llm/src/lib.rs \
+        crates/readable/src/lib.rs crates/search/src/lib.rs crates/traefik/src/lib.rs \
+    && cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS api-cacher
+
+COPY --from=planner /app/recipe.json recipe.json
+
+RUN --mount=type=cache,id=faber-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=faber-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    cargo chef cook --release --locked -p api --recipe-path recipe.json
+
+FROM api-cacher AS builder
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+
+RUN --mount=type=cache,id=faber-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=faber-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=faber-api-target,target=/app/target,sharing=locked \
+    cargo build --release --locked -p api \
+    && mkdir -p /out \
+    && cp target/release/api /out/faber-api
+
+FROM chef AS agent-cacher
+
+ENV CC_x86_64_unknown_linux_musl=musl-gcc
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+ENV RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static"
+
+COPY --from=planner /app/recipe.json recipe.json
+
+RUN --mount=type=cache,id=faber-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=faber-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    cargo chef cook --release --locked --target x86_64-unknown-linux-musl \
+        -p faber-agent --recipe-path recipe.json
+
+FROM agent-cacher AS agent-builder
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+
+RUN --mount=type=cache,id=faber-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=faber-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=faber-agent-target,target=/app/target,sharing=locked \
+    cargo build --release --locked --target x86_64-unknown-linux-musl -p faber-agent \
+    && mkdir -p /out \
+    && cp target/x86_64-unknown-linux-musl/release/faber-agent /out/faber-agent-x86_64 \
+    && strip /out/faber-agent-x86_64
+
+FROM debian:bookworm-slim AS runner
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates libpq5 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --shell /usr/sbin/nologin faber
+
+WORKDIR /app
+
+ENV API_PORT=3001
+ENV FABER_AGENT_BINARY_DIR=/usr/local/share/faber/agent
+
+COPY --from=builder /out/faber-api /usr/local/bin/faber-api
+COPY --from=agent-builder /out/faber-agent-x86_64 ${FABER_AGENT_BINARY_DIR}/faber-agent-x86_64
+
+USER faber
+
+EXPOSE 3001
+
+CMD ["faber-api"]
