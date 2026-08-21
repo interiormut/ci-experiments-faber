@@ -20,34 +20,29 @@ env:
   API_IMAGE: api
 
 jobs:
-  build:
-    name: Build and push images
+  ui:
+    name: Build and push UI image
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set image metadata
         id: meta
         shell: bash
         run: |
           echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           echo "image_namespace=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ secrets.GHCR_USERNAME || github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Build and push UI image
         uses: docker/build-push-action@v6
         with:
@@ -60,14 +55,37 @@ jobs:
           cache-from: type=gha,scope=ui
           cache-to: type=gha,mode=max,scope=ui
 
+  api:
+    name: Build and push API image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set image metadata
+        id: meta
+        shell: bash
+        run: |
+          echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "image_namespace=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.GHCR_USERNAME || github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and push API image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: crates/api/Dockerfile
+          file: crates/api/Dockerfile.experiment-optimized
           push: true
           tags: |
             ${{ steps.meta.outputs.image_namespace }}/${{ env.API_IMAGE }}:latest
             ${{ steps.meta.outputs.image_namespace }}/${{ env.API_IMAGE }}:${{ steps.meta.outputs.short_sha }}
-          cache-from: type=gha,scope=api
-          cache-to: type=gha,mode=max,scope=api
+          cache-from: type=gha,scope=api-optimized
+          cache-to: type=gha,mode=max,scope=api-optimized
