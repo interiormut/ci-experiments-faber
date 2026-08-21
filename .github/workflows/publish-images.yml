@@ -55,12 +55,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libpq-dev pkg-config musl-tools
-          rustup target add x86_64-unknown-linux-musl
 
-          mkdir -p image-context
-
-          cp target/release/api image-context/faber-api
-      - name: Build agent
         env:
           CARGO_INCREMENTAL: 1
           CC_x86_64_unknown_linux_musl: musl-gcc
