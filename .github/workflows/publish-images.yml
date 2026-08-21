@@ -1,31 +1,19 @@
 name: Publish Images
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/publish-images.yml"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "packages/faber-ui/package.json"
-      - "packages/faber-ui/bun.lock"
-      - "crates/**"
-      - "packages/faber-ui/**"
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".github/workflows/publish-images.yml", "Cargo.toml", "Cargo.lock", "crates/**", "packages/faber-ui/**"]
 
 env:
   REGISTRY: ghcr.io
-  UI_IMAGE: ui
-  API_IMAGE: api
 
 jobs:
   ui:
     name: Build and push UI image
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    permissions: { contents: read, packages: write }
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -41,6 +29,60 @@ jobs:
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ github.repository }}/ui:latest
+            ${{ env.REGISTRY }}/${{ github.repository }}/ui:${{ github.sha }}
+          cache-from: type=gha,scope=ui
+          cache-to: type=gha,mode=max,scope=ui
 
-
-
+  api:
+    name: Build and push API image
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-build-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: rust-build-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: false
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libpq-dev pkg-config musl-tools
+          rustup target add x86_64-unknown-linux-musl
+      - name: Build API
+        env: { CARGO_INCREMENTAL: 1 }
+        run: |
+          mkdir -p image-context
+          cargo build --release --locked -p api
+          cp target/release/api image-context/faber-api
+      - name: Build agent
+        env:
+          CARGO_INCREMENTAL: 1
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          RUSTFLAGS: -C target-feature=+crt-static -C relocation-model=static
+        run: |
+          cargo build --release --locked --target x86_64-unknown-linux-musl -p faber-agent
+          cp target/x86_64-unknown-linux-musl/release/faber-agent image-context/faber-agent-x86_64
+          strip image-context/faber-agent-x86_64
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.GHCR_USERNAME || github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: image-context
+          file: crates/api/Dockerfile.experiment-runner-cache
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository }}/api:latest
+            ${{ env.REGISTRY }}/${{ github.repository }}/api:${{ github.sha }}
