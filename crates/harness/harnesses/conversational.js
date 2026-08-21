@@ -21,11 +21,6 @@
 // enough — each call carries every earlier turn by value, so the final one's
 // turn list is the whole exchange, tool calls and results included.
 
-/// How many times the model may call tools before the loop stops offering it
-/// the chance. Not a safety boundary — the environment holds those — but a
-/// loop with no bound is a loop that can spend a user's budget forever on a
-/// command that keeps failing the same way.
-const MAX_STEPS = 64;
 async function generateTitle(ctx, input) {
   const history = ctx.history.read();
   if (history.length > 0) return null;
@@ -87,7 +82,7 @@ export default {
     // isolate stays alive long enough to persist the title.
     const titlePromise = generateTitle(ctx, input);
 
-    for (let step = 0; step < MAX_STEPS; step += 1) {
+    while (true) {
       call = ctx.llm.stream({ messages });
       yield* call;
 
