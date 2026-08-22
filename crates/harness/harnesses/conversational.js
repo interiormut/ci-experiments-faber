@@ -72,9 +72,68 @@ async function generateTitle(ctx, input) {
   return null;
 }
 
+function toolCallsIn(message) {
+  return message?.role === "assistant"
+    ? (message.content ?? []).filter((block) => block.type === "tool_use")
+    : [];
+}
+
+async function* dispatchToolCalls(ctx, calls, results) {
+  for (const use of calls) {
+    yield { type: "tool_call", id: use.id, name: use.name, input: use.input };
+
+    // `undefined` means the tool was never granted — a move this loop does
+    // not have. Saying so as a tool_result keeps the pairing intact.
+    const invocation = ctx.tools.invoke(use.name, use.input);
+    const result =
+      invocation === undefined
+        ? { content: `\`${use.name}\` is not a tool this run was granted`, isError: true }
+        : await invocation;
+
+    yield {
+      type: "tool_result",
+      id: use.id,
+      name: use.name,
+      content: result.content,
+      isError: result.isError,
+    };
+    results.push({
+      type: "tool_result",
+      toolUseId: use.id,
+      content: result.content,
+      isError: result.isError,
+    });
+  }
+}
+
 export default {
   async *execute(ctx, input) {
-    const messages = [...ctx.history.read(), ...input];
+    const messages = [...ctx.history.read()];
+
+    // A previous run can leave a committed assistant tool call without its
+    // user tool-result turn. Recover it before appending new input; otherwise
+    // the first request of this run is malformed and the provider rejects it.
+    const pendingCalls = toolCallsIn(messages.at(-1));
+    if (pendingCalls.length > 0) {
+      const results = [];
+      yield* dispatchToolCalls(ctx, pendingCalls, results);
+      messages.push({ role: "user", content: results });
+
+      // The results above were produced now, not when the model asked for
+      // them — the world may have moved on in between. Say so as a
+      // mid-conversation system note rather than leaving the model to assume
+      // the results are as fresh as its call.
+      messages.push({
+        role: "system",
+        content: [
+          {
+            type: "text",
+            text: "The previous run was interrupted after these tool calls were made; the results above were produced just now, on resume, and may reflect a state that has changed since the calls were issued.",
+          },
+        ],
+      });
+    }
+    messages.push(...input);
     let call = null;
 
     // Start title generation in parallel. It must not delay the first visible
@@ -100,32 +159,7 @@ export default {
       messages.push(completion.message);
 
       const results = [];
-      for (const use of calls) {
-        yield { type: "tool_call", id: use.id, name: use.name, input: use.input };
-
-        // `undefined` means the tool was never granted — a move this loop
-        // does not have. Saying so as a tool_result keeps the pairing intact;
-        // dropping it would orphan the tool_use and refuse the next request.
-        const invocation = ctx.tools.invoke(use.name, use.input);
-        const result =
-          invocation === undefined
-            ? { content: `\`${use.name}\` is not a tool this run was granted`, isError: true }
-            : await invocation;
-
-        yield {
-          type: "tool_result",
-          id: use.id,
-          name: use.name,
-          content: result.content,
-          isError: result.isError,
-        };
-        results.push({
-          type: "tool_result",
-          toolUseId: use.id,
-          content: result.content,
-          isError: result.isError,
-        });
-      }
+      yield* dispatchToolCalls(ctx, calls, results);
 
       messages.push({ role: "user", content: results });
     }

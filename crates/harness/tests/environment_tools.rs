@@ -12,6 +12,7 @@ use std::sync::Arc;
 use environment::{Blobs, LocalTarget, MemoryBlobs, Registry, Root};
 use harness::tools::Surface;
 use harness::{HarnessRun, Seed};
+use llm::{ContentBlock, Message, Role};
 use support::{Scripted, drain_transcript, grant, input, text_reply, tool_call_reply};
 
 /// A directory of this test's own, removed when the test ends.
@@ -218,4 +219,65 @@ fn the_tool_loop_commits_the_whole_exchange_and_not_just_its_last_turn() {
         .collect();
     assert_eq!(roles.len(), 4, "{roles:?}");
     assert!(outcome.committed_frame.is_some());
+}
+
+#[test]
+fn a_trailing_tool_call_from_history_is_dispatched_before_new_input() {
+    let dir = TempDir::new("recovery");
+    std::fs::write(dir.0.join("hello.txt"), "recovered\n").expect("a fixture file");
+
+    let client = Arc::new(Scripted::new(text_reply("continued")));
+    let surface = surface_over(&dir.0);
+    let mut granted = grant(client.clone());
+    granted.tools = Surface::definitions();
+    granted.tool_invoker = Some(Arc::clone(&surface).invoker());
+
+    let seed = Seed {
+        provider: "scripted".into(),
+        model: "test-model".into(),
+        messages: vec![
+            Message::user("read hello.txt"),
+            Message::assistant(vec![ContentBlock::ToolUse {
+                id: "call_recovered".into(),
+                name: "read".into(),
+                input: serde_json::json!({
+                    "execute_in": "build",
+                    "path": "/hello.txt",
+                }),
+            }]),
+        ],
+        options: Default::default(),
+    };
+
+    let mut run = HarnessRun::start(
+        harness::CONVERSATIONAL.to_owned(),
+        input("continue").into_iter().collect(),
+        granted,
+        seed,
+    );
+    let events = drain_transcript(&mut run);
+    support::finished(run, "recovery run must finish");
+
+    let recovered = events
+        .iter()
+        .find(|event| event["type"] == "tool_result")
+        .expect("the trailing call was dispatched");
+    assert_eq!(recovered["id"], "call_recovered");
+    assert_eq!(recovered["isError"], false);
+    assert!(recovered["content"].as_str().unwrap().contains("recovered"));
+
+    let requests = client.requests_seen();
+    assert_eq!(requests.len(), 1);
+    let roles: Vec<_> = requests[0]
+        .messages
+        .iter()
+        .map(|turn| match turn {
+            llm::Turn::Value(message) => message.role,
+            llm::Turn::Span(_) => panic!("recovery request must contain values"),
+        })
+        .collect();
+    assert_eq!(
+        roles,
+        vec![Role::User, Role::Assistant, Role::User, Role::System, Role::User]
+    );
 }
